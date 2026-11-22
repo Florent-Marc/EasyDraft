@@ -326,6 +326,15 @@ impl EasyDraft {
             .map(|(index, _)| index)
     }
 
+    fn remove_connection(&mut self, index: usize) {
+        if index < self.plan.lighting_connections.len() {
+            self.snapshot();
+            self.plan.lighting_connections.remove(index);
+            self.pending_switch = None;
+            self.status = "Liaison supprimee du plan et du schema unifilaire".into();
+        }
+    }
+
     fn add_lighting_demo(&mut self) {
         self.snapshot();
         self.plan.add_demo_lighting();
@@ -759,6 +768,46 @@ impl eframe::App for EasyDraft {
             ui.label(format!("Symboles : {}", self.plan.symbols.len()));
             ui.label(format!("Liaisons I -> L : {}", self.plan.lighting_connections.len()));
             ui.label(format!("Lampes non liees : {}", self.plan.unlinked_lights()));
+            ui.label(format!("Interrupteurs non lies : {}", self.plan.unlinked_switches()));
+            ui.separator();
+            ui.collapsing("Circuit d'eclairage (A)", |ui| {
+                ui.small("Valeurs a renseigner d'apres l'installation reelle. 0 = inconnu.");
+                let mut circuit = self.plan.lighting_circuit.clone();
+                ui.label("Repere du circuit");
+                ui.text_edit_singleline(&mut circuit.letter);
+                ui.label("Disjoncteur - calibre");
+                ui.add(egui::DragValue::new(&mut circuit.breaker_amp).range(0..=63).suffix(" A"));
+                ui.label("Nombre de poles");
+                ui.add(egui::DragValue::new(&mut circuit.breaker_poles).range(0..=4));
+                ui.label("Courbe / type (ex. C)");
+                ui.text_edit_singleline(&mut circuit.breaker_curve);
+                ui.label("Differentiel en amont (ex. type / mA / A)");
+                ui.text_edit_singleline(&mut circuit.upstream_rdc);
+                ui.separator();
+                ui.label("Type de canalisation (ex. XVB)");
+                ui.text_edit_singleline(&mut circuit.cable_type);
+                ui.label("Nombre de conducteurs");
+                ui.add(egui::DragValue::new(&mut circuit.conductor_count).range(0..=10));
+                ui.label("Section des conducteurs");
+                ui.add(egui::DragValue::new(&mut circuit.section_mm2).speed(0.1)
+                    .range(0.0..=35.0).suffix(" mm²"));
+                ui.label("Mode de pose");
+                ui.text_edit_singleline(&mut circuit.installation_method);
+                if circuit != self.plan.lighting_circuit {
+                    self.snapshot();
+                    self.plan.lighting_circuit = circuit;
+                    self.status = "Caracteristiques du circuit mises a jour".into();
+                }
+                let missing = self.plan.lighting_circuit.missing_fields();
+                if !missing.is_empty() {
+                    ui.colored_label(
+                        Color32::from_rgb(176, 91, 13),
+                        format!("{} champs non renseignes", missing.len()),
+                    );
+                } else {
+                    ui.small("Champs remplis ; conformite RGIE non verifiee.");
+                }
+            });
             ui.separator();
             if self.view == View::Unifilar {
                 ui.small("Le schema est automatiquement tire des liaisons du plan 2D.");
@@ -778,7 +827,13 @@ impl eframe::App for EasyDraft {
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.view {
                 View::Plan2D => self.canvas(ui),
-                View::Unifilar => unifilar::show(ui, &self.plan),
+                View::Unifilar => {
+                    if let Some(unifilar::Action::RemoveConnection(index)) =
+                        unifilar::show(ui, &self.plan)
+                    {
+                        self.remove_connection(index);
+                    }
+                },
             }
         });
     }
