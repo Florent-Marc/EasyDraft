@@ -605,20 +605,18 @@ impl Plan {
     }
 
     pub fn unlinked_switches(&self) -> usize {
+        let active = self.active_lighting_connections();
         self.symbols.iter().enumerate().filter(|(index, symbol)| {
             symbol.kind == ElectricalKind::Switch
-                && !self.lighting_connections.iter().any(|link| {
-                    link.switch_index == *index && self.lighting_connection_is_valid(link)
-                })
+                && !active.iter().any(|link| link.switch_index == *index)
         }).count()
     }
 
     pub fn unlinked_lights(&self) -> usize {
+        let active = self.active_lighting_connections();
         self.symbols.iter().enumerate().filter(|(index, symbol)| {
             symbol.kind == ElectricalKind::Light
-                && !self.lighting_connections.iter().any(|link| {
-                    link.light_index == *index && self.lighting_connection_is_valid(link)
-                })
+                && !active.iter().any(|link| link.light_index == *index)
         }).count()
     }
 
