@@ -83,7 +83,7 @@ impl Opening {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ElectricalKind {
     Outlet,
     Switch,
@@ -94,6 +94,15 @@ pub enum ElectricalKind {
 pub struct ElectricalSymbol {
     pub position: Point,
     pub kind: ElectricalKind,
+}
+
+/// Relation fonctionnelle entre un interrupteur et un luminaire.
+ /// Les indices referencent la liste Plan::symbols ; ils restent coherents tant qu'on
+ /// n'offre pas de suppression ou reordonnancement individuel des symboles.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LightingConnection {
+    pub switch_index: usize,
+    pub light_index: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,9 +152,71 @@ pub struct Plan {
     pub openings: Vec<Opening>,
     #[serde(default)]
     pub stairs: Vec<Stair>,
+    /// Liaisons logiques servant aux deux vues du projet.
+    /// L'absence de ce champ dans un ancien JSON donne une liste vide.
+    #[serde(default)]
+    pub lighting_connections: Vec<LightingConnection>,
 }
 
 impl Plan {
+    /// Lie un interrupteur a un point lumineux (ce n'est pas un chemin de cable).
+    pub fn connect_switch_to_light(
+        &mut self,
+        switch_index: usize,
+        light_index: usize,
+    ) -> Result<(), &'static str> {
+        if !matches!(self.symbols.get(switch_index), Some(s) if s.kind == ElectricalKind::Switch) {
+            return Err("Choisis un interrupteur valide");
+        }
+        if !matches!(self.symbols.get(light_index), Some(s) if s.kind == ElectricalKind::Light) {
+            return Err("Choisis un point lumineux valide");
+        }
+        if self.lighting_connections.iter().any(|c| c.light_index == light_index) {
+            return Err("Ce point lumineux est deja lie a un interrupteur");
+        }
+        self.lighting_connections.push(LightingConnection {
+            switch_index,
+            light_index,
+        });
+        Ok(())
+    }
+
+    pub fn lighting_connection_is_valid(&self, link: &LightingConnection) -> bool {
+        matches!(self.symbols.get(link.switch_index), Some(s) if s.kind == ElectricalKind::Switch)
+            && matches!(self.symbols.get(link.light_index), Some(s) if s.kind == ElectricalKind::Light)
+    }
+
+    /// Numero visible du symbole parmi ceux du meme type, en commençant a 1.
+    pub fn symbol_number(&self, index: usize) -> Option<usize> {
+        let target = self.symbols.get(index)?.kind;
+        Some(self.symbols[..=index].iter().filter(|s| s.kind == target).count())
+    }
+
+    pub fn unlinked_lights(&self) -> usize {
+        self.symbols.iter().enumerate().filter(|(index, symbol)| {
+            symbol.kind == ElectricalKind::Light
+                && !self.lighting_connections.iter().any(|link| {
+                    link.light_index == *index && self.lighting_connection_is_valid(link)
+                })
+        }).count()
+    }
+
+    /// Ajoute une demonstration fonctionnelle dans les deux vues, sans effacer le projet.
+    pub fn add_demo_lighting(&mut self) {
+        let offset = self.symbols.iter().map(|s| s.position.x).fold(0.0_f32, f32::max) + 1.0;
+        let switch_index = self.symbols.len();
+        self.symbols.push(ElectricalSymbol {
+            position: Point { x: offset, y: 0.0 },
+            kind: ElectricalKind::Switch,
+        });
+        let light_index = self.symbols.len();
+        self.symbols.push(ElectricalSymbol {
+            position: Point { x: offset + 2.0, y: 0.0 },
+            kind: ElectricalKind::Light,
+        });
+        self.lighting_connections.push(LightingConnection { switch_index, light_index });
+    }
+
     /// Ajoute une ouverture centrée au clic sur un mur, sans dépasser ni chevaucher une autre ouverture.
     pub fn add_opening(
         &mut self,
@@ -304,6 +375,52 @@ mod tests {
         let decoded: Plan = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.stairs.len(), 1);
         assert_eq!(decoded.stairs[0].steps, 12);
+    }
+
+    #[test]
+    fn demo_lighting_has_functional_connection() {
+        let mut plan = Plan::default();
+        plan.add_demo_lighting();
+        assert_eq!(plan.symbols.len(), 2);
+        assert_eq!(plan.lighting_connections.len(), 1);
+        assert!(plan.lighting_connection_is_valid(&plan.lighting_connections[0]));
+        assert_eq!(plan.symbol_number(0), Some(1));
+        assert_eq!(plan.symbol_number(1), Some(1));
+        assert_eq!(plan.unlinked_lights(), 0);
+    }
+
+    #[test]
+    fn refuses_wrong_element_types_and_duplicate_light() {
+        let mut plan = Plan::default();
+        plan.add_demo_lighting();
+        assert!(plan.connect_switch_to_light(0, 1).is_err());
+        assert!(plan.connect_switch_to_light(1, 0).is_err());
+        assert!(plan.connect_switch_to_light(3, 1).is_err());
+        let unlinked = plan.symbols.len();
+        plan.symbols.push(ElectricalSymbol {
+            position: Point { x: 0.0, y: 0.0 },
+            kind: ElectricalKind::Light,
+        });
+        assert_eq!(plan.unlinked_lights(), 1);
+        plan.connect_switch_to_light(0, unlinked).unwrap();
+        assert_eq!(plan.unlinked_lights(), 0);
+    }
+
+    #[test]
+    fn saved_lighting_connections_restore_correctly() {
+        let mut plan = Plan::default();
+        plan.add_demo_lighting();
+        let restored: Plan = serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
+        assert_eq!(restored.lighting_connections, plan.lighting_connections);
+        assert!(restored.lighting_connection_is_valid(&restored.lighting_connections[0]));
+    }
+
+    #[test]
+    fn old_json_without_connections_still_loads() {
+        let old = r#"{"walls":[],"symbols":[{"position":{"x":0.0,"y":0.0},"kind":"Light"}]}"#;
+        let loaded: Plan = serde_json::from_str(old).unwrap();
+        assert!(loaded.lighting_connections.is_empty());
+        assert_eq!(loaded.unlinked_lights(), 1);
     }
 
     #[test]
