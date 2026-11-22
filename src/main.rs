@@ -72,6 +72,7 @@ struct EasyDraft {
     tool: Tool,
     view: View,
     pending_switch: Option<usize>,
+    active_circuit_index: usize,
     pending_wall: Option<Point>,
     pending_stair: Option<Point>,
     selected_wall: Option<usize>,
@@ -111,6 +112,7 @@ impl Default for EasyDraft {
             tool: Tool::Wall,
             view: View::Plan2D,
             pending_switch: None,
+            active_circuit_index: 0,
             pending_wall: None,
             pending_stair: None,
             selected_wall: None,
@@ -347,6 +349,7 @@ impl EasyDraft {
                 self.cancel_drag();
                 self.reset_pending();
                 self.clear_selection();
+                self.active_circuit_index = 0;
                 self.status = format!("Ouvert : {}", self.file_path);
             }
             Err(e) => self.status = format!("Erreur : {e}"),
@@ -364,6 +367,7 @@ impl EasyDraft {
                 self.plan = plan;
                 self.reset_pending();
                 self.clear_selection();
+                self.active_circuit_index = 0;
                 self.view = View::Plan2D;
                 self.show_architecture = true;
                 self.show_rooms = true;
@@ -1039,12 +1043,18 @@ impl EasyDraft {
                 if let Some(switch_index) = self.pending_switch {
                     if let Some(light_index) = self.find_electrical_symbol(position, ppm, ElectricalKind::Light) {
                         let mut updated = self.plan.clone();
-                        match updated.connect_switch_to_light(switch_index, light_index) {
+                        match updated.connect_switch_to_light_in_circuit(
+                            switch_index, light_index, self.active_circuit_index
+                        ) {
                             Ok(()) => {
                                 self.snapshot();
                                 self.plan = updated;
                                 self.pending_switch = None;
-                                self.status = "Liaison enregistree : visible dans le schema unifilaire.".into();
+                                self.status = format!(
+                                    "Liaison ajoutee au circuit {} : visible dans l'unifilaire.",
+                                    self.plan.circuit(self.active_circuit_index)
+                                        .map(|c| c.letter.as_str()).unwrap_or("?")
+                                );
                             }
                             Err(error) => self.status = error.into(),
                         }
@@ -1053,7 +1063,11 @@ impl EasyDraft {
                     }
                 } else if let Some(index) = self.find_electrical_symbol(position, ppm, ElectricalKind::Switch) {
                     self.pending_switch = Some(index);
-                    self.status = "Interrupteur selectionne. Clique maintenant sur une lampe (X).".into();
+                    self.status = format!(
+                        "Interrupteur selectionne pour le circuit {}. Clique sur la lampe.",
+                        self.plan.circuit(self.active_circuit_index)
+                            .map(|c| c.letter.as_str()).unwrap_or("?")
+                    );
                 } else {
                     self.status = "Clique d'abord sur un interrupteur (I).".into();
                 }
@@ -1304,11 +1318,9 @@ impl EasyDraft {
             painter.text(pos, Align2::CENTER_CENTER, label, FontId::proportional(15.0), Color32::from_rgb(20, 106, 190));
             let number = self.plan.symbol_number(index).unwrap_or(index + 1);
             let ref_suffix = if symbol.kind == ElectricalKind::Light {
-                self.plan.lighting_point_number(index).map(|n| format!(
-                    " ({}{})",
-                    self.plan.lighting_circuit.letter,
-                    n
-                )).unwrap_or_default()
+                self.plan.lighting_point_ref(index)
+                    .map(|reference| format!(" ({reference})"))
+                    .unwrap_or_default()
             } else {
                 String::new()
             };
@@ -1421,6 +1433,7 @@ impl eframe::App for EasyDraft {
                     self.plan = Plan::default();
                     self.reset_pending();
                     self.clear_selection();
+                    self.active_circuit_index = 0;
                     self.view = View::Plan2D;
                     self.status = "Nouveau plan".into();
                 }
@@ -1551,44 +1564,99 @@ impl eframe::App for EasyDraft {
             ui.label(format!("Lampes non liees : {}", self.plan.unlinked_lights()));
             ui.label(format!("Interrupteurs non lies : {}", self.plan.unlinked_switches()));
             ui.separator();
-            ui.collapsing(format!("Circuit {} - parametres", self.plan.lighting_circuit.letter), |ui| {
-                ui.small("Valeurs a renseigner d'apres l'installation reelle. 0 = inconnu.");
-                let mut circuit = self.plan.lighting_circuit.clone();
-                ui.label("Repere du circuit");
-                ui.text_edit_singleline(&mut circuit.letter);
-                ui.label("Disjoncteur - calibre");
-                ui.add(egui::DragValue::new(&mut circuit.breaker_amp).range(0..=63).suffix(" A"));
-                ui.label("Nombre de poles");
-                ui.add(egui::DragValue::new(&mut circuit.breaker_poles).range(0..=4));
-                ui.label("Courbe / type (ex. C)");
-                ui.text_edit_singleline(&mut circuit.breaker_curve);
-                ui.label("Differentiel en amont (ex. type / mA / A)");
-                ui.text_edit_singleline(&mut circuit.upstream_rdc);
-                ui.separator();
-                ui.label("Type de canalisation (ex. XVB)");
-                ui.text_edit_singleline(&mut circuit.cable_type);
-                ui.label("Nombre de conducteurs");
-                ui.add(egui::DragValue::new(&mut circuit.conductor_count).range(0..=10));
-                ui.label("Section des conducteurs");
-                ui.add(egui::DragValue::new(&mut circuit.section_mm2).speed(0.1)
-                    .range(0.0..=35.0).suffix(" mm²"));
-                ui.label("Mode de pose");
-                ui.text_edit_singleline(&mut circuit.installation_method);
-                if circuit != self.plan.lighting_circuit {
-                    self.snapshot();
-                    self.plan.lighting_circuit = circuit;
-                    self.status = "Caracteristiques du circuit mises a jour".into();
+            ui.heading("Circuits d'eclairage");
+            if self.active_circuit_index >= self.plan.circuit_count() {
+                self.active_circuit_index = 0;
+            }
+            egui::ComboBox::from_label("Circuit actif pour Lier I -> L")
+                .selected_text(
+                    self.plan.circuit(self.active_circuit_index)
+                        .map(|c| c.letter.clone()).unwrap_or_else(|| "A".into())
+                )
+                .show_ui(ui, |ui| {
+                    for index in 0..self.plan.circuit_count() {
+                        let title = format!(
+                            "Circuit {}",
+                            self.plan.circuit(index).map(|c| c.letter.as_str()).unwrap_or("?"),
+                        );
+                        ui.selectable_value(&mut self.active_circuit_index, index, title);
+                    }
+                });
+            if ui.button("Ajouter un circuit d'eclairage").clicked() {
+                let mut updated = self.plan.clone();
+                match updated.add_lighting_circuit() {
+                    Ok(index) => {
+                        self.snapshot();
+                        self.plan = updated;
+                        self.active_circuit_index = index;
+                        self.pending_switch = None;
+                        self.status = "Nouveau circuit ajoute et selectionne".into();
+                    }
+                    Err(error) => self.status = error.into(),
                 }
-                let missing = self.plan.lighting_circuit.missing_fields();
-                if !missing.is_empty() {
-                    ui.colored_label(
-                        Color32::from_rgb(176, 91, 13),
-                        format!("{} champs non renseignes", missing.len()),
-                    );
-                } else {
-                    ui.small("Champs remplis ; conformite RGIE non verifiee.");
-                }
-            });
+            }
+            ui.small("Chaque liaison du plan 2D appartient au circuit choisi ci-dessus.");
+            for circuit_index in 0..self.plan.circuit_count() {
+                let Some(circuit_data) = self.plan.circuit(circuit_index).cloned() else { continue; };
+                egui::CollapsingHeader::new(format!(
+                    "Circuit {} - protection / conducteurs", circuit_data.letter
+                )).default_open(circuit_index == self.active_circuit_index).show(ui, |ui| {
+                    let mut circuit = circuit_data.clone();
+                    ui.label("Repere du circuit (A, B, C...)");
+                    ui.text_edit_singleline(&mut circuit.letter);
+                    ui.label("Disjoncteur - calibre");
+                    ui.add(egui::DragValue::new(&mut circuit.breaker_amp).range(0..=125).suffix(" A"));
+                    ui.label("Nombre de poles");
+                    ui.add(egui::DragValue::new(&mut circuit.breaker_poles).range(0..=4));
+                    ui.label("Courbe / type protection");
+                    ui.text_edit_singleline(&mut circuit.breaker_curve);
+                    ui.label("Differentiel en amont (type, A, mA)");
+                    ui.text_edit_singleline(&mut circuit.upstream_rdc);
+                    ui.label("Type de canalisation");
+                    ui.text_edit_singleline(&mut circuit.cable_type);
+                    ui.label("Nombre de conducteurs");
+                    ui.add(egui::DragValue::new(&mut circuit.conductor_count).range(0..=10));
+                    ui.label("Section des conducteurs");
+                    ui.add(egui::DragValue::new(&mut circuit.section_mm2).speed(0.1)
+                        .range(0.0..=35.0).suffix(" mm²"));
+                    ui.label("Mode de pose");
+                    ui.text_edit_singleline(&mut circuit.installation_method);
+                    if circuit != circuit_data {
+                        let mut updated = self.plan.clone();
+                        match updated.update_lighting_circuit(circuit_index, circuit) {
+                            Ok(()) => {
+                                self.snapshot();
+                                self.plan = updated;
+                                self.status = "Caracteristiques du circuit mises a jour".into();
+                            }
+                            Err(error) => self.status = error.into(),
+                        }
+                    }
+                    let missing = self.plan.circuit(circuit_index)
+                        .map(|c| c.missing_fields()).unwrap_or_default();
+                    if !missing.is_empty() {
+                        ui.colored_label(
+                            Color32::from_rgb(176, 91, 13),
+                            format!("{} informations manquantes", missing.len()),
+                        );
+                    } else {
+                        ui.small("Champs remplis : conformite non verifiee.");
+                    }
+                    if circuit_index > 0 && ui.button("Supprimer ce circuit vide").clicked() {
+                        let mut updated = self.plan.clone();
+                        match updated.remove_lighting_circuit(circuit_index) {
+                            Ok(()) => {
+                                self.snapshot();
+                                self.plan = updated;
+                                self.active_circuit_index = 0;
+                                self.pending_switch = None;
+                                self.status = "Circuit vide supprime".into();
+                            }
+                            Err(error) => self.status = error.into(),
+                        }
+                    }
+                });
+            }
             ui.separator();
             if self.view == View::Unifilar {
                 ui.small("Le schema est automatiquement tire des liaisons du plan 2D.");
