@@ -285,6 +285,13 @@ impl EasyDraft {
         }
     }
 
+    /// Annule un glissement non confirme et restaure l'etat d'origine.
+    fn cancel_drag(&mut self) {
+        if let Some(session) = self.drag.take() {
+            self.plan = session.original;
+        }
+    }
+
     fn clear_selection(&mut self) {
         self.selected_wall = None;
         self.selected_symbol = None;
@@ -300,7 +307,7 @@ impl EasyDraft {
     }
 
     fn undo(&mut self) {
-        self.drag = None;
+        self.cancel_drag();
         if let Some(plan) = self.undo.pop() {
             self.redo.push(std::mem::replace(&mut self.plan, plan));
             self.reset_pending();
@@ -310,7 +317,7 @@ impl EasyDraft {
     }
 
     fn redo(&mut self) {
-        self.drag = None;
+        self.cancel_drag();
         if let Some(plan) = self.redo.pop() {
             self.undo.push(std::mem::replace(&mut self.plan, plan));
             self.reset_pending();
@@ -337,7 +344,7 @@ impl EasyDraft {
             Ok(plan) => {
                 self.snapshot();
                 self.plan = plan;
-                self.drag = None;
+                self.cancel_drag();
                 self.reset_pending();
                 self.clear_selection();
                 self.status = format!("Ouvert : {}", self.file_path);
@@ -347,6 +354,7 @@ impl EasyDraft {
     }
 
     fn load_room_example(&mut self) {
+        self.cancel_drag();
         let result = serde_json::from_str::<Plan>(
             include_str!("../examples/maison-deux-pieces.json")
         );
@@ -369,7 +377,7 @@ impl EasyDraft {
     }
 
     fn select_tool(&mut self, tool: Tool) {
-        self.drag = None;
+        self.cancel_drag();
         self.tool = tool;
         self.reset_pending();
         if matches!(tool, Tool::Outlet | Tool::Switch | Tool::Light | Tool::LinkLighting) {
@@ -574,11 +582,26 @@ impl EasyDraft {
 
         match outcome {
             Ok(()) => {
+                let moved = match target {
+                    DragTarget::Opening(index) => {
+                        let old = &drag.original.openings[index];
+                        let now = &updated.openings[index];
+                        (old.center_m - now.center_m).abs() > 0.0001
+                    }
+                    DragTarget::WallBody(index)
+                    | DragTarget::WallStart(index)
+                    | DragTarget::WallEnd(index) => {
+                        let old = &drag.original.walls[index];
+                        let now = &updated.walls[index];
+                        old.start.distance_to(now.start) > 0.0001
+                            || old.end.distance_to(now.end) > 0.0001
+                    }
+                };
                 // Toujours repartir de l'etat d'origine pour eviter l'accumulation d'erreurs
                 // de grille pendant un glisser-deposer.
                 self.plan = updated;
                 if let Some(active) = self.drag.as_mut() {
-                    active.changed = true;
+                    active.changed = moved;
                 }
             }
             Err(error) => self.status = format!("Deplacement refuse : {error}"),
@@ -633,7 +656,7 @@ impl EasyDraft {
     }
 
     fn delete_selected(&mut self) {
-        self.drag = None;
+        self.cancel_drag();
         let mut updated = self.plan.clone();
         let outcome = if let Some(index) = self.selected_opening {
             updated.remove_opening(index)
@@ -1365,6 +1388,7 @@ impl eframe::App for EasyDraft {
                 self.redo();
             }
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                self.cancel_drag();
                 self.reset_pending();
                 self.clear_selection();
                 self.status = "Selection et trace en cours annules".into();
@@ -1388,7 +1412,7 @@ impl eframe::App for EasyDraft {
                 if ui.button("Ajouter demo I -> L").clicked() { self.add_lighting_demo(); }
                 ui.separator();
                 if ui.button("Nouveau").clicked() {
-                    self.drag = None;
+                    self.cancel_drag();
                     self.snapshot();
                     self.plan = Plan::default();
                     self.reset_pending();
