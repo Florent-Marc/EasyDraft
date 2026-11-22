@@ -561,6 +561,13 @@ impl Plan {
             .collect()
     }
 
+    /// Indique si l'entree fait partie des liaisons valides non dupliquees.
+    pub fn is_active_lighting_connection(&self, index: usize) -> bool {
+        let Some(candidate) = self.lighting_connections.get(index) else { return false; };
+        self.active_lighting_connections().into_iter()
+            .any(|link| std::ptr::eq(link, candidate))
+    }
+
     /// Regroupe les points lumineux qui partagent le meme interrupteur.
     /// Cette vue a une unique definition, reutilisee par l'interface et l'export.
     /// Un groupe contient un interrupteur et les lampes qu'il commande dans ce circuit.
