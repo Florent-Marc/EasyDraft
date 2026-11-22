@@ -48,6 +48,23 @@ enum Tool {
     Pan,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum DragTarget {
+    WallStart(usize),
+    WallEnd(usize),
+    WallBody(usize),
+    Opening(usize),
+}
+
+struct ActiveDrag {
+    target: DragTarget,
+    /// Position de la souris au debut du glissement (en metres).
+    from: Point,
+    /// Etat du plan avant le glissement : une seule entree d'annulation par glissement.
+    original: Plan,
+    changed: bool,
+}
+
 struct EasyDraft {
     plan: Plan,
     undo: Vec<Plan>,
@@ -61,6 +78,8 @@ struct EasyDraft {
     selected_symbol: Option<usize>,
     selected_stair: Option<usize>,
     selected_room: Option<Point>,
+    selected_opening: Option<usize>,
+    drag: Option<ActiveDrag>,
     new_wall_thickness_cm: f32,
     new_door_width_cm: f32,
     new_window_width_cm: f32,
@@ -98,6 +117,8 @@ impl Default for EasyDraft {
             selected_symbol: None,
             selected_stair: None,
             selected_room: None,
+            selected_opening: None,
+            drag: None,
             new_wall_thickness_cm: DEFAULT_WALL_THICKNESS_M * 100.0,
             new_door_width_cm: 90.0,
             new_window_width_cm: 120.0,
@@ -269,6 +290,7 @@ impl EasyDraft {
         self.selected_symbol = None;
         self.selected_stair = None;
         self.selected_room = None;
+        self.selected_opening = None;
     }
 
     fn reset_pending(&mut self) {
@@ -278,6 +300,7 @@ impl EasyDraft {
     }
 
     fn undo(&mut self) {
+        self.drag = None;
         if let Some(plan) = self.undo.pop() {
             self.redo.push(std::mem::replace(&mut self.plan, plan));
             self.reset_pending();
@@ -287,6 +310,7 @@ impl EasyDraft {
     }
 
     fn redo(&mut self) {
+        self.drag = None;
         if let Some(plan) = self.redo.pop() {
             self.undo.push(std::mem::replace(&mut self.plan, plan));
             self.reset_pending();
@@ -313,6 +337,7 @@ impl EasyDraft {
             Ok(plan) => {
                 self.snapshot();
                 self.plan = plan;
+                self.drag = None;
                 self.reset_pending();
                 self.clear_selection();
                 self.status = format!("Ouvert : {}", self.file_path);
@@ -344,6 +369,7 @@ impl EasyDraft {
     }
 
     fn select_tool(&mut self, tool: Tool) {
+        self.drag = None;
         self.tool = tool;
         self.reset_pending();
         if matches!(tool, Tool::Outlet | Tool::Switch | Tool::Light | Tool::LinkLighting) {
@@ -428,8 +454,11 @@ impl EasyDraft {
     }
 
     fn delete_selected(&mut self) {
+        self.drag = None;
         let mut updated = self.plan.clone();
-        let outcome = if let Some(index) = self.selected_symbol {
+        let outcome = if let Some(index) = self.selected_opening {
+            updated.remove_opening(index)
+        } else if let Some(index) = self.selected_symbol {
             updated.remove_symbol(index)
         } else if let Some(index) = self.selected_stair {
             updated.remove_stair(index)
@@ -1098,6 +1127,7 @@ impl eframe::App for EasyDraft {
                 if ui.button("Ajouter demo I -> L").clicked() { self.add_lighting_demo(); }
                 ui.separator();
                 if ui.button("Nouveau").clicked() {
+                    self.drag = None;
                     self.snapshot();
                     self.plan = Plan::default();
                     self.reset_pending();
