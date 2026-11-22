@@ -70,6 +70,7 @@ struct EasyDraft {
     grid: bool,
     file_path: String,
     pdf_path: String,
+    unifilar_pdf_path: String,
     status: String,
 }
 
@@ -98,6 +99,7 @@ impl Default for EasyDraft {
             grid: true,
             file_path: "mon-plan.json".into(),
             pdf_path: "plan-easydraft.pdf".into(),
+            unifilar_pdf_path: "unifilaire-easydraft.pdf".into(),
             status: "Clique une fois pour commencer un mur, puis une seconde fois pour le terminer.".into(),
         }
     }
@@ -341,6 +343,13 @@ impl EasyDraft {
         self.pending_switch = None;
         self.view = View::Plan2D;
         self.status = "Exemple ajoute : I et L sont lies. Clique 'Schema unifilaire' pour voir le resultat.".into();
+    }
+
+    fn export_unifilar_pdf(&mut self) {
+        self.status = match pdf_export::export_unifilar_pdf(&self.unifilar_pdf_path, &self.plan) {
+            Ok(()) => format!("PDF unifilaire exporte : {}", self.unifilar_pdf_path),
+            Err(error) => error,
+        };
     }
 
     fn export_pdf(&mut self) {
@@ -667,7 +676,10 @@ impl eframe::App for EasyDraft {
                 if ui.button("Annuler").clicked() { self.undo(); }
                 if ui.button("Enregistrer").clicked() { self.save(); }
                 if ui.button("Ouvrir").clicked() { self.load(); }
-                if ui.button("Exporter PDF").clicked() { self.export_pdf(); }
+                if ui.button("Exporter PDF plan").clicked() { self.export_pdf(); }
+                if self.view == View::Unifilar && ui.button("Exporter PDF unifilaire").clicked() {
+                    self.export_unifilar_pdf();
+                }
             });
         });
 
@@ -751,9 +763,15 @@ impl eframe::App for EasyDraft {
             ui.label("Fichier JSON");
             ui.text_edit_singleline(&mut self.file_path);
             ui.separator();
-            ui.label("Fichier PDF (A4 paysage)");
+            ui.label("Fichier PDF du plan");
             ui.text_edit_singleline(&mut self.pdf_path);
-            if ui.button("Exporter en PDF").clicked() { self.export_pdf(); }
+            if ui.button("Exporter le plan PDF").clicked() { self.export_pdf(); }
+            ui.separator();
+            ui.label("Fichier PDF unifilaire");
+            ui.text_edit_singleline(&mut self.unifilar_pdf_path);
+            if ui.button("Exporter l'unifilaire PDF").clicked() {
+                self.export_unifilar_pdf();
+            }
             ui.separator();
             ui.label(format!("Murs : {}", self.plan.walls.len()));
             ui.label(format!(
