@@ -189,6 +189,18 @@ mod tests {
     }
 
     #[test]
+    fn sample_flags_mixed_circuit_without_falsely_rejecting_it() {
+        let plan: Plan = serde_json::from_str(
+            include_str!("../examples/unifilaire-deux-circuits.json")
+        ).unwrap();
+        assert_eq!(plan.unassigned_outlets(), 0);
+        assert!(review(&plan).iter().any(|finding| {
+            finding.message.contains("circuits mixtes")
+                && finding.level == ReviewLevel::ToVerify
+        }));
+    }
+
+    #[test]
     fn complete_fields_do_not_remove_external_review_warnings() {
         let mut plan = Plan::default();
         plan.installation_info.address = "Adresse de test".into();
