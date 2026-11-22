@@ -77,8 +77,6 @@ fn draw_header(
     circuit: &LightingCircuit,
 ) {
     let y = origin.y + 100.0;
-    let center_x = origin.x + 170.0;
-
     caption(painter, origin + Vec2::new(110.0, 17.0), "TABLEAU / DEPART", 16.0, INK);
     box_outline(painter, origin + Vec2::new(25.0, 57.0), Vec2::new(160.0, 65.0));
     caption(painter, origin + Vec2::new(105.0, 78.0), "Tableau electrique", 14.0, INK);
@@ -136,7 +134,6 @@ fn draw_header(
         12.0, MUTED,
     );
 
-    let _ = center_x;
 }
 
 fn draw_groups(
@@ -152,7 +149,7 @@ fn draw_groups(
 
     let mut top_y = origin.y + 190.0;
     let first_y = top_y + 32.0;
-    let mut last_y = first_y;
+    let mut last_group_y = first_y;
     for (group_index, (switch_index, lamps)) in groups.iter().enumerate() {
         let base_y = top_y + 32.0;
         let switch_position = Pos2::new(switch_x, base_y);
@@ -175,8 +172,8 @@ fn draw_groups(
         caption(
             painter,
             Pos2::new((spine_x + switch_x) / 2.0, base_y - 23.0),
-            &format!("{}.{}", label_or_unknown(&plan.lighting_circuit.letter), group_index + 1),
-            13.0, BLUE,
+            &format!("Commande {}", group_index + 1),
+            12.0, BLUE,
         );
 
         segment(
@@ -213,9 +210,23 @@ fn draw_groups(
                 &format!("L{lamp_number}"),
                 14.0, INK,
             );
-            last_y = y;
+            if let Some(link_index) = plan.lighting_connections.iter().position(|link| {
+                link.light_index == *light_index && plan.lighting_connection_is_valid(link)
+            }) {
+                caption(
+                    painter,
+                    Pos2::new(right_x + 65.0, y),
+                    &format!(
+                        "{}{}",
+                        label_or_unknown(&plan.lighting_circuit.letter),
+                        link_index + 1
+                    ),
+                    13.0, BLUE,
+                );
+            }
         }
         let row_height = 99.0 + (lamps.len() - 1) as f32 * 64.0;
+        last_group_y = base_y;
         top_y += row_height.max(112.0);
     }
 
@@ -223,7 +234,7 @@ fn draw_groups(
     segment(
         painter,
         origin + Vec2::new(382.0, 100.0),
-        Pos2::new(spine_x, last_y.max(first_y)),
+        Pos2::new(spine_x, last_group_y.max(first_y)),
         INK, 2.4,
     );
 }
