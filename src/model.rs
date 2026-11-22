@@ -143,6 +143,70 @@ impl Stair {
     }
 }
 
+/// Metadonnees du circuit d'eclairage. Zero/chaine vide signifie "non renseigne"
+/// pour ne jamais inventer les caracteristiques de l'installation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct LightingCircuit {
+    pub letter: String,
+    pub breaker_amp: u16,
+    pub breaker_poles: u8,
+    pub breaker_curve: String,
+    pub upstream_rdc: String,
+    pub cable_type: String,
+    pub conductor_count: u8,
+    pub section_mm2: f32,
+    pub installation_method: String,
+}
+
+impl Default for LightingCircuit {
+    fn default() -> Self {
+        Self {
+            letter: "A".into(),
+            breaker_amp: 0,
+            breaker_poles: 0,
+            breaker_curve: String::new(),
+            upstream_rdc: String::new(),
+            cable_type: String::new(),
+            conductor_count: 0,
+            section_mm2: 0.0,
+            installation_method: String::new(),
+        }
+    }
+}
+
+impl LightingCircuit {
+    pub fn missing_fields(&self) -> Vec<&'static str> {
+        let mut missing = Vec::new();
+        if self.letter.trim().is_empty() { missing.push("repere circuit"); }
+        if self.breaker_amp == 0 { missing.push("calibre protection"); }
+        if self.breaker_poles == 0 { missing.push("nombre de poles"); }
+        if self.breaker_curve.trim().is_empty() { missing.push("courbe/type protection"); }
+        if self.upstream_rdc.trim().is_empty() { missing.push("differentiel en amont"); }
+        if self.cable_type.trim().is_empty() { missing.push("type de cable"); }
+        if self.conductor_count == 0 { missing.push("nombre de conducteurs"); }
+        if !self.section_mm2.is_finite() || self.section_mm2 <= 0.0 { missing.push("section du cable"); }
+        if self.installation_method.trim().is_empty() { missing.push("mode de pose"); }
+        missing
+    }
+
+    pub fn protection_label(&self) -> String {
+        let mut parts = vec!["Disjoncteur".to_owned()];
+        if self.breaker_poles > 0 { parts.push(format!("{}P", self.breaker_poles)); }
+        if !self.breaker_curve.trim().is_empty() { parts.push(self.breaker_curve.trim().to_owned()); }
+        if self.breaker_amp > 0 { parts.push(format!("{} A", self.breaker_amp)); }
+        parts.join(" ")
+    }
+
+    pub fn cable_label(&self) -> String {
+        if self.cable_type.trim().is_empty() || self.conductor_count == 0
+            || !self.section_mm2.is_finite() || self.section_mm2 <= 0.0 {
+            return "Canalisation : a renseigner".to_owned();
+        }
+        format!("{} {}G{} mm2", self.cable_type.trim(), self.conductor_count, self.section_mm2)
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Plan {
     pub walls: Vec<Wall>,
@@ -156,6 +220,8 @@ pub struct Plan {
     /// L'absence de ce champ dans un ancien JSON donne une liste vide.
     #[serde(default)]
     pub lighting_connections: Vec<LightingConnection>,
+    #[serde(default)]
+    pub lighting_circuit: LightingCircuit,
 }
 
 impl Plan {
@@ -190,6 +256,33 @@ impl Plan {
     pub fn symbol_number(&self, index: usize) -> Option<usize> {
         let target = self.symbols.get(index)?.kind;
         Some(self.symbols[..=index].iter().filter(|s| s.kind == target).count())
+    }
+
+    /// Regroupe les points lumineux qui partagent le meme interrupteur.
+    /// Cette vue a une unique definition, reutilisee par l'interface et l'export.
+    pub fn lighting_groups(&self) -> Vec<(usize, Vec<usize>)> {
+        let mut groups: Vec<(usize, Vec<usize>)> = Vec::new();
+        let mut seen_lights = std::collections::HashSet::new();
+        for link in &self.lighting_connections {
+            if !self.lighting_connection_is_valid(link) || !seen_lights.insert(link.light_index) {
+                continue;
+            }
+            if let Some((_, lights)) = groups.iter_mut().find(|(i, _)| *i == link.switch_index) {
+                lights.push(link.light_index);
+            } else {
+                groups.push((link.switch_index, vec![link.light_index]));
+            }
+        }
+        groups
+    }
+
+    pub fn unlinked_switches(&self) -> usize {
+        self.symbols.iter().enumerate().filter(|(index, symbol)| {
+            symbol.kind == ElectricalKind::Switch
+                && !self.lighting_connections.iter().any(|link| {
+                    link.switch_index == *index && self.lighting_connection_is_valid(link)
+                })
+        }).count()
     }
 
     pub fn unlinked_lights(&self) -> usize {
@@ -421,6 +514,37 @@ mod tests {
         let loaded: Plan = serde_json::from_str(old).unwrap();
         assert!(loaded.lighting_connections.is_empty());
         assert_eq!(loaded.unlinked_lights(), 1);
+    }
+
+    #[test]
+    fn circuit_metadata_stays_unspecified_until_user_fills_it() {
+        let circuit = LightingCircuit::default();
+        assert_eq!(circuit.letter, "A");
+        assert_eq!(circuit.breaker_amp, 0);
+        assert!(!circuit.missing_fields().is_empty());
+        assert!(circuit.cable_label().contains("renseigner"));
+    }
+
+    #[test]
+    fn groups_share_one_switch_and_keep_all_lamps() {
+        let mut plan = Plan::default();
+        plan.add_demo_lighting();
+        plan.symbols.push(ElectricalSymbol {
+            position: Point { x: 1.0, y: 4.0 },
+            kind: ElectricalKind::Light,
+        });
+        plan.connect_switch_to_light(0, 2).unwrap();
+        assert_eq!(plan.lighting_groups(), vec![(0, vec![1, 2])]);
+        assert_eq!(plan.unlinked_switches(), 0);
+        let restored: Plan = serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
+        assert_eq!(restored.lighting_groups(), vec![(0, vec![1, 2])]);
+    }
+
+    #[test]
+    fn old_plan_preserves_default_circuit() {
+        let plan: Plan = serde_json::from_str(r#"{"walls":[],"symbols":[]}"#).unwrap();
+        assert_eq!(plan.lighting_circuit.letter, "A");
+        assert_eq!(plan.lighting_circuit.breaker_amp, 0);
     }
 
     #[test]
