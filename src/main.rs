@@ -1,7 +1,10 @@
 mod model;
 
 use eframe::egui::{self, Align2, Color32, FontId, Painter, Pos2, Sense, Stroke, Vec2};
-use model::{ElectricalKind, ElectricalSymbol, Plan, Point, Wall, DEFAULT_WALL_THICKNESS_M};
+use model::{
+    ElectricalKind, ElectricalSymbol, Opening, OpeningKind, Plan, Point, Wall,
+    DEFAULT_WALL_THICKNESS_M,
+};
 
 const GRID_METERS: f32 = 0.5;
 const PIXELS_PER_METER: f32 = 80.0;
@@ -10,6 +13,8 @@ const PIXELS_PER_METER: f32 = 80.0;
 enum Tool {
     Wall,
     SelectWall,
+    Door,
+    Window,
     Outlet,
     Switch,
     Light,
@@ -23,6 +28,10 @@ struct EasyDraft {
     pending_wall: Option<Point>,
     selected_wall: Option<usize>,
     new_wall_thickness_cm: f32,
+    new_door_width_cm: f32,
+    new_window_width_cm: f32,
+    door_hinge_right: bool,
+    door_swing_flipped: bool,
     show_dimensions: bool,
     snap_m: f32,
     zoom: f32,
@@ -41,6 +50,10 @@ impl Default for EasyDraft {
             pending_wall: None,
             selected_wall: None,
             new_wall_thickness_cm: DEFAULT_WALL_THICKNESS_M * 100.0,
+            new_door_width_cm: 90.0,
+            new_window_width_cm: 120.0,
+            door_hinge_right: false,
+            door_swing_flipped: false,
             show_dimensions: true,
             snap_m: 0.05,
             zoom: 1.0,
@@ -85,6 +98,77 @@ fn draw_dimension(painter: &Painter, a: Pos2, b: Pos2, wall_width_px: f32, lengt
         FontId::proportional(13.0),
         Color32::from_rgb(45, 79, 118),
     );
+}
+
+/// Trace les parties pleines du mur en respectant l'epaisseur saisie.
+fn draw_wall_segment(painter: &Painter, a: Pos2, b: Pos2, width_px: f32, selected: bool) {
+    if (b - a).length_sq() < 0.001 {
+        return;
+    }
+    if selected {
+        painter.line_segment(
+            [a, b],
+            Stroke::new(width_px + 5.0, Color32::from_rgb(40, 135, 230)),
+        );
+    }
+    painter.line_segment([a, b], Stroke::new(width_px, Color32::from_rgb(45, 53, 65)));
+}
+
+/// Dessine les tableaux de l'ouverture, la vitre ou le battant et son arc d'ouverture.
+fn draw_opening(
+    painter: &Painter,
+    wall_start: Pos2,
+    direction: Vec2,
+    width_px: f32,
+    ppm: f32,
+    opening: &Opening,
+) {
+    let normal = Vec2::new(-direction.y, direction.x);
+    let left = wall_start + direction * (opening.start_m() * ppm);
+    let right = wall_start + direction * (opening.end_m() * ppm);
+    let half_thickness = width_px * 0.5;
+    let frame = Stroke::new(1.5, Color32::from_rgb(45, 53, 65));
+
+    // Deux traits perpendiculaires ferment les extremites coupees du mur.
+    for pos in [left, right] {
+        painter.line_segment(
+            [pos - normal * half_thickness, pos + normal * half_thickness],
+            frame,
+        );
+    }
+
+    match opening.kind {
+        OpeningKind::Window => {
+            let glass = Stroke::new(1.8, Color32::from_rgb(35, 136, 188));
+            for offset in [-0.3_f32, 0.0, 0.3] {
+                let shift = normal * (width_px * offset);
+                painter.line_segment([left + shift, right + shift], glass);
+            }
+        }
+        OpeningKind::Door => {
+            let hinge = if opening.hinge_right { right } else { left };
+            let along_sign = if opening.hinge_right { -1.0 } else { 1.0 };
+            let swing_sign = if opening.swing_flipped { -1.0 } else { 1.0 };
+            let radius = opening.width_m * ppm;
+            let leaf_end = hinge + normal * (swing_sign * radius);
+            let stroke = Stroke::new(1.6, Color32::from_rgb(45, 92, 139));
+            painter.line_segment([hinge, leaf_end], stroke);
+
+            let mut arc = Vec::with_capacity(17);
+            for i in 0..=16 {
+                let angle = (i as f32 / 16.0) * std::f32::consts::FRAC_PI_2;
+                arc.push(
+                    hinge
+                        + direction * (along_sign * radius * angle.cos())
+                        + normal * (swing_sign * radius * angle.sin()),
+                );
+            }
+            painter.add(egui::Shape::line(
+                arc,
+                Stroke::new(1.0, Color32::from_rgb(98, 130, 164)),
+            ));
+        }
+    }
 }
 
 impl EasyDraft {
@@ -181,6 +265,43 @@ impl EasyDraft {
                     self.status = "Choisis le deuxieme point du mur".into();
                 }
             }
+            Tool::Door | Tool::Window => {
+                if let Some(wall_index) = self.find_wall(position, ppm) {
+                    let kind = if self.tool == Tool::Door {
+                        OpeningKind::Door
+                    } else {
+                        OpeningKind::Window
+                    };
+                    let width_m = if self.tool == Tool::Door {
+                        self.new_door_width_cm / 100.0
+                    } else {
+                        self.new_window_width_cm / 100.0
+                    };
+                    // On valide avant de creer une entree dans l'historique d'annulation.
+                    let mut updated = self.plan.clone();
+                    match updated.add_opening(
+                        wall_index,
+                        position,
+                        width_m,
+                        kind,
+                        self.door_hinge_right,
+                        self.door_swing_flipped,
+                        self.snap_m,
+                    ) {
+                        Ok(()) => {
+                            self.snapshot();
+                            self.plan = updated;
+                            self.status = match kind {
+                                OpeningKind::Door => format!("Porte de {:.0} cm ajoutee", width_m * 100.0),
+                                OpeningKind::Window => format!("Fenetre de {:.0} cm ajoutee", width_m * 100.0),
+                            };
+                        }
+                        Err(err) => self.status = err.into(),
+                    }
+                } else {
+                    self.status = "Clique sur un mur pour y placer l'ouverture".into();
+                }
+            }
             Tool::Outlet | Tool::Switch | Tool::Light => {
                 let kind = match self.tool {
                     Tool::Outlet => ElectricalKind::Outlet,
@@ -241,7 +362,11 @@ impl EasyDraft {
         if response.clicked() {
             if let Some(pos) = response.interact_pointer_pos() {
                 let world = to_world(pos);
-                let point = if self.tool == Tool::SelectWall { world } else { world.snapped(self.snap_m) };
+                let point = if matches!(self.tool, Tool::SelectWall | Tool::Door | Tool::Window) {
+                    world
+                } else {
+                    world.snapped(self.snap_m)
+                };
                 self.place(point, ppm);
             }
         }
@@ -250,16 +375,39 @@ impl EasyDraft {
             let a = to_screen(wall.start);
             let b = to_screen(wall.end);
             let width_px = wall.thickness_m.max(0.01) * ppm;
-            if self.selected_wall == Some(index) {
-                painter.line_segment(
-                    [a, b],
-                    Stroke::new(width_px + 5.0, Color32::from_rgb(40, 135, 230)),
-                );
+            let screen_length = (b - a).length();
+            if screen_length > 0.001 {
+                let direction = (b - a) / screen_length;
+                let mut openings: Vec<&Opening> = self.plan.openings.iter()
+                    .filter(|o| o.wall_index == index)
+                    .collect();
+                openings.sort_by(|first, second| first.start_m().total_cmp(&second.start_m()));
+                let mut cursor_m = 0.0_f32;
+                for opening in openings {
+                    let from_m = opening.start_m().clamp(0.0, wall.length_m());
+                    let to_m = opening.end_m().clamp(0.0, wall.length_m());
+                    if from_m > cursor_m {
+                        draw_wall_segment(
+                            &painter,
+                            a + direction * (cursor_m * ppm),
+                            a + direction * (from_m * ppm),
+                            width_px,
+                            self.selected_wall == Some(index),
+                        );
+                    }
+                    draw_opening(&painter, a, direction, width_px, ppm, opening);
+                    cursor_m = cursor_m.max(to_m);
+                }
+                if cursor_m < wall.length_m() {
+                    draw_wall_segment(
+                        &painter,
+                        a + direction * (cursor_m * ppm),
+                        b,
+                        width_px,
+                        self.selected_wall == Some(index),
+                    );
+                }
             }
-            painter.line_segment(
-                [a, b],
-                Stroke::new(width_px, Color32::from_rgb(45, 53, 65)),
-            );
             if self.show_dimensions {
                 draw_dimension(&painter, a, b, width_px, wall.length_m());
             }
@@ -331,11 +479,33 @@ impl eframe::App for EasyDraft {
             if ui.selectable_label(self.tool == Tool::SelectWall, "Selectionner un mur").clicked() {
                 self.select_tool(Tool::SelectWall);
             }
+            if ui.selectable_label(self.tool == Tool::Door, "Porte").clicked() {
+                self.select_tool(Tool::Door);
+            }
+            if ui.selectable_label(self.tool == Tool::Window, "Fenetre").clicked() {
+                self.select_tool(Tool::Window);
+            }
             if ui.selectable_label(self.tool == Tool::Outlet, "Prise").clicked() { self.select_tool(Tool::Outlet); }
             if ui.selectable_label(self.tool == Tool::Switch, "Interrupteur").clicked() { self.select_tool(Tool::Switch); }
             if ui.selectable_label(self.tool == Tool::Light, "Point lumineux").clicked() { self.select_tool(Tool::Light); }
             if ui.selectable_label(self.tool == Tool::Pan, "Deplacer la vue").clicked() { self.select_tool(Tool::Pan); }
             ui.separator();
+            if self.tool == Tool::Door {
+                ui.label("Largeur de la porte");
+                ui.add(egui::Slider::new(&mut self.new_door_width_cm, 50.0..=200.0)
+                    .step_by(5.0).suffix(" cm"));
+                ui.checkbox(&mut self.door_hinge_right, "Charniere a la fin du mur");
+                ui.checkbox(&mut self.door_swing_flipped, "Inverser le sens d'ouverture");
+                ui.small("Clique sur un mur pour inserer la porte.");
+                ui.separator();
+            }
+            if self.tool == Tool::Window {
+                ui.label("Largeur de la fenetre");
+                ui.add(egui::Slider::new(&mut self.new_window_width_cm, 40.0..=400.0)
+                    .step_by(5.0).suffix(" cm"));
+                ui.small("Clique sur un mur pour inserer la fenetre.");
+                ui.separator();
+            }
             ui.label("Epaisseur des nouveaux murs");
             ui.add(egui::Slider::new(&mut self.new_wall_thickness_cm, 5.0..=60.0).text("cm").step_by(1.0));
             if let Some(i) = self.selected_wall {
@@ -366,6 +536,14 @@ impl eframe::App for EasyDraft {
             ui.text_edit_singleline(&mut self.file_path);
             ui.separator();
             ui.label(format!("Murs : {}", self.plan.walls.len()));
+            ui.label(format!(
+                "Portes : {}",
+                self.plan.openings.iter().filter(|o| o.kind == OpeningKind::Door).count()
+            ));
+            ui.label(format!(
+                "Fenetres : {}",
+                self.plan.openings.iter().filter(|o| o.kind == OpeningKind::Window).count()
+            ));
             ui.label(format!("Symboles : {}", self.plan.symbols.len()));
             ui.small("Symboles indicatifs, non certifies RGIE.");
         });
