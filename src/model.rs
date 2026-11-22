@@ -19,10 +19,25 @@ impl Point {
     }
 }
 
+pub const DEFAULT_WALL_THICKNESS_M: f32 = 0.15;
+
+fn default_wall_thickness_m() -> f32 {
+    DEFAULT_WALL_THICKNESS_M
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Wall {
     pub start: Point,
     pub end: Point,
+    // Epaisseur en metres. Le defaut maintient la compatibilite avec les anciens plans.
+    #[serde(default = "default_wall_thickness_m")]
+    pub thickness_m: f32,
+}
+
+impl Wall {
+    pub fn length_m(&self) -> f32 {
+        self.start.distance_to(self.end)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -62,6 +77,25 @@ mod tests {
             Point { x: 0.0, y: 0.0 }.distance_to(Point { x: 3.0, y: 4.0 }),
             5.0
         );
+    }
+
+    #[test]
+    fn old_wall_json_uses_default_thickness() {
+        let old = r#"{"start":{"x":0.0,"y":0.0},"end":{"x":3.0,"y":0.0}}"#;
+        let wall: Wall = serde_json::from_str(old).unwrap();
+        assert_eq!(wall.thickness_m, DEFAULT_WALL_THICKNESS_M);
+        assert_eq!(wall.length_m(), 3.0);
+    }
+
+    #[test]
+    fn wall_thickness_round_trip() {
+        let wall = Wall {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 4.0, y: 0.0 },
+            thickness_m: 0.30,
+        };
+        let restored: Wall = serde_json::from_str(&serde_json::to_string(&wall).unwrap()).unwrap();
+        assert_eq!(restored.thickness_m, 0.30);
     }
 
     #[test]
