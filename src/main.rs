@@ -2,6 +2,7 @@ mod model;
 mod pdf_export;
 mod unifilar;
 mod rooms;
+mod rgie_review;
 
 use eframe::egui::{self, Align2, Color32, FontId, Painter, Pos2, Sense, Stroke, Vec2};
 use model::{
@@ -16,6 +17,7 @@ const PIXELS_PER_METER: f32 = 80.0;
 enum View {
     Plan2D,
     Unifilar,
+    RgieReview,
 }
 
 /// Pointilles indiquant une relation logique, pas le passage reel des cables.
@@ -823,6 +825,32 @@ impl EasyDraft {
                     ElectricalKind::Light => "Point lumineux",
                 };
                 ui.heading(kind);
+                if symbol.kind == ElectricalKind::Outlet {
+                    let ref_text = self.plan.point_ref(index)
+                        .unwrap_or_else(|| "sans repere".into());
+                    ui.label(format!("Repere sur les documents : {ref_text}"));
+                    ui.label(format!(
+                        "Circuit actif : {}",
+                        self.plan.circuit(self.active_circuit_index)
+                            .map(|c| c.letter.as_str()).unwrap_or("?")
+                    ));
+                    if ui.button("Affecter cette prise au circuit actif").clicked() {
+                        let mut updated = self.plan.clone();
+                        match updated.assign_outlet_to_circuit(index, self.active_circuit_index) {
+                            Ok(()) => {
+                                self.snapshot();
+                                self.plan = updated;
+                                self.status = "Prise affectee au circuit actif".into();
+                            }
+                            Err(err) => self.status = err.into(),
+                        }
+                    }
+                    if ui.button("Retirer l'affectation de cette prise").clicked() {
+                        self.snapshot();
+                        self.plan.unassign_outlet(index);
+                        self.status = "Affectation retiree : la prise sera signalee comme incomplete".into();
+                    }
+                }
                 let mut position = symbol.position;
                 let mut changed = false;
                 ui.horizontal(|ui| {
@@ -1108,8 +1136,16 @@ impl EasyDraft {
                     _ => ElectricalKind::Light,
                 };
                 self.snapshot();
+                let new_index = self.plan.symbols.len();
                 self.plan.symbols.push(ElectricalSymbol { position, kind });
-                self.status = "Symbole ajoute".into();
+                if kind == ElectricalKind::Outlet {
+                    match self.plan.assign_outlet_to_circuit(new_index, self.active_circuit_index) {
+                        Ok(()) => self.status = "Prise ajoutee au circuit actif".into(),
+                        Err(err) => self.status = err.into(),
+                    }
+                } else {
+                    self.status = "Symbole ajoute".into();
+                }
             }
             Tool::SelectWall => self.select_at(position, ppm),
             Tool::Pan => {}
@@ -1346,12 +1382,14 @@ impl EasyDraft {
             };
             painter.text(pos, Align2::CENTER_CENTER, label, FontId::proportional(15.0), Color32::from_rgb(20, 106, 190));
             let number = self.plan.symbol_number(index).unwrap_or(index + 1);
-            let ref_suffix = if symbol.kind == ElectricalKind::Light {
-                self.plan.lighting_point_ref(index)
-                    .map(|reference| format!(" ({reference})"))
-                    .unwrap_or_default()
-            } else {
-                String::new()
+            let ref_suffix = match symbol.kind {
+                ElectricalKind::Outlet | ElectricalKind::Light =>
+                    self.plan.point_ref(index).map(|name| format!(" ({name})")).unwrap_or_default(),
+                ElectricalKind::Switch => {
+                    let refs = self.plan.switch_point_refs(index);
+                    if refs.is_empty() { String::new() }
+                    else { format!(" ({})", refs.join(",")) }
+                }
             };
             painter.text(
                 pos + Vec2::new(0.0, 23.0),
@@ -1452,6 +1490,9 @@ impl eframe::App for EasyDraft {
                 }
                 if ui.selectable_label(self.view == View::Unifilar, "Schema unifilaire").clicked() {
                     self.view = View::Unifilar;
+                }
+                if ui.selectable_label(self.view == View::RgieReview, "Dossier RGIE (verification)").clicked() {
+                    self.view = View::RgieReview;
                 }
                 ui.separator();
                 if ui.button("Ajouter demo I -> L").clicked() { self.add_lighting_demo(); }
@@ -1593,7 +1634,40 @@ impl eframe::App for EasyDraft {
             ui.label(format!("Lampes non liees : {}", self.plan.unlinked_lights()));
             ui.label(format!("Interrupteurs non lies : {}", self.plan.unlinked_switches()));
             ui.separator();
-            ui.heading("Circuits d'eclairage");
+            egui::CollapsingHeader::new("Identification du dossier RGIE")
+                .default_open(self.view == View::RgieReview)
+                .show(ui, |ui| {
+                    let current = self.plan.installation_info.clone();
+                    let mut info = current.clone();
+                    ui.label("Adresse de l'installation");
+                    ui.text_edit_singleline(&mut info.address);
+                    ui.label("Responsable execution - nom");
+                    ui.text_edit_singleline(&mut info.executor_name);
+                    ui.label("Qualite du responsable");
+                    ui.text_edit_singleline(&mut info.executor_role);
+                    ui.label("N° TVA (si applicable)");
+                    ui.text_edit_singleline(&mut info.executor_vat);
+                    ui.label("Tension nominale (sans valeur supposee)");
+                    ui.text_edit_singleline(&mut info.voltage);
+                    ui.label("Nature du courant (AC/DC et configuration)");
+                    ui.text_edit_singleline(&mut info.current_kind);
+                    ui.label("Description alimentation");
+                    ui.text_edit_singleline(&mut info.supply);
+                    ui.label("Nom ou repere du tableau");
+                    ui.text_edit_singleline(&mut info.panel_name);
+                    ui.label("Date du dessin");
+                    ui.text_edit_singleline(&mut info.drawing_date);
+                    ui.label("Revision du document");
+                    ui.text_edit_singleline(&mut info.revision);
+                    if info != current {
+                        self.snapshot();
+                        self.plan.installation_info = info;
+                        self.status = "Identification du dossier mise a jour".into();
+                    }
+                    ui.small("Ces champs servent au dossier, sans validation automatique RGIE.");
+                });
+            ui.separator();
+            ui.heading("Circuits et protections");
             if ui.button("Charger l'exemple unifilaire A + B").clicked() {
                 self.load_unifilar_example();
             }
@@ -1628,7 +1702,8 @@ impl eframe::App for EasyDraft {
                     Err(error) => self.status = error.into(),
                 }
             }
-            ui.small("Chaque liaison du plan 2D appartient au circuit choisi ci-dessus.");
+            ui.small("Les prises et liaisons I -> L sont affectees au circuit actif.");
+            ui.label(format!("Prises sans circuit : {}", self.plan.unassigned_outlets()));
             for circuit_index in 0..self.plan.circuit_count() {
                 let Some(circuit_data) = self.plan.circuit(circuit_index).cloned() else { continue; };
                 egui::CollapsingHeader::new(format!(
@@ -1710,6 +1785,7 @@ impl eframe::App for EasyDraft {
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.view {
                 View::Plan2D => self.canvas(ui),
+                View::RgieReview => rgie_review::show(ui, &self.plan),
                 View::Unifilar => {
                     if let Some(action) = unifilar::show(ui, &self.plan) {
                         match action {
