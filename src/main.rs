@@ -1065,7 +1065,7 @@ impl eframe::App for EasyDraft {
             ui.label("Epaisseur des nouveaux murs");
             ui.add(egui::Slider::new(&mut self.new_wall_thickness_cm, 5.0..=60.0).text("cm").step_by(1.0));
             ui.separator();
-            ui.collapsing("Proprietes de la selection", |ui| {
+            egui::CollapsingHeader::new("Proprietes de la selection").default_open(true).show(ui, |ui| {
                 self.selected_properties(ui);
             });
             ui.separator();
@@ -1181,6 +1181,57 @@ impl eframe::App for EasyDraft {
                 },
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod plan_editor_tests {
+    use super::*;
+
+    #[test]
+    fn undo_and_redo_restore_wall_and_new_changes_clear_redo() {
+        let mut app = EasyDraft::default();
+        app.snapshot();
+        app.plan.walls.push(Wall {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 3.0, y: 0.0 },
+            thickness_m: 0.15,
+        });
+        app.undo();
+        assert!(app.plan.walls.is_empty());
+        app.redo();
+        assert_eq!(app.plan.walls.len(), 1);
+        app.undo();
+        assert_eq!(app.redo.len(), 1);
+        app.snapshot();
+        assert!(app.redo.is_empty());
+    }
+
+    #[test]
+    fn wall_endpoint_snapping_has_priority_over_grid() {
+        let mut app = EasyDraft::default();
+        app.plan.walls.push(Wall {
+            start: Point { x: 0.03, y: 0.07 },
+            end: Point { x: 2.03, y: 0.07 },
+            thickness_m: 0.15,
+        });
+        let point = app.snap_point(Point { x: 2.08, y: 0.09 }, 80.0);
+        assert_eq!(point, Point { x: 2.03, y: 0.07 });
+        let grid = app.snap_point(Point { x: 5.08, y: 4.07 }, 80.0);
+        assert_eq!(grid, Point { x: 5.10, y: 4.05 });
+    }
+
+    #[test]
+    fn removing_electric_symbol_cleans_unifilar_from_editor() {
+        let mut app = EasyDraft::default();
+        app.plan.add_demo_lighting();
+        app.selected_symbol = Some(0);
+        app.delete_selected();
+        assert_eq!(app.plan.lighting_connections.len(), 0);
+        assert_eq!(app.plan.symbols.len(), 1);
+        app.undo();
+        assert_eq!(app.plan.lighting_connections.len(), 1);
+        assert_eq!(app.plan.symbols.len(), 2);
     }
 }
 
