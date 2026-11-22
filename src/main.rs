@@ -321,6 +321,28 @@ impl EasyDraft {
         }
     }
 
+    fn load_room_example(&mut self) {
+        let result = serde_json::from_str::<Plan>(
+            include_str!("../examples/maison-deux-pieces.json")
+        );
+        match result {
+            Ok(plan) => {
+                self.snapshot();
+                self.plan = plan;
+                self.reset_pending();
+                self.clear_selection();
+                self.view = View::Plan2D;
+                self.show_architecture = true;
+                self.show_rooms = true;
+                self.show_electrical = true;
+                self.pan = Vec2::ZERO;
+                self.zoom = 1.0;
+                self.status = "Exemple charge : Salon, Cuisine, porte et eclairage (Annuler pour revenir)".into();
+            }
+            Err(err) => self.status = format!("Exemple invalide : {err}"),
+        }
+    }
+
     fn select_tool(&mut self, tool: Tool) {
         self.tool = tool;
         self.reset_pending();
@@ -1191,6 +1213,10 @@ impl eframe::App for EasyDraft {
             ui.separator();
             ui.label(format!("Murs : {}", self.plan.walls.len()));
             ui.label(format!("Pieces fermees : {}", rooms::detect_rooms(&self.plan.walls).len()));
+            if ui.button("Ouvrir l'exemple de 2 pieces").clicked() {
+                self.load_room_example();
+            }
+            ui.small("L'exemple remplace le plan actuel ; Annuler permet de revenir.");
             ui.label(format!(
                 "Portes : {}",
                 self.plan.openings.iter().filter(|o| o.kind == OpeningKind::Door).count()
