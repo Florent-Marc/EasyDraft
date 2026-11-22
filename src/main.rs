@@ -1,8 +1,9 @@
 mod model;
+mod pdf_export;
 
 use eframe::egui::{self, Align2, Color32, FontId, Painter, Pos2, Sense, Stroke, Vec2};
 use model::{
-    ElectricalKind, ElectricalSymbol, Opening, OpeningKind, Plan, Point, Wall,
+    ElectricalKind, ElectricalSymbol, Opening, OpeningKind, Plan, Point, Stair, Wall,
     DEFAULT_WALL_THICKNESS_M,
 };
 
@@ -15,6 +16,7 @@ enum Tool {
     SelectWall,
     Door,
     Window,
+    Stair,
     Outlet,
     Switch,
     Light,
@@ -26,10 +28,13 @@ struct EasyDraft {
     undo: Vec<Plan>,
     tool: Tool,
     pending_wall: Option<Point>,
+    pending_stair: Option<Point>,
     selected_wall: Option<usize>,
     new_wall_thickness_cm: f32,
     new_door_width_cm: f32,
     new_window_width_cm: f32,
+    new_stair_width_cm: f32,
+    new_stair_steps: u16,
     door_hinge_right: bool,
     door_swing_flipped: bool,
     show_dimensions: bool,
@@ -38,6 +43,7 @@ struct EasyDraft {
     pan: Vec2,
     grid: bool,
     file_path: String,
+    pdf_path: String,
     status: String,
 }
 
@@ -48,10 +54,13 @@ impl Default for EasyDraft {
             undo: Vec::new(),
             tool: Tool::Wall,
             pending_wall: None,
+            pending_stair: None,
             selected_wall: None,
             new_wall_thickness_cm: DEFAULT_WALL_THICKNESS_M * 100.0,
             new_door_width_cm: 90.0,
             new_window_width_cm: 120.0,
+            new_stair_width_cm: 100.0,
+            new_stair_steps: 12,
             door_hinge_right: false,
             door_swing_flipped: false,
             show_dimensions: true,
@@ -60,6 +69,7 @@ impl Default for EasyDraft {
             pan: Vec2::ZERO,
             grid: true,
             file_path: "mon-plan.json".into(),
+            pdf_path: "plan-easydraft.pdf".into(),
             status: "Clique une fois pour commencer un mur, puis une seconde fois pour le terminer.".into(),
         }
     }
@@ -171,6 +181,33 @@ fn draw_opening(
     }
 }
 
+/// Dessine un escalier droit vu de dessus, avec marches et fleche de montee.
+fn draw_stair(painter: &Painter, stair: &Stair, origin: Pos2, ppm: f32) {
+    if !stair.is_valid() { return; }
+    let to_screen = |p: Point| Pos2::new(origin.x + p.x * ppm, origin.y + p.y * ppm);
+    let corners = stair.corners().map(to_screen);
+    let dark = Stroke::new(1.8, Color32::from_rgb(49, 59, 73));
+    for i in 0..4 {
+        painter.line_segment([corners[i], corners[(i + 1) % 4]], dark);
+    }
+    for i in 1..stair.steps {
+        let t = i as f32 / stair.steps as f32;
+        let p = corners[0] + (corners[1] - corners[0]) * t;
+        let q = corners[3] + (corners[2] - corners[3]) * t;
+        painter.line_segment([p, q], Stroke::new(1.0, Color32::from_rgb(105, 116, 131)));
+    }
+    let a = to_screen(stair.start);
+    let b = to_screen(stair.end);
+    let direction = (b - a).normalized();
+    let normal = Vec2::new(-direction.y, direction.x);
+    let from = a + (b - a) * 0.2;
+    let to = a + (b - a) * 0.83;
+    let arrow = Stroke::new(2.0, Color32::from_rgb(27, 123, 204));
+    painter.line_segment([from, to], arrow);
+    painter.line_segment([to, to - direction * 13.0 + normal * 6.0], arrow);
+    painter.line_segment([to, to - direction * 13.0 - normal * 6.0], arrow);
+}
+
 impl EasyDraft {
     fn snapshot(&mut self) {
         self.undo.push(self.plan.clone());
@@ -183,6 +220,7 @@ impl EasyDraft {
         if let Some(plan) = self.undo.pop() {
             self.plan = plan;
             self.pending_wall = None;
+            self.pending_stair = None;
             self.selected_wall = None;
             self.status = "Derniere modification annulee".into();
         }
@@ -207,6 +245,7 @@ impl EasyDraft {
                 self.snapshot();
                 self.plan = plan;
                 self.pending_wall = None;
+                self.pending_stair = None;
                 self.selected_wall = None;
                 self.status = format!("Ouvert : {}", self.file_path);
             }
@@ -217,6 +256,7 @@ impl EasyDraft {
     fn select_tool(&mut self, tool: Tool) {
         self.tool = tool;
         self.pending_wall = None;
+        self.pending_stair = None;
     }
 
     fn find_wall(&self, point: Point, ppm: f32) -> Option<usize> {
@@ -246,6 +286,13 @@ impl EasyDraft {
         closest
     }
 
+    fn export_pdf(&mut self) {
+        self.status = match pdf_export::export_pdf(&self.pdf_path, &self.plan, self.show_dimensions) {
+            Ok(()) => format!("PDF exporte : {}", self.pdf_path),
+            Err(error) => error,
+        };
+    }
+
     fn place(&mut self, position: Point, ppm: f32) {
         match self.tool {
             Tool::Wall => {
@@ -263,6 +310,26 @@ impl EasyDraft {
                 } else {
                     self.pending_wall = Some(position);
                     self.status = "Choisis le deuxieme point du mur".into();
+                }
+            }
+            Tool::Stair => {
+                if let Some(start) = self.pending_stair.take() {
+                    let stair = Stair {
+                        start,
+                        end: position,
+                        width_m: self.new_stair_width_cm / 100.0,
+                        steps: self.new_stair_steps,
+                    };
+                    if stair.is_valid() {
+                        self.snapshot();
+                        self.plan.stairs.push(stair);
+                        self.status = "Escalier ajoute (fleche dans le sens de la montee)".into();
+                    } else {
+                        self.status = "L'escalier doit mesurer au moins 5 cm".into();
+                    }
+                } else {
+                    self.pending_stair = Some(position);
+                    self.status = "Clique le deuxieme point pour definir la montee".into();
                 }
             }
             Tool::Door | Tool::Window => {
@@ -413,6 +480,10 @@ impl EasyDraft {
             }
         }
 
+        for stair in &self.plan.stairs {
+            draw_stair(&painter, stair, origin, ppm);
+        }
+
         for symbol in &self.plan.symbols {
             let pos = to_screen(symbol.position);
             painter.circle_filled(pos, 13.0, Color32::WHITE);
@@ -423,6 +494,18 @@ impl EasyDraft {
                 ElectricalKind::Light => "X",
             };
             painter.text(pos, Align2::CENTER_CENTER, label, FontId::proportional(15.0), Color32::from_rgb(20, 106, 190));
+        }
+
+        if let Some(start) = self.pending_stair {
+            if let Some(cursor) = response.hover_pos() {
+                let end = to_world(cursor).snapped(self.snap_m);
+                let preview = Stair {
+                    start, end,
+                    width_m: self.new_stair_width_cm / 100.0,
+                    steps: self.new_stair_steps,
+                };
+                draw_stair(&painter, &preview, origin, ppm);
+            }
         }
 
         if let Some(start) = self.pending_wall {
@@ -463,12 +546,14 @@ impl eframe::App for EasyDraft {
                     self.snapshot();
                     self.plan = Plan::default();
                     self.pending_wall = None;
+                    self.pending_stair = None;
                     self.selected_wall = None;
                     self.status = "Nouveau plan".into();
                 }
                 if ui.button("Annuler").clicked() { self.undo(); }
                 if ui.button("Enregistrer").clicked() { self.save(); }
                 if ui.button("Ouvrir").clicked() { self.load(); }
+                if ui.button("Exporter PDF").clicked() { self.export_pdf(); }
             });
         });
 
@@ -485,6 +570,9 @@ impl eframe::App for EasyDraft {
             if ui.selectable_label(self.tool == Tool::Window, "Fenetre").clicked() {
                 self.select_tool(Tool::Window);
             }
+            if ui.selectable_label(self.tool == Tool::Stair, "Escalier").clicked() {
+                self.select_tool(Tool::Stair);
+            }
             if ui.selectable_label(self.tool == Tool::Outlet, "Prise").clicked() { self.select_tool(Tool::Outlet); }
             if ui.selectable_label(self.tool == Tool::Switch, "Interrupteur").clicked() { self.select_tool(Tool::Switch); }
             if ui.selectable_label(self.tool == Tool::Light, "Point lumineux").clicked() { self.select_tool(Tool::Light); }
@@ -497,6 +585,15 @@ impl eframe::App for EasyDraft {
                 ui.checkbox(&mut self.door_hinge_right, "Charniere a la fin du mur");
                 ui.checkbox(&mut self.door_swing_flipped, "Inverser le sens d'ouverture");
                 ui.small("Clique sur un mur pour inserer la porte.");
+                ui.separator();
+            }
+            if self.tool == Tool::Stair {
+                ui.label("Largeur de l'escalier");
+                ui.add(egui::Slider::new(&mut self.new_stair_width_cm, 60.0..=250.0)
+                    .step_by(5.0).suffix(" cm"));
+                ui.label("Nombre de marches");
+                ui.add(egui::Slider::new(&mut self.new_stair_steps, 3..=30));
+                ui.small("Deux clics : depart puis arrivee (sens de montee).");
                 ui.separator();
             }
             if self.tool == Tool::Window {
@@ -535,6 +632,10 @@ impl eframe::App for EasyDraft {
             ui.label("Fichier JSON");
             ui.text_edit_singleline(&mut self.file_path);
             ui.separator();
+            ui.label("Fichier PDF (A4 paysage)");
+            ui.text_edit_singleline(&mut self.pdf_path);
+            if ui.button("Exporter en PDF").clicked() { self.export_pdf(); }
+            ui.separator();
             ui.label(format!("Murs : {}", self.plan.walls.len()));
             ui.label(format!(
                 "Portes : {}",
@@ -544,6 +645,7 @@ impl eframe::App for EasyDraft {
                 "Fenetres : {}",
                 self.plan.openings.iter().filter(|o| o.kind == OpeningKind::Window).count()
             ));
+            ui.label(format!("Escaliers : {}", self.plan.stairs.len()));
             ui.label(format!("Symboles : {}", self.plan.symbols.len()));
             ui.small("Symboles indicatifs, non certifies RGIE.");
         });
