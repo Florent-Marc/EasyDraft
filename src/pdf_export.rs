@@ -393,15 +393,24 @@ pub fn export_pdf(path: &str, plan: &Plan, show_dimensions: bool) -> Result<(), 
 /// Plusieurs pages A4 paysage sont generees pour ne pas ecraser les circuits charges.
 /// Les valeurs absentes restent explicitement "a renseigner".
 pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
-    let links = plan.active_lighting_connections();
-    let pages_count = links.len().max(1).div_ceil(6);
-    let circuit = &plan.lighting_circuit;
+    // Une succession de feuilles A4 par depart et par tranche de six liaisons.
+    // Les circuits differents ne partagent jamais un tronc d'alimentation.
+    let mut page_specs = Vec::new();
+    for circuit_index in 0..plan.circuit_count() {
+        let count = plan.active_lighting_connections_for_circuit(circuit_index).len();
+        for chunk_index in 0..count.max(1).div_ceil(6) {
+            let start = chunk_index * 6;
+            page_specs.push((circuit_index, start, (start + 6).min(count)));
+        }
+    }
+    let pages_count = page_specs.len();
     let color = DARK;
     let mut pages = Vec::new();
 
-    for page_index in 0..pages_count {
-        let start = page_index * 6;
-        let end = (start + 6).min(links.len());
+    for (page_index, (circuit_index, start, end)) in page_specs.into_iter().enumerate() {
+        let circuit = plan.circuit(circuit_index)
+            .ok_or("Index de circuit invalide pendant l'export")?;
+        let links = plan.active_lighting_connections_for_circuit(circuit_index);
         let mut pdf = String::new();
         raw_pdf_text(
             &mut pdf, 35.0, 559.0, 18.0,
@@ -437,7 +446,7 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
         );
         raw_pdf_text(
             &mut pdf, 760.0, 555.0, 10.0,
-            &format!("{}/{}", page_index + 1, pages_count), color,
+            &format!("Page {}/{}", page_index + 1, pages_count), color,
         );
         let missing_count = circuit.missing_fields().len();
         if missing_count > 0 {
@@ -504,7 +513,7 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
         );
         raw_pdf_text(
             &mut pdf, 35.0, 38.0, 9.0,
-            "Liaisons fonctionnelles, PAS un trajet de cable. A faire verifier avant toute utilisation technique.",
+            "Relations fonctionnelles simplifiees. Non utilisable comme schema d'execution ou dossier RGIE.",
             DIM,
         );
         pages.push(pdf);
@@ -632,6 +641,35 @@ mod tests {
         assert!(pdf.ends_with(b"%%EOF\n"));
         assert!(pdf.windows(b"/Count 2".len()).any(|chunk| chunk == b"/Count 2"));
         assert!(pdf.windows(b"A7".len()).any(|chunk| chunk == b"A7"));
+    }
+
+    #[test]
+    fn unifilar_pdf_separates_circuit_a_and_b() {
+        let mut plan = Plan::default();
+        plan.add_demo_lighting();
+        let other = plan.add_lighting_circuit().unwrap();
+        let sw = plan.symbols.len();
+        plan.symbols.push(crate::model::ElectricalSymbol {
+            position: Point { x: 5.0, y: 0.0 },
+            kind: ElectricalKind::Switch,
+        });
+        let lamp = plan.symbols.len();
+        plan.symbols.push(crate::model::ElectricalSymbol {
+            position: Point { x: 6.0, y: 0.0 },
+            kind: ElectricalKind::Light,
+        });
+        plan.connect_switch_to_light_in_circuit(sw, lamp, other).unwrap();
+        assert_eq!(plan.lighting_point_ref(lamp).as_deref(), Some("B1"));
+        let filename = std::env::temp_dir().join(format!(
+            "easydraft-multicircuit-{}.pdf",
+            std::process::id()
+        ));
+        export_unifilar_pdf(&filename.to_string_lossy(), &plan).unwrap();
+        let pdf = std::fs::read(&filename).unwrap();
+        let _ = std::fs::remove_file(filename);
+        assert!(pdf.windows(b"/Count 2".len()).any(|x| x == b"/Count 2"));
+        assert!(pdf.windows(b"Circuit A".len()).any(|x| x == b"Circuit A"));
+        assert!(pdf.windows(b"Circuit B".len()).any(|x| x == b"Circuit B"));
     }
 
     #[test]
