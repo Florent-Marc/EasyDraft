@@ -262,9 +262,7 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
     }
 
     let groups = plan.lighting_groups();
-    let invalid = plan.lighting_connections.iter()
-        .filter(|link| !plan.lighting_connection_is_valid(link))
-        .count();
+    let invalid = plan.lighting_connections.len() - plan.active_lighting_connections().len();
 
     ui.horizontal_wrapped(|ui| {
         ui.label(format!(
@@ -278,7 +276,7 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
     if invalid > 0 {
         ui.colored_label(
             Color32::RED,
-            format!("{invalid} liaison(s) invalide(s) dans le fichier JSON : ignoree(s)."),
+            format!("{invalid} liaison(s) invalide(s) ou dupliquee(s) dans le fichier JSON : ignoree(s)."),
         );
     }
 
