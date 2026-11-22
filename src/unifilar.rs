@@ -66,7 +66,7 @@ fn protection_symbol(
     let variant = rgie_symbols::protection_from_text(type_name);
     rgie_symbols::draw_egui(
         painter, at,
-        &rgie_symbols::protection_primitives(variant),
+        &rgie_symbols::horizontal_protection_primitives(variant),
         INK, 0.8
     );
     if variant == rgie_symbols::ProtectionMark::Unspecified {
