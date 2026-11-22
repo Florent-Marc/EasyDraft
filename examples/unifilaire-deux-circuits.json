@@ -91,6 +91,13 @@
         "y": 2.5
       },
       "kind": "Light"
+    },
+    {
+      "position": {
+        "x": 7.2,
+        "y": 1.2
+      },
+      "kind": "Outlet"
     }
   ],
   "openings": [
@@ -160,5 +167,23 @@
       },
       "name": "Cuisine"
     }
-  ]
+  ],
+  "outlet_assignments": [
+    {
+      "symbol_index": 5,
+      "circuit_index": 1
+    }
+  ],
+  "installation_info": {
+    "address": "",
+    "executor_name": "",
+    "executor_role": "",
+    "executor_vat": "",
+    "voltage": "",
+    "current_kind": "",
+    "supply": "",
+    "panel_name": "",
+    "revision": "",
+    "drawing_date": ""
+  }
 }
