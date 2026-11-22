@@ -258,6 +258,17 @@ impl Plan {
         Some(self.symbols[..=index].iter().filter(|s| s.kind == target).count())
     }
 
+    /// Vue sans doublons des connexions valides. Un fichier JSON mal forme ne
+    /// doit pas produire deux branches pour une meme lampe.
+    pub fn active_lighting_connections(&self) -> Vec<&LightingConnection> {
+        let mut seen_lights = std::collections::HashSet::new();
+        self.lighting_connections.iter()
+            .filter(|link| {
+                self.lighting_connection_is_valid(link) && seen_lights.insert(link.light_index)
+            })
+            .collect()
+    }
+
     /// Regroupe les points lumineux qui partagent le meme interrupteur.
     /// Cette vue a une unique definition, reutilisee par l'interface et l'export.
     pub fn lighting_groups(&self) -> Vec<(usize, Vec<usize>)> {
@@ -276,11 +287,10 @@ impl Plan {
         groups
     }
 
-    /// Numero d'ordre du point lumineux parmi les liaisons valides du circuit.
-    /// Le meme numero est utilise sur le plan 2D, la vue unifilaire et le PDF.
+    /// Numero d'ordre partage par le plan 2D, l'unifilaire et le PDF.
     pub fn lighting_point_number(&self, light_index: usize) -> Option<usize> {
-        self.lighting_connections.iter()
-            .filter(|link| self.lighting_connection_is_valid(link))
+        self.active_lighting_connections()
+            .iter()
             .position(|link| link.light_index == light_index)
             .map(|index| index + 1)
     }
@@ -544,6 +554,7 @@ mod tests {
         });
         plan.connect_switch_to_light(0, 2).unwrap();
         assert_eq!(plan.lighting_groups(), vec![(0, vec![1, 2])]);
+        assert_eq!(plan.active_lighting_connections().len(), 2);
         assert_eq!(plan.unlinked_switches(), 0);
         assert_eq!(plan.lighting_point_number(1), Some(1));
         assert_eq!(plan.lighting_point_number(2), Some(2));
