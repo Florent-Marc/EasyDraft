@@ -121,6 +121,44 @@ pub fn review(plan: &Plan) -> Vec<ReviewFinding> {
     findings
 }
 
+/// Rapport visible dans l'application, sans certification.
+pub fn show(ui: &mut eframe::egui::Ui, plan: &Plan) {
+    ui.heading("Preparation du dossier RGIE - controle de completude");
+    ui.label("Reference : RGIE belge Livre 1, sous-sections 3.1.2.1 et 3.1.2.2.");
+    ui.colored_label(
+        eframe::egui::Color32::from_rgb(185, 93, 21),
+        "Ce controle detecte des informations manquantes. Il ne certifie pas la conformite de l'installation.",
+    );
+    let findings = review(plan);
+    let missing = findings.iter().filter(|f| f.level == ReviewLevel::Missing).count();
+    let verify = findings.iter().filter(|f| f.level == ReviewLevel::ToVerify).count();
+    ui.heading(format!("{missing} element(s) incomplet(s) - {verify} point(s) a verifier"));
+    ui.label("Corrige les informations dans le panneau de gauche, puis reviens ici.");
+    ui.separator();
+    eframe::egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for finding in &findings {
+                ui.horizontal_wrapped(|ui| {
+                    let color = match finding.level {
+                        ReviewLevel::Missing => eframe::egui::Color32::from_rgb(178, 63, 45),
+                        ReviewLevel::ToVerify => eframe::egui::Color32::from_rgb(164, 116, 26),
+                    };
+                    let label = match finding.level {
+                        ReviewLevel::Missing => "INCOMPLET",
+                        ReviewLevel::ToVerify => "A VERIFIER",
+                    };
+                    ui.colored_label(color, label);
+                    ui.strong(&finding.scope);
+                    ui.label(&finding.message);
+                });
+                ui.separator();
+            }
+            ui.label("Source officielle : https://economie.fgov.be/fr/publications/reglement-general-sur-les");
+            ui.small("Conserver les schemas et le rapport du controle dans le dossier de l'installation.");
+        });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
