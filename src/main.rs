@@ -50,12 +50,15 @@ enum Tool {
 struct EasyDraft {
     plan: Plan,
     undo: Vec<Plan>,
+    redo: Vec<Plan>,
     tool: Tool,
     view: View,
     pending_switch: Option<usize>,
     pending_wall: Option<Point>,
     pending_stair: Option<Point>,
     selected_wall: Option<usize>,
+    selected_symbol: Option<usize>,
+    selected_stair: Option<usize>,
     new_wall_thickness_cm: f32,
     new_door_width_cm: f32,
     new_window_width_cm: f32,
@@ -64,6 +67,9 @@ struct EasyDraft {
     door_hinge_right: bool,
     door_swing_flipped: bool,
     show_dimensions: bool,
+    show_architecture: bool,
+    show_electrical: bool,
+    snap_endpoints: bool,
     snap_m: f32,
     zoom: f32,
     pan: Vec2,
@@ -79,12 +85,15 @@ impl Default for EasyDraft {
         Self {
             plan: Plan::default(),
             undo: Vec::new(),
+            redo: Vec::new(),
             tool: Tool::Wall,
             view: View::Plan2D,
             pending_switch: None,
             pending_wall: None,
             pending_stair: None,
             selected_wall: None,
+            selected_symbol: None,
+            selected_stair: None,
             new_wall_thickness_cm: DEFAULT_WALL_THICKNESS_M * 100.0,
             new_door_width_cm: 90.0,
             new_window_width_cm: 120.0,
@@ -93,6 +102,9 @@ impl Default for EasyDraft {
             door_hinge_right: false,
             door_swing_flipped: false,
             show_dimensions: true,
+            show_architecture: true,
+            show_electrical: true,
+            snap_endpoints: true,
             snap_m: 0.05,
             zoom: 1.0,
             pan: Vec2::ZERO,
@@ -241,19 +253,39 @@ fn draw_stair(painter: &Painter, stair: &Stair, origin: Pos2, ppm: f32) {
 impl EasyDraft {
     fn snapshot(&mut self) {
         self.undo.push(self.plan.clone());
+        self.redo.clear();
         if self.undo.len() > 100 {
             self.undo.remove(0);
         }
     }
 
+    fn clear_selection(&mut self) {
+        self.selected_wall = None;
+        self.selected_symbol = None;
+        self.selected_stair = None;
+    }
+
+    fn reset_pending(&mut self) {
+        self.pending_wall = None;
+        self.pending_stair = None;
+        self.pending_switch = None;
+    }
+
     fn undo(&mut self) {
         if let Some(plan) = self.undo.pop() {
-            self.plan = plan;
-            self.pending_wall = None;
-            self.pending_stair = None;
-            self.pending_switch = None;
-            self.selected_wall = None;
+            self.redo.push(std::mem::replace(&mut self.plan, plan));
+            self.reset_pending();
+            self.clear_selection();
             self.status = "Derniere modification annulee".into();
+        }
+    }
+
+    fn redo(&mut self) {
+        if let Some(plan) = self.redo.pop() {
+            self.undo.push(std::mem::replace(&mut self.plan, plan));
+            self.reset_pending();
+            self.clear_selection();
+            self.status = "Modification retablie".into();
         }
     }
 
@@ -277,8 +309,8 @@ impl EasyDraft {
                 self.plan = plan;
                 self.pending_wall = None;
                 self.pending_stair = None;
-                self.pending_switch = None;
-                self.selected_wall = None;
+                self.reset_pending();
+                self.clear_selection();
                 self.status = format!("Ouvert : {}", self.file_path);
             }
             Err(e) => self.status = format!("Erreur : {e}"),
@@ -287,9 +319,103 @@ impl EasyDraft {
 
     fn select_tool(&mut self, tool: Tool) {
         self.tool = tool;
-        self.pending_wall = None;
-        self.pending_stair = None;
-        self.pending_switch = None;
+        self.reset_pending();
+        if matches!(tool, Tool::Outlet | Tool::Switch | Tool::Light | Tool::LinkLighting) {
+            self.show_electrical = true;
+        }
+        if matches!(tool, Tool::Wall | Tool::Door | Tool::Window | Tool::Stair) {
+            self.show_architecture = true;
+        }
+    }
+
+    /// Priorite aux extremites des autres murs lorsqu'elles sont proches du pointeur.
+    fn snap_point(&self, raw: Point, ppm: f32) -> Point {
+        if self.snap_endpoints {
+            if let Some(endpoint) = self.plan.walls.iter()
+                .flat_map(|wall| [wall.start, wall.end])
+                .filter(|endpoint| raw.distance_to(*endpoint) <= 13.0 / ppm)
+                .min_by(|a, b| raw.distance_to(*a).total_cmp(&raw.distance_to(*b)))
+            {
+                return endpoint;
+            }
+        }
+        raw.snapped(self.snap_m)
+    }
+
+    fn find_symbol_any(&self, point: Point, ppm: f32) -> Option<usize> {
+        self.plan.symbols.iter().enumerate()
+            .map(|(index, symbol)| (index, point.distance_to(symbol.position)))
+            .filter(|(_, distance)| *distance <= 17.0 / ppm)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(index, _)| index)
+    }
+
+    fn find_stair(&self, point: Point, ppm: f32) -> Option<usize> {
+        self.plan.stairs.iter().enumerate().find_map(|(index, stair)| {
+            if !stair.is_valid() { return None; }
+            let length = stair.length_m();
+            let dx = (stair.end.x - stair.start.x) / length;
+            let dy = (stair.end.y - stair.start.y) / length;
+            let px = point.x - stair.start.x;
+            let py = point.y - stair.start.y;
+            let along = px * dx + py * dy;
+            let across = -px * dy + py * dx;
+            let tolerance = 7.0 / ppm;
+            if along >= -tolerance && along <= length + tolerance
+                && across.abs() <= stair.width_m / 2.0 + tolerance {
+                Some(index)
+            } else {
+                None
+            }
+        })
+    }
+
+    fn select_at(&mut self, point: Point, ppm: f32) {
+        self.clear_selection();
+        if self.show_electrical {
+            self.selected_symbol = self.find_symbol_any(point, ppm);
+            if self.selected_symbol.is_some() {
+                self.status = "Symbole electrique selectionne".into();
+                return;
+            }
+        }
+        if self.show_architecture {
+            self.selected_stair = self.find_stair(point, ppm);
+            if self.selected_stair.is_some() {
+                self.status = "Escalier selectionne".into();
+                return;
+            }
+            self.selected_wall = self.find_wall(point, ppm);
+            if let Some(index) = self.selected_wall {
+                self.status = format!("Mur n°{} selectionne", index + 1);
+                return;
+            }
+        }
+        self.status = "Aucun element a cet endroit".into();
+    }
+
+    fn delete_selected(&mut self) {
+        let mut updated = self.plan.clone();
+        let outcome = if let Some(index) = self.selected_symbol {
+            updated.remove_symbol(index)
+        } else if let Some(index) = self.selected_stair {
+            updated.remove_stair(index)
+        } else if let Some(index) = self.selected_wall {
+            updated.remove_wall(index)
+        } else {
+            self.status = "Selectionne d'abord un element a supprimer".into();
+            return;
+        };
+        match outcome {
+            Ok(()) => {
+                self.snapshot();
+                self.plan = updated;
+                self.clear_selection();
+                self.reset_pending();
+                self.status = "Element supprime (Annuler permet de le recuperer)".into();
+            }
+            Err(error) => self.status = error.into(),
+        }
     }
 
     fn find_wall(&self, point: Point, ppm: f32) -> Option<usize> {
@@ -468,13 +594,7 @@ impl EasyDraft {
                 self.plan.symbols.push(ElectricalSymbol { position, kind });
                 self.status = "Symbole ajoute".into();
             }
-            Tool::SelectWall => {
-                self.selected_wall = self.find_wall(position, ppm);
-                self.status = match self.selected_wall {
-                    Some(i) => format!("Mur n°{} selectionne", i + 1),
-                    None => "Aucun mur a cet endroit".into(),
-                };
-            }
+            Tool::SelectWall => self.select_at(position, ppm),
             Tool::Pan => {}
         }
     }
