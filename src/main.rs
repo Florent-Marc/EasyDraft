@@ -1678,10 +1678,23 @@ impl eframe::App for EasyDraft {
             match self.view {
                 View::Plan2D => self.canvas(ui),
                 View::Unifilar => {
-                    if let Some(unifilar::Action::RemoveConnection(index)) =
-                        unifilar::show(ui, &self.plan)
-                    {
-                        self.remove_connection(index);
+                    if let Some(action) = unifilar::show(ui, &self.plan) {
+                        match action {
+                            unifilar::Action::RemoveConnection(index) => {
+                                self.remove_connection(index);
+                            }
+                            unifilar::Action::MoveGroup { switch_index, target_circuit } => {
+                                let mut updated = self.plan.clone();
+                                match updated.move_lighting_group(switch_index, target_circuit) {
+                                    Ok(()) => {
+                                        self.snapshot();
+                                        self.plan = updated;
+                                        self.status = "Commande et lampes transferees vers le circuit choisi".into();
+                                    }
+                                    Err(error) => self.status = error.into(),
+                                }
+                            }
+                        }
                     }
                 },
             }
