@@ -709,6 +709,81 @@ impl EasyDraft {
     }
 
     /// Panneau d'edition numerique des objets selectionnes.
+    /// Edition des appareils de protection amont. Aucune valeur technique
+    /// n'est pre-remplie : les caracteristiques doivent etre relevees sur place.
+    fn board_editor(&mut self, ui: &mut egui::Ui) {
+        ui.label(format!(
+            "{} dispositif(s) differentiel(s) - {} circuit(s) non attribue(s)",
+            self.plan.differentials.len(),
+            self.plan.circuits_without_differential().len(),
+        ));
+        if ui.button("Ajouter un differentiel (D1, D2...)").clicked() {
+            let mut updated = self.plan.clone();
+            match updated.add_differential() {
+                Ok(_) => {
+                    self.snapshot();
+                    self.plan = updated;
+                    self.status = "Protection differentielle creee ; renseigne ses caracteristiques".into();
+                }
+                Err(error) => self.status = error.into(),
+            }
+        }
+        for index in 0..self.plan.differentials.len() {
+            let original = self.plan.differentials[index].clone();
+            let circuits = self.plan.circuits_for_differential(index);
+            egui::CollapsingHeader::new(format!(
+                "{} - {} circuit(s) en aval", original.reference, circuits.len()
+            )).default_open(false).show(ui, |ui| {
+                let mut edited = original.clone();
+                ui.label("Repere du differentiel (D1, D2...)");
+                ui.text_edit_singleline(&mut edited.reference);
+                ui.label("Type du DDR (ex. A, F, B selon appareil)");
+                ui.text_edit_singleline(&mut edited.kind);
+                ui.label("Courant nominal In");
+                ui.add(egui::DragValue::new(&mut edited.rated_current_amp)
+                    .range(0..=125).suffix(" A"));
+                ui.label("Sensibilite I delta n");
+                ui.add(egui::DragValue::new(&mut edited.sensitivity_ma)
+                    .range(0..=1000).suffix(" mA"));
+                ui.label("Nombre de poles");
+                ui.add(egui::DragValue::new(&mut edited.poles).range(0..=4));
+                ui.label("Observation / modele");
+                ui.text_edit_singleline(&mut edited.notes);
+                if edited != original {
+                    let mut updated = self.plan.clone();
+                    match updated.update_differential(index, edited) {
+                        Ok(()) => {
+                            self.snapshot();
+                            self.plan = updated;
+                            self.status = "Dispositif differentiel modifie".into();
+                        }
+                        Err(error) => self.status = error.into(),
+                    }
+                }
+                let refs = circuits.iter().filter_map(|&i|
+                    self.plan.circuit(i).map(|c| c.letter.as_str())
+                ).collect::<Vec<_>>().join(", ");
+                ui.small(format!(
+                    "Departs associes : {}",
+                    if refs.is_empty() { "(aucun)" } else { &refs }
+                ));
+                if ui.button("Supprimer ce differentiel non utilise").clicked() {
+                    let mut updated = self.plan.clone();
+                    match updated.remove_differential(index) {
+                        Ok(()) => {
+                            self.snapshot();
+                            self.plan = updated;
+                            self.status = "Differentiel inutilise supprime (references recalculees)".into();
+                        }
+                        Err(error) => self.status = error.into(),
+                    }
+                }
+            });
+        }
+        ui.small("Ordre modele : alimentation -> DDR -> protection de circuit -> appareils.");
+        ui.small("Aucune valeur par defaut ni validation de dimensionnement.");
+    }
+
     fn selected_properties(&mut self, ui: &mut egui::Ui) {
         if let Some(index) = self.selected_opening {
             if let Some(opening) = self.plan.openings.get(index).cloned() {
@@ -1703,6 +1778,10 @@ impl eframe::App for EasyDraft {
                     ui.small("Ces champs servent au dossier, sans validation automatique RGIE.");
                 });
             ui.separator();
+            egui::CollapsingHeader::new("Tableau electrique - protections differentielles")
+                .default_open(self.view == View::Unifilar)
+                .show(ui, |ui| self.board_editor(ui));
+            ui.separator();
             ui.heading("Circuits (eclairage / prises)");
             if ui.button("Charger l'exemple unifilaire A + B").clicked() {
                 self.load_unifilar_example();
@@ -1756,8 +1835,35 @@ impl eframe::App for EasyDraft {
                     ui.add(egui::DragValue::new(&mut circuit.breaker_poles).range(0..=4));
                     ui.label("Courbe / type protection");
                     ui.text_edit_singleline(&mut circuit.breaker_curve);
-                    ui.label("Differentiel en amont (type, A, mA)");
-                    ui.text_edit_singleline(&mut circuit.upstream_rdc);
+                    let ddr_label = circuit.upstream_differential
+                        .and_then(|i| self.plan.differentials.get(i))
+                        .map(|d| d.description())
+                        .unwrap_or_else(|| "Non attribue".to_owned());
+                    egui::ComboBox::from_label("Differentiel EN AMONT du circuit")
+                        .selected_text(ddr_label)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut circuit.upstream_differential,
+                                None,
+                                "Aucun differentiel attribue",
+                            );
+                            for (d_index, ddr) in self.plan.differentials.iter().enumerate() {
+                                ui.selectable_value(
+                                    &mut circuit.upstream_differential,
+                                    Some(d_index),
+                                    ddr.description(),
+                                );
+                            }
+                        });
+                    if !circuit.upstream_rdc.trim().is_empty() {
+                        ui.colored_label(
+                            Color32::from_rgb(163, 102, 27),
+                            format!(
+                                "Ancienne note libre (non connectee au tableau) : {}",
+                                circuit.upstream_rdc
+                            ),
+                        );
+                    }
                     ui.label("Type de canalisation");
                     ui.text_edit_singleline(&mut circuit.cable_type);
                     ui.label("Nombre de conducteurs");
@@ -1778,8 +1884,7 @@ impl eframe::App for EasyDraft {
                             Err(error) => self.status = error.into(),
                         }
                     }
-                    let missing = self.plan.circuit(circuit_index)
-                        .map(|c| c.missing_fields()).unwrap_or_default();
+                    let missing = self.plan.circuit_missing_fields(circuit_index);
                     if !missing.is_empty() {
                         ui.colored_label(
                             Color32::from_rgb(176, 91, 13),
