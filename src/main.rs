@@ -1712,7 +1712,9 @@ impl eframe::App for EasyDraft {
                     let mut circuit = circuit_data.clone();
                     ui.label("Repere du circuit (A, B, C...)");
                     ui.text_edit_singleline(&mut circuit.letter);
-                    ui.label("Disjoncteur - calibre");
+                    ui.label("Type de protection (disjoncteur, fusible...)");
+                    ui.text_edit_singleline(&mut circuit.protection_kind);
+                    ui.label("Protection contre surintensites - calibre");
                     ui.add(egui::DragValue::new(&mut circuit.breaker_amp).range(0..=125).suffix(" A"));
                     ui.label("Nombre de poles");
                     ui.add(egui::DragValue::new(&mut circuit.breaker_poles).range(0..=4));
