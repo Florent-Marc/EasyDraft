@@ -579,21 +579,32 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
             );
         }
 
-        // Dessin simplifie du depart, sans hypothese sur le tableau reel.
-        pdf_box(&mut pdf, 40.0, 390.0, 140.0, 42.0, color, 1.0);
-        raw_pdf_text(&mut pdf, 50.0, 405.0, 11.0,
-            &truncate_pdf(&plan.installation_info.panel_name, 25), color);
-        raw_pdf_line(&mut pdf, 180.0, 411.0, 202.0, 411.0, color, 1.6);
+        // Tableau -> DDR lie -> protection du circuit. Sans DDR, PAS de
+        // liaison vers le tableau (on montre le manque explicitement).
+        pdf_box(&mut pdf, 40.0, 390.0, 112.0, 42.0, color, 1.0);
+        raw_pdf_text(&mut pdf, 43.0, 405.0, 10.0,
+            &truncate_pdf(&plan.installation_info.panel_name, 16), color);
+        if let Some(device) = plan.differential_for_circuit(circuit_index) {
+            raw_pdf_line(&mut pdf, 152.0, 411.0, 177.0, 411.0, color, 1.3);
+            pdf_box(&mut pdf, 177.0, 395.0, 73.0, 32.0, color, 1.0);
+            raw_pdf_text(&mut pdf, 182.0, 407.0, 10.0,
+                &format!("DDR {}", device.reference), color);
+        } else {
+            pdf_box(&mut pdf, 177.0, 395.0, 73.0, 32.0, (0.7, 0.35, 0.1), 1.0);
+            raw_pdf_text(&mut pdf, 182.0, 407.0, 10.0,
+                "DDR ?", (0.7, 0.35, 0.1));
+        }
+        raw_pdf_line(&mut pdf, 250.0, 411.0, 263.0, 411.0, color, 1.3);
         draw_pdf_primitives(
-            &mut pdf, 228.0, 411.0, 0.85,
+            &mut pdf, 283.0, 411.0, 0.75,
             &rgie_symbols::horizontal_protection_primitives(
                 rgie_symbols::protection_from_text(&circuit.protection_kind)
             ),
             color,
         );
-        raw_pdf_line(&mut pdf, 252.0, 411.0, 310.0, 411.0, color, 1.6);
-        raw_pdf_text(&mut pdf, 188.0, 377.0, 9.0,
-            "Protection selon type declare (voir fiche et caracteristiques)", DIM);
+        raw_pdf_line(&mut pdf, 302.0, 411.0, 310.0, 411.0, color, 1.3);
+        raw_pdf_text(&mut pdf, 173.0, 377.0, 9.0,
+            "DDR attribue / protection divisionnaire declares (a verifier)", DIM);
 
         let first_y = 329.0;
         let last_y = if end > start {
@@ -933,6 +944,22 @@ mod tests {
         assert_ne!(generic, with_earth);
         assert!(generic.contains(" RG "));
         assert!(with_earth.len() > generic.len());
+    }
+
+    #[test]
+    fn board_overview_pdf_differentiates_connected_and_unassigned_departures() {
+        let mut plan = Plan::default();
+        plan.add_lighting_circuit().unwrap();
+        let d = plan.add_differential().unwrap();
+        plan.set_circuit_differential(0, Some(d)).unwrap();
+        let overview = board_pdf_pages(&plan).join("\n");
+        assert!(overview.contains("DDR D1"));
+        assert!(overview.contains("Via D1"));
+        assert!(overview.contains("DDR NON ATTRIBUE"));
+        assert!(overview.contains("Via ?"));
+        plan.set_circuit_differential(1, Some(d)).unwrap();
+        let connected = board_pdf_pages(&plan).join("\n");
+        assert!(!connected.contains("DDR NON ATTRIBUE"));
     }
 
     #[test]
