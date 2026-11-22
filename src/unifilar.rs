@@ -82,6 +82,7 @@ fn draw_header(
     painter: &egui::Painter,
     origin: Pos2,
     circuit: &LightingCircuit,
+    upstream_description: &str,
 ) {
     let y = origin.y + 100.0;
     caption(painter, origin + Vec2::new(110.0, 17.0), "TABLEAU / DEPART", 16.0, INK);
@@ -114,7 +115,7 @@ fn draw_header(
     caption(
         painter,
         origin + Vec2::new(245.0, 142.0),
-        &format!("DDR amont : {}", label_or_unknown(&circuit.upstream_rdc)),
+        &format!("DDR amont : {}", upstream_description),
         12.0, MUTED,
     );
 
@@ -285,6 +286,173 @@ fn draw_outlets(
     }
 }
 
+/// Vue d'ensemble du tableau : seules les liaisons DDR effectivement
+/// attribuees au modele sont dessinees comme alimentees.
+fn show_board_overview(ui: &mut egui::Ui, plan: &Plan) {
+    ui.heading("Tableau : alimentation -> DDR -> protection -> circuits");
+    ui.small("Topologie des liaisons enregistrees. Les valeurs inconnues restent a renseigner.");
+    let mut groups: Vec<(Option<usize>, Vec<usize>)> = (0..plan.differentials.len())
+        .map(|index| (Some(index), plan.circuits_for_differential(index)))
+        .collect();
+    let unassigned = plan.circuits_without_differential();
+    if !unassigned.is_empty() {
+        groups.push((None, unassigned));
+    }
+    if groups.is_empty() {
+        ui.colored_label(
+            WARNING,
+            "Aucun DDR ni circuit avec liaison amont. Ajoute un differentiel puis attribue un circuit.",
+        );
+        return;
+    }
+    let height = 92.0 + groups.iter().map(|(_, circuits)|
+        76.0 + circuits.len().max(1) as f32 * 61.0
+    ).sum::<f32>();
+
+    egui::ScrollArea::horizontal().auto_shrink([false, true]).show(ui, |ui| {
+        let (response, painter) = ui.allocate_painter(
+            Vec2::new(1020.0, height), egui::Sense::hover()
+        );
+        painter.rect_filled(response.rect, 0.0, Color32::from_rgb(249, 251, 253));
+        let origin = response.rect.left_top() + Vec2::new(20.0, 18.0);
+        let supply = &plan.installation_info.supply;
+        let source = if supply.trim().is_empty() { "Alimentation ?" } else { supply.as_str() };
+        box_outline(&painter, origin + Vec2::new(0.0, 16.0), Vec2::new(139.0, 56.0));
+        caption(&painter, origin + Vec2::new(70.0, 35.0), "ALIMENTATION", 12.0, INK);
+        caption(
+            &painter, origin + Vec2::new(70.0, 56.0),
+            &source.chars().take(22).collect::<String>(),
+            11.0, MUTED,
+        );
+        segment(
+            &painter, origin + Vec2::new(139.0, 44.0),
+            origin + Vec2::new(175.0, 44.0), INK, 2.1,
+        );
+
+        let mut next_y = origin.y + 100.0;
+        let linked_centers: Vec<f32> = groups.iter().scan(next_y, |y, (differential, circuits)| {
+            let center = *y + 18.0;
+            *y += 76.0 + circuits.len().max(1) as f32 * 61.0;
+            Some(if differential.is_some() { Some(center) } else { None })
+        }).flatten().collect();
+
+        if let (Some(first), Some(last)) = (linked_centers.first(), linked_centers.last()) {
+            segment(
+                &painter,
+                Pos2::new(origin.x + 175.0, origin.y + 44.0),
+                Pos2::new(origin.x + 175.0, *last), INK, 2.0,
+            );
+            let _ = first;
+        }
+        for (differential_index, circuits) in &groups {
+            let main_y = next_y + 18.0;
+            let ddr_top = Pos2::new(origin.x + 217.0, main_y - 24.0);
+            if let Some(index) = differential_index {
+                let device = &plan.differentials[*index];
+                segment(
+                    &painter,
+                    Pos2::new(origin.x + 175.0, main_y),
+                    Pos2::new(origin.x + 217.0, main_y),
+                    INK, 2.0,
+                );
+                box_outline(&painter, ddr_top, Vec2::new(169.0, 54.0));
+                caption(
+                    &painter, Pos2::new(origin.x + 301.0, main_y - 8.0),
+                    &format!("DDR {}", device.reference), 13.0, BLUE,
+                );
+                let summary = if device.missing_fields().is_empty() {
+                    format!("{} | {}A / {}mA | {}P",
+                        device.kind, device.rated_current_amp, device.sensitivity_ma, device.poles)
+                } else {
+                    "Caracteristiques incompletes".to_owned()
+                };
+                caption(
+                    &painter, Pos2::new(origin.x + 301.0, main_y + 13.0),
+                    &summary, 10.5, MUTED,
+                );
+            } else {
+                box_outline(&painter, ddr_top, Vec2::new(169.0, 54.0));
+                caption(
+                    &painter, Pos2::new(origin.x + 301.0, main_y),
+                    "DDR NON ATTRIBUE", 13.0, WARNING,
+                );
+                caption(
+                    &painter, Pos2::new(origin.x + 301.0, main_y + 16.0),
+                    "branche non reliee", 10.0, WARNING,
+                );
+            }
+
+            let bus_x = origin.x + 415.0;
+            let first_branch_y = main_y + 37.0;
+            let last_branch_y = first_branch_y + circuits.len().saturating_sub(1) as f32 * 61.0;
+            if differential_index.is_some() && !circuits.is_empty() {
+                segment(
+                    &painter, Pos2::new(origin.x + 386.0, main_y),
+                    Pos2::new(bus_x, main_y), INK, 2.0,
+                );
+                segment(
+                    &painter, Pos2::new(bus_x, main_y),
+                    Pos2::new(bus_x, last_branch_y), INK, 2.0,
+                );
+            }
+            if circuits.is_empty() {
+                caption(
+                    &painter, Pos2::new(origin.x + 624.0, main_y + 28.0),
+                    "Aucun circuit affecte", 12.0, MUTED,
+                );
+            }
+            for (position, circuit_index) in circuits.iter().enumerate() {
+                let y = first_branch_y + position as f32 * 61.0;
+                let Some(circuit) = plan.circuit(*circuit_index) else { continue; };
+                let branch = if differential_index.is_some() { INK } else { WARNING };
+                // L'alimentation des branches sans DDR n'est PAS dessinee.
+                if differential_index.is_some() {
+                    segment(
+                        &painter, Pos2::new(bus_x, y),
+                        Pos2::new(origin.x + 486.0, y), INK, 2.0,
+                    );
+                }
+                rgie_symbols::draw_egui(
+                    &painter,
+                    Pos2::new(origin.x + 515.0, y),
+                    &rgie_symbols::horizontal_protection_primitives(
+                        rgie_symbols::protection_from_text(&circuit.protection_kind)
+                    ),
+                    branch, 0.82,
+                );
+                segment(
+                    &painter,
+                    Pos2::new(origin.x + 539.0, y),
+                    Pos2::new(origin.x + 613.0, y),
+                    branch, 1.7,
+                );
+                caption(
+                    &painter, Pos2::new(origin.x + 655.0, y - 10.0),
+                    &format!("Circuit {} - {}", circuit.letter, circuit.protection_label()),
+                    11.5, branch,
+                );
+                caption(
+                    &painter, Pos2::new(origin.x + 655.0, y + 9.0),
+                    &circuit.cable_label(), 10.0, MUTED,
+                );
+                let lights = plan.active_lighting_connections_for_circuit(*circuit_index).len();
+                let sockets = plan.outlets_on_circuit(*circuit_index).len();
+                caption(
+                    &painter, Pos2::new(origin.x + 910.0, y),
+                    &format!("{lights} lum. / {sockets} prises"), 11.0, BLUE,
+                );
+            }
+            next_y += 76.0 + circuits.len().max(1) as f32 * 61.0;
+        }
+        painter.text(
+            origin + Vec2::new(15.0, height - 18.0),
+            Align2::LEFT_CENTER,
+            "Vue de travail : pas une preuve de raccordement ou de protection correcte.",
+            FontId::proportional(11.0), MUTED,
+        );
+    });
+}
+
 /// Une feuille par circuit : les circuits ne sont pas branches sur le meme tronc.
 /// Les appareils et leurs associations proviennent uniquement du Plan partage.
 pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
@@ -293,7 +461,8 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
         WARNING,
         "Prototype fonctionnel : ni dessin reglementaire RGIE, ni plan de cablage ou calcul de protection.",
     );
-    ui.label("Chaque depart est independant. Les references du plan 2D sont reprises dans les feuilles.");
+    ui.label("Chaque depart et sa protection sont lies explicitement a un differentiel du tableau.");
+    show_board_overview(ui, plan);
 
     let active = plan.active_lighting_connections();
     let ignored = plan.lighting_connections.len().saturating_sub(active.len());
@@ -326,7 +495,7 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
                 links.len(),
                 outlets.len(),
             ));
-            let missing = circuit.missing_fields();
+            let missing = plan.circuit_missing_fields(circuit_index);
             if !missing.is_empty() {
                 ui.colored_label(
                     WARNING,
@@ -357,7 +526,10 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
                         response.rect, 0.0, Color32::from_rgb(250, 251, 253)
                     );
                     let origin = response.rect.left_top() + Vec2::new(14.0, 8.0);
-                    draw_header(&painter, origin, circuit);
+                    draw_header(
+                        &painter, origin, circuit,
+                        &plan.differential_description_for_circuit(circuit_index),
+                    );
                     if !groups.is_empty() {
                         draw_groups(&painter, plan, origin, &groups, circuit);
                     }
@@ -365,7 +537,7 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
                     painter.text(
                         origin + Vec2::new(13.0, canvas_h - 35.0),
                         Align2::LEFT_CENTER,
-                        "Representation fonctionnelle uniquement. Le schema de protection et le trajet des conducteurs ne sont pas definis.",
+                        "Branches issues du modele. Les fils, la terre, les calculs et la topologie amont detaillee ne sont pas verifies.",
                         FontId::proportional(11.0),
                         MUTED,
                     );
