@@ -130,6 +130,21 @@ pub fn protection_primitives(kind: ProtectionMark) -> Vec<Primitive> {
     }
 }
 
+/// Orientation d'un signe de protection sur un depart de gauche a droite.
+/// Les signes du tableau 2.23 sont souvent imprimes verticalement.
+pub fn horizontal_protection_primitives(kind: ProtectionMark) -> Vec<Primitive> {
+    let rotate = |p: (f32, f32)| (-p.1, p.0);
+    protection_primitives(kind).into_iter().map(|primitive| match primitive {
+        Primitive::Line(a, b) => Primitive::Line(rotate(a), rotate(b)),
+        Primitive::Circle(c, r) => Primitive::Circle(rotate(c), r),
+        Primitive::Dot(c, r) => Primitive::Dot(rotate(c), r),
+        Primitive::Arc(c, r, a, b) => Primitive::Arc(
+            rotate(c), r, a + std::f32::consts::FRAC_PI_2,
+            b + std::f32::consts::FRAC_PI_2,
+        ),
+    }).collect()
+}
+
 pub fn arc_points(center: (f32, f32), r: f32, from: f32, to: f32) -> Vec<(f32, f32)> {
     let steps = 22;
     (0..=steps).map(|n| {
@@ -192,6 +207,16 @@ mod tests {
         assert_eq!(protection_from_text("Fusible gG"), ProtectionMark::Fuse);
         assert_eq!(protection_from_text("Disjoncteur"), ProtectionMark::Breaker);
     }
+    #[test]
+    fn breaker_and_fuse_can_be_oriented_on_horizontal_departure() {
+        for mark in [ProtectionMark::Breaker, ProtectionMark::Fuse] {
+            let originals = protection_primitives(mark);
+            let horizontal = horizontal_protection_primitives(mark);
+            assert_eq!(originals.len(), horizontal.len());
+            assert_ne!(originals, horizontal);
+        }
+    }
+
     #[test]
     fn arcs_have_stable_endpoints() {
         let arc = arc_points((0.0, 10.0), 10.0, std::f32::consts::PI, std::f32::consts::TAU);
