@@ -231,6 +231,50 @@ fn draw_groups(
     );
 }
 
+/// Represente les prises attribuees a ce depart sur des branches supplementaires.
+/// Symbolique de travail a comparer aux tableaux RGIE avant toute utilisation.
+fn draw_outlets(
+    painter: &egui::Painter,
+    plan: &Plan,
+    origin: Pos2,
+    circuit_index: usize,
+    previous_rows_height: f32,
+) {
+    let outlets = plan.outlets_on_circuit(circuit_index);
+    let spine_x = origin.x + 382.0;
+    let x = origin.x + 820.0;
+    let from_y = origin.y + 190.0 + previous_rows_height + 32.0;
+    for (index, symbol_index) in outlets.iter().enumerate() {
+        let y = from_y + index as f32 * 64.0;
+        segment(painter, Pos2::new(spine_x, y), Pos2::new(x - 21.0, y), INK, 2.0);
+        painter.circle_filled(Pos2::new(spine_x, y), 3.5, BLUE);
+        let pos = Pos2::new(x, y);
+        painter.circle_stroke(pos, 17.0, stroke(INK, 1.7));
+        segment(
+            painter, pos + Vec2::new(-8.0, 5.0),
+            pos + Vec2::new(8.0, 5.0), INK, 1.8,
+        );
+        segment(
+            painter, pos + Vec2::new(-8.0, -5.0),
+            pos + Vec2::new(8.0, -5.0), INK, 1.8,
+        );
+        let local_number = plan.symbol_number(*symbol_index).unwrap_or(*symbol_index + 1);
+        caption(painter, pos + Vec2::new(0.0, 30.0), &format!("P{local_number}"), 13.0, INK);
+        if let Some(reference) = plan.point_ref(*symbol_index) {
+            caption(painter, pos + Vec2::new(64.0, 0.0), &reference, 13.0, BLUE);
+        }
+    }
+    if !outlets.is_empty() {
+        let last = from_y + outlets.len().saturating_sub(1) as f32 * 64.0;
+        segment(
+            painter,
+            origin + Vec2::new(382.0, 100.0),
+            Pos2::new(spine_x, last),
+            INK, 2.1,
+        );
+    }
+}
+
 /// Une feuille par circuit : les circuits ne sont pas branches sur le meme tronc.
 /// Les appareils et leurs associations proviennent uniquement du Plan partage.
 pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
@@ -263,12 +307,14 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
             let Some(circuit) = plan.circuit(circuit_index) else { continue; };
             let links = plan.active_lighting_connections_for_circuit(circuit_index);
             let groups = plan.lighting_groups_for_circuit(circuit_index);
+            let outlets = plan.outlets_on_circuit(circuit_index);
             ui.separator();
             ui.heading(format!(
-                "Circuit {} - {} commande(s), {} point(s)",
+                "Circuit {} - {} commande(s), {} luminaire(s), {} prise(s)",
                 circuit.letter,
                 groups.len(),
                 links.len(),
+                outlets.len(),
             ));
             let missing = circuit.missing_fields();
             if !missing.is_empty() {
@@ -283,14 +329,14 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
             } else {
                 ui.label("Informations descriptives saisies (conformite non controlee).");
             }
-            if groups.is_empty() {
-                ui.label("Aucune liaison sur ce circuit. Place un interrupteur et une lampe dans le plan 2D puis lie-les en selectionnant ce circuit.");
+            if groups.is_empty() && outlets.is_empty() {
+                ui.label("Circuit vide. Sur le plan 2D, ajoute une prise ou relie un interrupteur et une lampe.");
                 continue;
             }
             let rows_height: f32 = groups.iter().map(|(_, lamps)| {
                 (99.0 + lamps.len().saturating_sub(1) as f32 * 64.0).max(112.0)
             }).sum();
-            let canvas_h = 270.0 + rows_height;
+            let canvas_h = 270.0 + rows_height + outlets.len() as f32 * 64.0;
             egui::ScrollArea::horizontal()
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
@@ -302,7 +348,10 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
                     );
                     let origin = response.rect.left_top() + Vec2::new(14.0, 8.0);
                     draw_header(&painter, origin, circuit);
-                    draw_groups(&painter, plan, origin, &groups, circuit);
+                    if !groups.is_empty() {
+                        draw_groups(&painter, plan, origin, &groups, circuit);
+                    }
+                    draw_outlets(&painter, plan, origin, circuit_index, rows_height);
                     painter.text(
                         origin + Vec2::new(13.0, canvas_h - 35.0),
                         Align2::LEFT_CENTER,
@@ -334,7 +383,15 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
                     }
                 });
             }
-            ui.label("Liaisons de ce circuit :");
+            if !outlets.is_empty() {
+                ui.label("Prises du circuit :");
+                for symbol_index in &outlets {
+                    let ref_text = plan.point_ref(*symbol_index)
+                        .unwrap_or_else(|| "?".to_owned());
+                    ui.label(format!("Prise {ref_text} (repositionner et reaffecter sur le plan 2D)"));
+                }
+            }
+            ui.label("Liaisons d'eclairage :");
             for (index, link) in plan.lighting_connections.iter().enumerate() {
                 if link.circuit_index != circuit_index
                     || !plan.is_active_lighting_connection(index) {
