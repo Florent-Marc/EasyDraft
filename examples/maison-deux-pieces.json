@@ -1,0 +1,119 @@
+{
+  "walls": [
+    {
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "end": {
+        "x": 6,
+        "y": 0
+      },
+      "thickness_m": 0.2
+    },
+    {
+      "start": {
+        "x": 6,
+        "y": 0
+      },
+      "end": {
+        "x": 6,
+        "y": 4
+      },
+      "thickness_m": 0.2
+    },
+    {
+      "start": {
+        "x": 6,
+        "y": 4
+      },
+      "end": {
+        "x": 0,
+        "y": 4
+      },
+      "thickness_m": 0.2
+    },
+    {
+      "start": {
+        "x": 0,
+        "y": 4
+      },
+      "end": {
+        "x": 0,
+        "y": 0
+      },
+      "thickness_m": 0.2
+    },
+    {
+      "start": {
+        "x": 3,
+        "y": 0
+      },
+      "end": {
+        "x": 3,
+        "y": 4
+      },
+      "thickness_m": 0.2
+    }
+  ],
+  "symbols": [
+    {
+      "position": {
+        "x": 0.6,
+        "y": 1
+      },
+      "kind": "Switch"
+    },
+    {
+      "position": {
+        "x": 1.5,
+        "y": 2
+      },
+      "kind": "Light"
+    }
+  ],
+  "openings": [
+    {
+      "wall_index": 4,
+      "center_m": 2,
+      "width_m": 0.9,
+      "kind": "Door",
+      "hinge_right": false,
+      "swing_flipped": false
+    }
+  ],
+  "stairs": [],
+  "lighting_connections": [
+    {
+      "switch_index": 0,
+      "light_index": 1
+    }
+  ],
+  "lighting_circuit": {
+    "letter": "A",
+    "breaker_amp": 0,
+    "breaker_poles": 0,
+    "breaker_curve": "",
+    "upstream_rdc": "",
+    "cable_type": "",
+    "conductor_count": 0,
+    "section_mm2": 0,
+    "installation_method": ""
+  },
+  "room_labels": [
+    {
+      "position": {
+        "x": 1.5,
+        "y": 2
+      },
+      "name": "Salon"
+    },
+    {
+      "position": {
+        "x": 4.5,
+        "y": 2
+      },
+      "name": "Cuisine"
+    }
+  ]
+}
