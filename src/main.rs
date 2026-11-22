@@ -307,8 +307,6 @@ impl EasyDraft {
             Ok(plan) => {
                 self.snapshot();
                 self.plan = plan;
-                self.pending_wall = None;
-                self.pending_stair = None;
                 self.reset_pending();
                 self.clear_selection();
                 self.status = format!("Ouvert : {}", self.file_path);
@@ -991,8 +989,6 @@ impl eframe::App for EasyDraft {
                 if ui.button("Nouveau").clicked() {
                     self.snapshot();
                     self.plan = Plan::default();
-                    self.pending_wall = None;
-                    self.pending_stair = None;
                     self.reset_pending();
                     self.clear_selection();
                     self.view = View::Plan2D;
@@ -1012,7 +1008,8 @@ impl eframe::App for EasyDraft {
             });
         });
 
-        egui::SidePanel::left("tools").show(ctx, |ui| {
+        egui::SidePanel::left("tools").resizable(true).default_width(275.0).show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
             ui.heading("Outils");
             ui.separator();
             if ui.selectable_label(self.tool == Tool::Wall, "Mur").clicked() { self.select_tool(Tool::Wall); }
@@ -1037,8 +1034,10 @@ impl eframe::App for EasyDraft {
                 self.status = "Clique sur un interrupteur I, puis sur une lampe X.".into();
             }
             if ui.selectable_label(self.tool == Tool::Pan, "Deplacer la vue").clicked() { self.select_tool(Tool::Pan); }
+            ui.small("Selectionner : clic pour choisir, Suppr pour effacer, Echap pour annuler.");
+            ui.small("Ctrl+Z : annuler | Ctrl+Y : retablir.");
             ui.separator();
-            if self.tool == Tool::Door {
+            if self.view == View::Plan2D && self.tool == Tool::Door {
                 ui.label("Largeur de la porte");
                 ui.add(egui::Slider::new(&mut self.new_door_width_cm, 50.0..=200.0)
                     .step_by(5.0).suffix(" cm"));
@@ -1047,7 +1046,7 @@ impl eframe::App for EasyDraft {
                 ui.small("Clique sur un mur pour inserer la porte.");
                 ui.separator();
             }
-            if self.tool == Tool::Stair {
+            if self.view == View::Plan2D && self.tool == Tool::Stair {
                 ui.label("Largeur de l'escalier");
                 ui.add(egui::Slider::new(&mut self.new_stair_width_cm, 60.0..=250.0)
                     .step_by(5.0).suffix(" cm"));
@@ -1056,7 +1055,7 @@ impl eframe::App for EasyDraft {
                 ui.small("Deux clics : depart puis arrivee (sens de montee).");
                 ui.separator();
             }
-            if self.tool == Tool::Window {
+            if self.view == View::Plan2D && self.tool == Tool::Window {
                 ui.label("Largeur de la fenetre");
                 ui.add(egui::Slider::new(&mut self.new_window_width_cm, 40.0..=400.0)
                     .step_by(5.0).suffix(" cm"));
@@ -1065,24 +1064,22 @@ impl eframe::App for EasyDraft {
             }
             ui.label("Epaisseur des nouveaux murs");
             ui.add(egui::Slider::new(&mut self.new_wall_thickness_cm, 5.0..=60.0).text("cm").step_by(1.0));
-            if let Some(i) = self.selected_wall {
-                if let Some(wall) = self.plan.walls.get(i) {
-                    let mut thickness_cm = wall.thickness_m * 100.0;
-                    ui.label(format!("Epaisseur du mur n°{}", i + 1));
-                    if ui.add(egui::DragValue::new(&mut thickness_cm).speed(1.0).range(5.0..=60.0).suffix(" cm")).changed() {
-                        self.snapshot();
-                        if let Some(selected) = self.plan.walls.get_mut(i) {
-                            selected.thickness_m = thickness_cm / 100.0;
-                        }
-                    }
-                }
-            }
+            ui.separator();
+            ui.collapsing("Proprietes de la selection", |ui| {
+                self.selected_properties(ui);
+            });
+            ui.separator();
+            ui.label("Calques visibles");
+            ui.checkbox(&mut self.show_architecture, "Architecture (murs, portes, escaliers)");
+            ui.checkbox(&mut self.show_electrical, "Electricite (symboles et liaisons)");
             ui.checkbox(&mut self.show_dimensions, "Afficher les cotes (axe des murs)");
+            ui.checkbox(&mut self.snap_endpoints, "Aimantation aux extremites de murs");
             ui.label("Pas d'aimantation");
             ui.add(egui::Slider::new(&mut self.snap_m, 0.05..=0.5).step_by(0.05).suffix(" m"));
             ui.separator();
             ui.label("Zoom");
-            ui.add(egui::Slider::new(&mut self.zoom, 0.4..=2.5));
+            ui.add(egui::Slider::new(&mut self.zoom, 0.3..=4.0));
+            ui.small("Molette sur le plan : zoom centre sous le pointeur.");
             ui.checkbox(&mut self.grid, "Afficher la grille");
             if ui.button("Recentrer").clicked() {
                 self.pan = Vec2::ZERO;
@@ -1165,6 +1162,7 @@ impl eframe::App for EasyDraft {
                 ui.small("La liaison pointillee est logique, pas un chemin de cable.");
             }
             ui.small("Prototype uniquement : pas de validation RGIE.");
+            });
         });
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
