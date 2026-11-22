@@ -614,7 +614,7 @@ impl EasyDraft {
                 self.undo.push(session.original);
                 if self.undo.len() > 100 { self.undo.remove(0); }
                 self.redo.clear();
-                self.status = "Deplacement applique (Ctrl+Z pour annuler)".into();
+                self.status = "Deplacement termine : derniere position valide conservee (Ctrl+Z pour annuler)".into();
             }
         }
     }
@@ -1137,6 +1137,10 @@ impl EasyDraft {
                 }
             }
             if response.drag_stopped() {
+                // Appliquer egalement la position de la souris au moment du relachement.
+                if let Some(cursor) = response.interact_pointer_pos() {
+                    self.update_drag(to_world(cursor), ppm);
+                }
                 self.finish_drag();
             }
         }
