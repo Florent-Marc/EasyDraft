@@ -39,7 +39,7 @@ Les anciens fichiers JSON contenant un seul `lighting_circuit` et des liaisons s
 2. Choisissez **Point lumineux** et cliquez pour placer `L1`.
 3. Choisissez **Lier I -> L**, cliquez d'abord sur **I1**, puis sur **L1**. Une ligne bleue pointillée représente **la relation fonctionnelle**, et **non le chemin réel du câble**.
 4. Cliquez sur **Schéma unifilaire** en haut. Un schéma du circuit d'éclairage apparaît avec départ, protection à renseigner, canalisation, commande et lampe.
-5. Dans le panneau gauche, déroulez **Circuit A - paramètres**. Saisissez les valeurs réelles de protection (calibre, pôles, courbe, différentiel en amont) et de canalisation (type, nombre de conducteurs, section, mode de pose).
+5. Dans le panneau gauche, déroulez **Circuit A - protection / conducteurs**. Saisissez les valeurs réelles de protection (calibre, pôles, courbe, différentiel en amont) et de canalisation (type, nombre de conducteurs, section, mode de pose).
 6. Vérifiez les avertissements de champs manquants. Cliquez sur **Enregistrer** pour conserver la configuration et les connexions dans le JSON.
 
 **Raccourci** : **Ajouter demo I -> L** ajoute un interrupteur et une lampe déjà reliés. Le fichier `examples/eclairage-simple.json` contient également une petite pièce avec une liaison.
@@ -123,7 +123,7 @@ Les calques sont des **options d'affichage du logiciel** ; l'export PDF actuel d
 
 **Ce logiciel n'est pas un générateur de documents certifiés conformes au RGIE.** La vue unifilaire est un **prototype fonctionnel**, pas un schéma d'exécution ni une étude de dimensionnement. Elle ne prend pas encore en charge les circuits de prises, les boîtes, la distribution multi-tableaux, le schéma complet des différentiels, les symboles normalisés exhaustifs, ni les calculs de protection. Les valeurs saisies par l'utilisateur ne font l'objet d'aucune validation réglementaire. Pour une installation réelle, faire vérifier le dossier par un professionnel compétent.
 
-L'unifilaire décrit actuellement **un seul circuit d'éclairage logique**, même si plusieurs interrupteurs et lampes peuvent être reliés. Les escaliers sont uniquement droits. La suppression individuelle des appareils et l'édition avancée des circuits restent à venir.
+L'unifilaire gère plusieurs **circuits d'éclairage logiques** indépendants, mais pas encore les circuits de prises ni les tableaux de distribution complets. Les escaliers restent droits. La définition de câbles réels, de boîtes de dérivation, des phases et des différentiels détaillés, ainsi que la validation des protections, restent à développer.
 
 ## Vérification
 
