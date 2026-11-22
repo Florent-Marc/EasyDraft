@@ -511,6 +511,26 @@ impl Plan {
         Ok(())
     }
 
+    /// Deplace l'ensemble des lampes d'un interrupteur vers un autre depart.
+    /// Les points lumineux restent associes a leur commande.
+    pub fn move_lighting_group(
+        &mut self, switch_index: usize, target_circuit: usize
+    ) -> Result<(), &'static str> {
+        if self.circuit(target_circuit).is_none() { return Err("Circuit cible inexistant"); }
+        if !matches!(self.symbols.get(switch_index), Some(s) if s.kind == ElectricalKind::Switch) {
+            return Err("L'element selectionne n'est pas un interrupteur");
+        }
+        let mut found = false;
+        for link in &mut self.lighting_connections {
+            if link.switch_index == switch_index {
+                link.circuit_index = target_circuit;
+                found = true;
+            }
+        }
+        if !found { return Err("Cet interrupteur n'a aucune lampe associee"); }
+        Ok(())
+    }
+
     pub fn lighting_connection_is_valid(&self, link: &LightingConnection) -> bool {
         self.circuit(link.circuit_index).is_some()
             && matches!(self.symbols.get(link.switch_index), Some(s) if s.kind == ElectricalKind::Switch)
@@ -527,9 +547,16 @@ impl Plan {
     /// doit pas produire deux branches pour une meme lampe.
     pub fn active_lighting_connections(&self) -> Vec<&LightingConnection> {
         let mut seen_lights = std::collections::HashSet::new();
+        let mut switch_circuit = std::collections::HashMap::new();
         self.lighting_connections.iter()
             .filter(|link| {
-                self.lighting_connection_is_valid(link) && seen_lights.insert(link.light_index)
+                if !self.lighting_connection_is_valid(link) { return false; }
+                if let Some(previous) = switch_circuit.get(&link.switch_index) {
+                    if *previous != link.circuit_index { return false; }
+                }
+                if !seen_lights.insert(link.light_index) { return false; }
+                switch_circuit.insert(link.switch_index, link.circuit_index);
+                true
             })
             .collect()
     }
@@ -539,13 +566,7 @@ impl Plan {
     /// Un groupe contient un interrupteur et les lampes qu'il commande dans ce circuit.
     pub fn lighting_groups_for_circuit(&self, circuit_index: usize) -> Vec<(usize, Vec<usize>)> {
         let mut groups: Vec<(usize, Vec<usize>)> = Vec::new();
-        let mut seen_lights = std::collections::HashSet::new();
-        for link in &self.lighting_connections {
-            if link.circuit_index != circuit_index
-                || !self.lighting_connection_is_valid(link)
-                || !seen_lights.insert(link.light_index) {
-                continue;
-            }
+        for link in self.active_lighting_connections_for_circuit(circuit_index) {
             if let Some((_, lights)) = groups.iter_mut().find(|(i, _)| *i == link.switch_index) {
                 lights.push(link.light_index);
             } else {
@@ -1039,6 +1060,41 @@ mod tests {
         assert_eq!(roundtrip.lighting_point_ref(lamp).as_deref(), Some("B1"));
         assert!(roundtrip.connect_switch_to_light_in_circuit(sw, 1, 1).is_err());
         assert!(roundtrip.remove_lighting_circuit(1).is_err());
+    }
+
+    #[test]
+    fn moving_a_switch_group_updates_all_its_lamps_and_references() {
+        let mut p = Plan::default();
+        p.add_demo_lighting();
+        let extra_light = p.symbols.len();
+        p.symbols.push(ElectricalSymbol {
+            position: Point { x: 3.0, y: 0.0 },
+            kind: ElectricalKind::Light,
+        });
+        p.connect_switch_to_light(0, extra_light).unwrap();
+        let dest = p.add_lighting_circuit().unwrap();
+        p.move_lighting_group(0, dest).unwrap();
+        assert_eq!(p.lighting_groups_for_circuit(0).len(), 0);
+        assert_eq!(p.lighting_groups_for_circuit(1).len(), 1);
+        assert_eq!(p.lighting_point_ref(1).as_deref(), Some("B1"));
+        assert_eq!(p.lighting_point_ref(extra_light).as_deref(), Some("B2"));
+    }
+
+    #[test]
+    fn duplicated_json_switch_across_circuits_only_keeps_one_group() {
+        let mut p = Plan::default();
+        p.add_demo_lighting();
+        p.add_lighting_circuit().unwrap();
+        let light = p.symbols.len();
+        p.symbols.push(ElectricalSymbol {
+            position: Point { x: 4.0, y: 0.0 },
+            kind: ElectricalKind::Light,
+        });
+        p.lighting_connections.push(LightingConnection {
+            switch_index: 0, light_index: light, circuit_index: 1,
+        });
+        assert_eq!(p.active_lighting_connections().len(), 1);
+        assert_eq!(p.lighting_groups_for_circuit(1).len(), 0);
     }
 
     #[test]
