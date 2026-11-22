@@ -35,6 +35,27 @@ pub fn review(plan: &Plan) -> Vec<ReviewFinding> {
             missing(&mut findings, "Identification du dossier", format!("{field} non renseigne"));
         }
     }
+    if info.incoming_cable.trim().is_empty() {
+        missing(&mut findings, "Tableau principal",
+            "Type et section du cable d'entree du tableau non renseignes");
+    }
+    if info.supply.trim().is_empty() {
+        missing(&mut findings, "Tableau principal",
+            "Caracteristiques de l'alimentation non renseignees");
+    }
+    if plan.differentials.is_empty() {
+        missing(&mut findings, "Tableau principal",
+            "Aucune protection differentielle modelisee");
+    }
+    for device in &plan.differentials {
+        for field in device.missing_fields() {
+            missing(
+                &mut findings,
+                format!("Differentiel {}", device.reference),
+                format!("{field} non renseigne"),
+            );
+        }
+    }
     if info.drawing_date.trim().is_empty() {
         missing(&mut findings, "Identification du dossier", "Date du schema non renseignee");
     }
@@ -44,8 +65,14 @@ pub fn review(plan: &Plan) -> Vec<ReviewFinding> {
     for circuit_index in 0..plan.circuit_count() {
         if let Some(circuit) = plan.circuit(circuit_index) {
             let scope = format!("Circuit {}", circuit.letter);
-            for field in circuit.missing_fields() {
+            for field in plan.circuit_missing_fields(circuit_index) {
                 missing(&mut findings, &scope, format!("{field} non renseigne"));
+            }
+            if circuit.upstream_differential.is_none() && !circuit.upstream_rdc.trim().is_empty() {
+                verify(
+                    &mut findings, &scope,
+                    "Une ancienne mention de DDR en texte libre existe mais aucun lien structure vers le tableau n'est etabli",
+                );
             }
             let lights = plan.active_lighting_connections_for_circuit(circuit_index).len();
             let outlets = plan.outlets_on_circuit(circuit_index).len();
@@ -112,7 +139,11 @@ pub fn review(plan: &Plan) -> Vec<ReviewFinding> {
     );
     verify(
         &mut findings, "Limite du logiciel",
-        "Les boites, appareils fixes, sources, dispositifs amont et trajets de conducteurs ne sont pas tous modelises",
+        "Le modele identifie les DDR et les protections des circuits mais pas tous les chemins et conducteurs reels, la prise de terre et les raccordements internes du tableau",
+    );
+    verify(
+        &mut findings, "Verification externe",
+        "Confirmer l'ordre reel alimentation - dispositifs differentiels - protections divisionnaires et la coordination des protections",
     );
     verify(
         &mut findings, "Verification externe",
@@ -202,6 +233,32 @@ mod tests {
             finding.message.contains("circuits mixtes")
                 && finding.level == ReviewLevel::ToVerify
         }));
+    }
+
+    #[test]
+    fn explicitly_assigned_differential_removes_only_missing_upstream_warning() {
+        let mut plan = Plan::default();
+        assert!(review(&plan).iter().any(|finding| {
+            finding.message.contains("differentiel en amont non attribue")
+        }));
+        let index = plan.add_differential().unwrap();
+        plan.set_circuit_differential(0, Some(index)).unwrap();
+        let findings = review(&plan);
+        assert!(!findings.iter().any(|finding| {
+            finding.message.contains("differentiel en amont non attribue")
+        }));
+        assert!(findings.iter().any(|finding| {
+            finding.message.contains("sensibilite differentielle")
+        }));
+    }
+
+    #[test]
+    fn free_text_upstream_description_does_not_count_as_board_connection() {
+        let mut plan = Plan::default();
+        plan.lighting_circuit.upstream_rdc = "DDR historique".into();
+        let issues = review(&plan);
+        assert!(issues.iter().any(|item| item.message.contains("mention de DDR")));
+        assert!(issues.iter().any(|item| item.message.contains("differentiel en amont")));
     }
 
     #[test]
