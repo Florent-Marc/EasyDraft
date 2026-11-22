@@ -832,6 +832,29 @@ mod tests {
     }
 
     #[test]
+    fn pdf_symbol_catalog_reuses_rgie_shapes_and_selected_variants() {
+        let mut generic = String::new();
+        draw_pdf_primitives(
+            &mut generic, 100.0, 100.0, 1.0,
+            &rgie_symbols::device_primitives(
+                ElectricalKind::Outlet, crate::model::ElectricalAppearance::General
+            ),
+            DARK,
+        );
+        let mut with_earth = String::new();
+        draw_pdf_primitives(
+            &mut with_earth, 100.0, 100.0, 1.0,
+            &rgie_symbols::device_primitives(
+                ElectricalKind::Outlet, crate::model::ElectricalAppearance::OutletEarth
+            ),
+            DARK,
+        );
+        assert_ne!(generic, with_earth);
+        assert!(generic.contains(" RG "));
+        assert!(with_earth.len() > generic.len());
+    }
+
+    #[test]
     fn exports_minimal_valid_pdf_structure() {
         let mut plan = Plan::default();
         plan.walls.push(Wall {
