@@ -4,6 +4,7 @@
 use std::fmt::Write as _;
 
 use crate::model::{ElectricalKind, Opening, OpeningKind, Plan, Point, Stair, Wall};
+use crate::rgie_symbols::{self, Primitive};
 
 const PAGE_W: f32 = 842.0; // A4 paysage en points PDF
 const PAGE_H: f32 = 595.0;
@@ -271,15 +272,13 @@ impl Canvas {
     }
 
     fn symbols(&mut self, plan: &Plan) {
-        for (index, s) in plan.symbols.iter().enumerate() {
-            self.circle(s.position, 0.13, BLUE);
-            let text = match s.kind {
-                ElectricalKind::Outlet => "P",
-                ElectricalKind::Switch => "I",
-                ElectricalKind::Light => "X",
-            };
-            self.centered_text(s.position, 10.0, text, BLUE);
-            let reference = match s.kind {
+        for (index, symbol) in plan.symbols.iter().enumerate() {
+            let (x, y) = self.xy(symbol.position);
+            let marks = rgie_symbols::device_primitives(
+                symbol.kind, plan.symbol_appearance(index)
+            );
+            draw_pdf_primitives(&mut self.commands, x, y, 0.8, &marks, BLUE);
+            let reference = match symbol.kind {
                 ElectricalKind::Outlet | ElectricalKind::Light => plan.point_ref(index),
                 ElectricalKind::Switch => {
                     let refs = plan.switch_point_refs(index);
@@ -287,10 +286,8 @@ impl Canvas {
                 }
             };
             if let Some(reference) = reference {
-                self.centered_text(
-                    Point { x: s.position.x, y: s.position.y + 0.29 },
-                    7.0, &reference, BLUE,
-                );
+                // PDF en points : l'etiquette reste lisible independamment de l'echelle du plan.
+                self.text_pt(x - 13.0, y - 24.0, 8.0, &reference, BLUE);
             }
         }
     }
@@ -505,12 +502,17 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
         pdf_box(&mut pdf, 40.0, 390.0, 140.0, 42.0, color, 1.0);
         raw_pdf_text(&mut pdf, 50.0, 405.0, 11.0,
             &truncate_pdf(&plan.installation_info.panel_name, 25), color);
-        raw_pdf_line(&mut pdf, 180.0, 411.0, 207.0, 411.0, color, 1.6);
-        raw_pdf_line(&mut pdf, 207.0, 411.0, 230.0, 430.0, color, 1.6);
-        pdf_box(&mut pdf, 227.0, 427.0, 8.0, 8.0, color, 1.0);
-        raw_pdf_line(&mut pdf, 248.0, 411.0, 310.0, 411.0, color, 1.6);
+        raw_pdf_line(&mut pdf, 180.0, 411.0, 202.0, 411.0, color, 1.6);
+        draw_pdf_primitives(
+            &mut pdf, 228.0, 411.0, 0.85,
+            &rgie_symbols::protection_primitives(
+                rgie_symbols::protection_from_text(&circuit.protection_kind)
+            ),
+            color,
+        );
+        raw_pdf_line(&mut pdf, 252.0, 411.0, 310.0, 411.0, color, 1.6);
         raw_pdf_text(&mut pdf, 188.0, 377.0, 9.0,
-            "Protection : symbole simplifie", DIM);
+            "Protection selon type declare (voir fiche et caracteristiques)", DIM);
 
         let first_y = 329.0;
         let last_y = if end > start {
@@ -524,12 +526,23 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
             match entry {
                 CircuitEntry::Light(link_index) => {
                     let link = links[*link_index];
-                    raw_pdf_line(&mut pdf, 431.0, y, 451.0, y + 13.0, BLUE, 1.5);
-                    raw_pdf_line(&mut pdf, 459.0, y, 478.0, y, color, 1.5);
+                    draw_pdf_primitives(
+                        &mut pdf, 451.0, y, 0.83,
+                        &rgie_symbols::device_primitives(
+                            ElectricalKind::Switch,
+                            plan.symbol_appearance(link.switch_index),
+                        ),
+                        color,
+                    );
                     raw_pdf_line(&mut pdf, 478.0, y, 655.0, y, color, 1.6);
-                    raw_pdf_circle(&mut pdf, 670.0, y, 15.0, color);
-                    raw_pdf_line(&mut pdf, 660.0, y - 10.0, 680.0, y + 10.0, color, 1.5);
-                    raw_pdf_line(&mut pdf, 660.0, y + 10.0, 680.0, y - 10.0, color, 1.5);
+                    draw_pdf_primitives(
+                        &mut pdf, 670.0, y, 1.02,
+                        &rgie_symbols::device_primitives(
+                            ElectricalKind::Light,
+                            plan.symbol_appearance(link.light_index),
+                        ),
+                        color,
+                    );
                     let i_num = plan.symbol_number(link.switch_index).unwrap_or(link.switch_index + 1);
                     let l_num = plan.symbol_number(link.light_index).unwrap_or(link.light_index + 1);
                     raw_pdf_text(&mut pdf, 424.0, y - 21.0, 10.0, &format!("I{i_num}"), color);
@@ -539,10 +552,15 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
                         BLUE);
                 }
                 CircuitEntry::Socket(symbol_index) => {
-                    raw_pdf_line(&mut pdf, 431.0, y, 655.0, y, color, 1.6);
-                    raw_pdf_circle(&mut pdf, 670.0, y, 15.0, color);
-                    raw_pdf_line(&mut pdf, 661.0, y-5.0, 679.0, y-5.0, color, 1.4);
-                    raw_pdf_line(&mut pdf, 661.0, y+5.0, 679.0, y+5.0, color, 1.4);
+                    raw_pdf_line(&mut pdf, 431.0, y, 645.0, y, color, 1.6);
+                    draw_pdf_primitives(
+                        &mut pdf, 670.0, y, 0.85,
+                        &rgie_symbols::device_primitives(
+                            ElectricalKind::Outlet,
+                            plan.symbol_appearance(*symbol_index),
+                        ),
+                        color,
+                    );
                     let p_num = plan.symbol_number(*symbol_index).unwrap_or(*symbol_index + 1);
                     raw_pdf_text(&mut pdf, 664.0, y - 21.0, 10.0, &format!("P{p_num}"), color);
                     raw_pdf_text(&mut pdf, 718.0, y, 11.0,
@@ -575,7 +593,7 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
                 plan.unlinked_lights(), plan.unlinked_switches(), plan.unassigned_outlets()),
             color);
         raw_pdf_text(&mut pdf, 35.0, 19.0, 9.0,
-            "Symboles simplifies. Non utilisable comme schema d'execution ou attestation de conformite.",
+            "Symboles de base du RGIE 2.23. Circuit fonctionnel a verifier avant tout usage officiel.",
             DIM);
         pages.push(pdf);
     }
@@ -593,6 +611,57 @@ fn truncate_pdf(value: &str, limit: usize) -> String {
 
 fn pdf_safe_label(value: &str) -> &str {
     if value.trim().is_empty() { "a renseigner" } else { value.trim() }
+}
+
+/// Traduit le catalogue graphique commun en traits PDF vectoriels.
+/// Le code PDF et l'ecran utilisent exactement les memes primitives locales.
+/// Coordonnees des symboles : Y positif vers le bas, converti ici en Y PDF.
+fn draw_pdf_primitives(
+    out: &mut String, cx: f32, cy: f32, size: f32,
+    shapes: &[Primitive], color: Rgb,
+) {
+    let at = |p: (f32, f32)| (cx + p.0 * size, cy - p.1 * size);
+    for primitive in shapes {
+        match *primitive {
+            Primitive::Line(a, b) => {
+                let (x1, y1) = at(a);
+                let (x2, y2) = at(b);
+                raw_pdf_line(out, x1, y1, x2, y2, color, 1.35);
+            }
+            Primitive::Arc(center, radius, start, end) => {
+                let points = rgie_symbols::arc_points(center, radius, start, end);
+                for pair in points.windows(2) {
+                    let (x1, y1) = at(pair[0]);
+                    let (x2, y2) = at(pair[1]);
+                    raw_pdf_line(out, x1, y1, x2, y2, color, 1.35);
+                }
+            }
+            Primitive::Circle(center, radius) => {
+                let (x, y) = at(center);
+                raw_pdf_circle(out, x, y, radius * size, color);
+            }
+            Primitive::Dot(center, radius) => {
+                let (x, y) = at(center);
+                // Un disque via quatre courbes de Bezier remplies.
+                let r = radius * size;
+                let k = r * 0.55228475;
+                let _ = writeln!(
+                    out,
+                    "{:.3} {:.3} {:.3} rg {:.3} {:.3} m \
+                     {:.3} {:.3} {:.3} {:.3} {:.3} {:.3} c \
+                     {:.3} {:.3} {:.3} {:.3} {:.3} {:.3} c \
+                     {:.3} {:.3} {:.3} {:.3} {:.3} {:.3} c \
+                     {:.3} {:.3} {:.3} {:.3} {:.3} {:.3} c f",
+                    color.0, color.1, color.2,
+                    x+r, y,
+                    x+r, y+k, x+k, y+r, x, y+r,
+                    x-k, y+r, x-r, y+k, x-r, y,
+                    x-r, y-k, x-k, y-r, x, y-r,
+                    x+k, y-r, x+r, y-k, x+r, y,
+                );
+            }
+        }
+    }
 }
 
 fn raw_pdf_line(out: &mut String, x1: f32, y1: f32, x2: f32, y2: f32, rgb: Rgb, width: f32) {
