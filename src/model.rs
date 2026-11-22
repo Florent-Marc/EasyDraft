@@ -627,7 +627,7 @@ impl Plan {
             return Err("Repere differentiel invalide (1 a 12 lettres, chiffres, tiret)");
         }
         if self.differentials.iter().enumerate().any(|(other, d)| {
-            other != index && d.reference.eq_ignore_ascii_case(reference)
+            other != index && d.reference.eq_ignore_ascii_case(&reference)
         }) {
             return Err("Repere de differentiel deja utilise");
         }
@@ -741,7 +741,7 @@ impl Plan {
         }
         if (0..self.circuit_count()).any(|other| {
             other != index && self.circuit(other)
-                .is_some_and(|c| c.letter.eq_ignore_ascii_case(letter))
+                .is_some_and(|c| c.letter.eq_ignore_ascii_case(&letter))
         }) {
             return Err("Ce repere de circuit existe deja");
         }
