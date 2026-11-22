@@ -336,7 +336,8 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
             }
             ui.label("Liaisons de ce circuit :");
             for (index, link) in plan.lighting_connections.iter().enumerate() {
-                if link.circuit_index != circuit_index || !plan.lighting_connection_is_valid(link) {
+                if link.circuit_index != circuit_index
+                    || !plan.is_active_lighting_connection(index) {
                     continue;
                 }
                 let switch_number = plan.symbol_number(link.switch_index)
