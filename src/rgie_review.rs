@@ -52,6 +52,10 @@ pub fn review(plan: &Plan) -> Vec<ReviewFinding> {
             if lights + outlets == 0 {
                 missing(&mut findings, &scope, "Aucun point lumineux ou prise attribue");
             }
+            if lights > 0 && outlets > 0 {
+                verify(&mut findings, &scope,
+                    "Circuit avec prises et eclairage : verifier les conditions des circuits mixtes selon le RGIE");
+            }
             // Les valeurs numeriques saisies ne sont pas un calcul de dimensionnement.
             if circuit.breaker_amp > 0 && circuit.section_mm2 > 0.0 {
                 verify(
