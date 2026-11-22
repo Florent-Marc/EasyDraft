@@ -444,7 +444,7 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
                 &format!(
                     "{}.{}",
                     pdf_safe_label(&circuit.letter),
-                    start + index + 1
+                    plan.lighting_point_number(link.light_index).unwrap_or(start + index + 1)
                 ),
                 DIM,
             );
