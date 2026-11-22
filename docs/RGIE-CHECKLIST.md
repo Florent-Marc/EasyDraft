@@ -27,8 +27,14 @@ Sources officielles :
 | Appareils fixes / machines | Non modélisés | À ajouter |
 | Sources, PV, onduleurs, batteries | Non modélisées | À ajouter |
 | Tableaux multiples, protection d'origine, terre | Non modélisés complètement | À ajouter |
-| Symboles RGIE (tableau 2.23) | Illustrations provisoires | Légende et symboles normalisés à faire |
+| Symboles RGIE (tableau 2.23) | Formes de base implémentées pour interrupteurs, prises, points lumineux, disjoncteurs et fusibles | Variantes limitées, caractéristiques à vérifier sur place, commandes complexes absentes |
 | Vérification complète RGIE | **Non prise en charge** | Contrôle par professionnel/organisme agréé selon obligations applicables |
+
+## Référence graphique des symboles
+
+Les symboles disponibles dans EasyDraft sont définis en vecteurs dans `src/rgie_symbols.rs`, partagés entre la vue 2D, la vue unifilaire et les PDF. Référence officielle : [RGIE 2026 Livre 1, chapitre 2.13, tableau 2.23](https://economie.fgov.be/sites/default/files/Files/Publications/files/RGIE-Annexe-Livre-1-Installations-a-basse-tenstion-et-a-tres-basse-tension-2026.pdf).
+
+Les prises génériques ne sont pas affichées avec contact de terre par défaut. Le responsable doit sélectionner la variante réellement rencontrée. Les variantes disponibles ne couvrent pas l'ensemble du tableau 2.23, et le programme n'atteste pas la nature d'un matériel.
 
 ## Contrôles implémentés
 
