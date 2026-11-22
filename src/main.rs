@@ -3,10 +3,11 @@ mod pdf_export;
 mod unifilar;
 mod rooms;
 mod rgie_review;
+mod rgie_symbols;
 
 use eframe::egui::{self, Align2, Color32, FontId, Painter, Pos2, Sense, Stroke, Vec2};
 use model::{
-    ElectricalKind, ElectricalSymbol, Opening, OpeningKind, Plan, Point, Stair, Wall,
+    ElectricalAppearance, ElectricalKind, ElectricalSymbol, Opening, OpeningKind, Plan, Point, Stair, Wall,
     DEFAULT_WALL_THICKNESS_M,
 };
 
@@ -825,6 +826,35 @@ impl EasyDraft {
                     ElectricalKind::Light => "Point lumineux",
                 };
                 ui.heading(kind);
+                let current_style = self.plan.symbol_appearance(index);
+                let mut selected_style = current_style;
+                egui::ComboBox::from_label("Symbole (RGIE tableau 2.23)")
+                    .selected_text(current_style.label())
+                    .show_ui(ui, |ui| {
+                        for &option in ElectricalAppearance::choices(symbol.kind) {
+                            ui.selectable_value(
+                                &mut selected_style, option, option.label()
+                            );
+                        }
+                    });
+                if selected_style != current_style {
+                    let mut updated = self.plan.clone();
+                    match updated.set_symbol_appearance(index, selected_style) {
+                        Ok(()) => {
+                            self.snapshot();
+                            self.plan = updated;
+                            self.status = format!(
+                                "Symbole modifie : {} (verifier la caracteristique reelle)",
+                                selected_style.label()
+                            );
+                        }
+                        Err(err) => self.status = err.into(),
+                    }
+                }
+                if matches!(selected_style,
+                    ElectricalAppearance::SwitchTwoWay | ElectricalAppearance::PushButton) {
+                    ui.small("Ce pictogramme ne simule pas encore les commandes va-et-vient / telerupteur.");
+                }
                 if symbol.kind == ElectricalKind::Outlet {
                     let ref_text = self.plan.point_ref(index)
                         .unwrap_or_else(|| "sans repere".into());
@@ -1373,14 +1403,20 @@ impl EasyDraft {
 
         for (index, symbol) in self.plan.symbols.iter().enumerate() {
             let pos = to_screen(symbol.position);
-            painter.circle_filled(pos, 13.0, Color32::WHITE);
-            painter.circle_stroke(pos, 13.0, Stroke::new(2.0, Color32::from_rgb(20, 106, 190)));
             let label = match symbol.kind {
                 ElectricalKind::Outlet => "P",
                 ElectricalKind::Switch => "I",
-                ElectricalKind::Light => "X",
+                ElectricalKind::Light => "L",
             };
-            painter.text(pos, Align2::CENTER_CENTER, label, FontId::proportional(15.0), Color32::from_rgb(20, 106, 190));
+            // Formes RGIE uniques partagees avec l'unifilaire et les PDFs.
+            rgie_symbols::draw_egui(
+                &painter, pos,
+                &rgie_symbols::device_primitives(
+                    symbol.kind, self.plan.symbol_appearance(index)
+                ),
+                Color32::from_rgb(20, 106, 190),
+                0.83,
+            );
             let number = self.plan.symbol_number(index).unwrap_or(index + 1);
             let ref_suffix = match symbol.kind {
                 ElectricalKind::Outlet | ElectricalKind::Light =>
@@ -1392,7 +1428,7 @@ impl EasyDraft {
                 }
             };
             painter.text(
-                pos + Vec2::new(0.0, 23.0),
+                pos + Vec2::new(0.0, 30.0),
                 Align2::CENTER_CENTER,
                 format!("{label}{number}{ref_suffix}"),
                 FontId::proportional(12.0),
@@ -1402,7 +1438,7 @@ impl EasyDraft {
                 painter.circle_stroke(pos, 17.0, Stroke::new(2.0, Color32::from_rgb(233, 139, 40)));
             }
             if self.selected_symbol == Some(index) {
-                painter.circle_stroke(pos, 19.0, Stroke::new(3.0, Color32::from_rgb(40, 135, 230)));
+                painter.circle_stroke(pos, 24.0, Stroke::new(3.0, Color32::from_rgb(40, 135, 230)));
             }
         }
         } // fin du calque electrique
@@ -1776,7 +1812,37 @@ impl eframe::App for EasyDraft {
             } else {
                 ui.small("La liaison pointillee est logique, pas un chemin de cable.");
             }
-            ui.small("Prototype uniquement : pas de validation RGIE.");
+            egui::CollapsingHeader::new("Legende RGIE - symboles disponibles")
+                .show(ui, |ui| {
+                    for (kind, style) in [
+                        (ElectricalKind::Switch, ElectricalAppearance::General),
+                        (ElectricalKind::Switch, ElectricalAppearance::SwitchBipolar),
+                        (ElectricalKind::Switch, ElectricalAppearance::SwitchTwoWay),
+                        (ElectricalKind::Switch, ElectricalAppearance::PushButton),
+                        (ElectricalKind::Outlet, ElectricalAppearance::General),
+                        (ElectricalKind::Outlet, ElectricalAppearance::OutletEarth),
+                        (ElectricalKind::Outlet, ElectricalAppearance::OutletEarthChild),
+                        (ElectricalKind::Light, ElectricalAppearance::General),
+                        (ElectricalKind::Light, ElectricalAppearance::WallLight),
+                    ] {
+                        ui.horizontal(|ui| {
+                            let (rect, response) = ui.allocate_exact_size(
+                                Vec2::new(65.0, 54.0), Sense::hover()
+                            );
+                            let painter = ui.painter_at(rect);
+                            rgie_symbols::draw_egui(
+                                &painter, rect.center(),
+                                &rgie_symbols::device_primitives(kind, style),
+                                Color32::from_rgb(35, 105, 160), 0.75
+                            );
+                            ui.label(style.label());
+                            let _ = response;
+                        });
+                    }
+                    ui.small("Reference : Livre 1 RGIE, chapitre 2.13, tableau 2.23.");
+                    ui.small("Variants choisis manuellement, selon la realite sur place.");
+                });
+            ui.small("Symboles du tableau 2.23 pour les appareils couverts ; dossier RGIE incomplet.");
             });
         });
 
