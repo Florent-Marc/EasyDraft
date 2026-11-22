@@ -621,7 +621,7 @@ impl Plan {
         &mut self, index: usize, updated: DifferentialDevice
     ) -> Result<(), &'static str> {
         if index >= self.differentials.len() { return Err("Differentiel introuvable"); }
-        let reference = updated.reference.trim();
+        let reference = updated.reference.trim().to_ascii_uppercase();
         if reference.is_empty() || reference.len() > 12
             || !reference.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
             return Err("Repere differentiel invalide (1 a 12 lettres, chiffres, tiret)");
@@ -632,7 +632,7 @@ impl Plan {
             return Err("Repere de differentiel deja utilise");
         }
         let mut device = updated;
-        device.reference = reference.to_ascii_uppercase();
+        device.reference = reference;
         self.differentials[index] = device;
         Ok(())
     }
@@ -734,7 +734,7 @@ impl Plan {
         if updated.upstream_differential.is_some_and(|i| i >= self.differentials.len()) {
             return Err("Differentiel en amont introuvable");
         }
-        let letter = updated.letter.trim();
+        let letter = updated.letter.trim().to_ascii_uppercase();
         if letter.is_empty() || letter.chars().count() > 4
             || !letter.chars().all(|c| c.is_ascii_alphanumeric()) {
             return Err("Repere de circuit: 1 a 4 lettres ou chiffres");
@@ -746,7 +746,7 @@ impl Plan {
             return Err("Ce repere de circuit existe deja");
         }
         let mut edited = updated;
-        edited.letter = letter.to_ascii_uppercase();
+        edited.letter = letter;
         if index == 0 {
             self.lighting_circuit = edited;
         } else if let Some(circuit) = self.additional_lighting_circuits.get_mut(index - 1) {
