@@ -91,6 +91,12 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan) {
         return;
     }
 
+    let invalid = plan.lighting_connections.len() - valid_links.len();
+    if invalid > 0 {
+        ui.colored_label(Color32::RED, format!(
+            "{invalid} liaison(s) du fichier sont invalides et ont ete ignorees."
+        ));
+    }
     let unlinked = plan.unlinked_lights();
     ui.label(format!(
         "{} liaison(s) enregistree(s) | {} lampe(s) sans interrupteur",
@@ -102,7 +108,8 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan) {
     }
 
     egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
-        let diagram_width = ui.available_width().max(720.0);
+        // Largeur constante pour eviter un espace infini dans ScrollArea::both.
+        let diagram_width = 760.0;
         let diagram_height = (180.0 + valid_links.len() as f32 * 116.0).max(350.0);
         let (response, painter) = ui.allocate_painter(
             Vec2::new(diagram_width, diagram_height),
