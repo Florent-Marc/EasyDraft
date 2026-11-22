@@ -43,10 +43,12 @@ Le prototype permet maintenant de gérer **plusieurs circuits distincts** (16 au
 
 1. Cliquez sur **« Charger l'exemple unifilaire A + B »** pour charger un projet de démonstration avec deux circuits, trois lampes, deux interrupteurs, une prise et une petite maison. **L'exemple remplace le plan courant** (Annuler permet de revenir en arrière).
 2. Ouvrez **« Schéma unifilaire »** : une **feuille indépendante par circuit** apparaît. A commande deux lampes (**A1**, **A2**) et B comprend une lampe (**B1**) et une prise (**B2**).
-3. Cliquez sur **« Ajouter un circuit d'éclairage »** pour créer B, C, D, etc. Choisissez **« Circuit actif pour Lier I -> L »** avant de relier un interrupteur et une lampe sur le plan 2D. Le bouton de démonstration ajoute également une paire sur ce circuit actif.
+3. Cliquez sur **« Ajouter un circuit (prototype) »** pour créer B, C, D, etc. Choisissez **« Circuit actif pour lampes et prises »** avant de relier un interrupteur et une lampe sur le plan 2D. Le bouton de démonstration ajoute également une paire sur ce circuit actif.
 4. Déployez **« Circuit X - protection / conducteurs »** pour renseigner, séparément pour chaque circuit, sa protection, son différentiel en amont, sa canalisation, la section et le mode de pose. **Les champs ne sont pas remplis automatiquement avec des valeurs supposées**.
 5. Dans le schéma, utilisez **« Déplacer vers un autre circuit »** à côté d'un interrupteur pour transférer **toutes ses lampes** au circuit choisi sans refaire les liaisons. Une lampe ne peut appartenir qu'à une seule liaison, et un interrupteur ne peut commander des lampes de plusieurs circuits simultanément dans cette version.
 6. **« Exporter PDF unifilaire »** génère des feuilles A4 paysage **séparées par circuit**, paginées par groupes de six liaisons. La même référence (A1, B1...) est reprise dans le plan 2D et le PDF.
+
+Les circuits associant prises et eclairage peuvent etre soumis a des prescriptions particulieres. Le logiciel signale ce cas pour une verification humaine ; il **ne valide pas les circuits mixtes**.
 
 Les anciens fichiers JSON contenant un seul `lighting_circuit` et des liaisons sans `circuit_index` restent pris en charge : ces liaisons sont affectées au **circuit d'index 0**. Les nouveaux circuits sont stockés dans `additional_lighting_circuits`.
 
