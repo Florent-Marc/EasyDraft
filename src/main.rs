@@ -356,6 +356,25 @@ impl EasyDraft {
         }
     }
 
+    fn load_unifilar_example(&mut self) {
+        self.cancel_drag();
+        match serde_json::from_str::<Plan>(
+            include_str!("../examples/unifilaire-deux-circuits.json")
+        ) {
+            Ok(plan) => {
+                self.snapshot();
+                self.plan = plan;
+                self.reset_pending();
+                self.clear_selection();
+                self.active_circuit_index = 0;
+                self.view = View::Unifilar;
+                self.show_electrical = true;
+                self.status = "Exemple charge : circuits A et B, trois lampes, deux interrupteurs".into();
+            }
+            Err(error) => self.status = format!("Exemple invalide : {error}"),
+        }
+    }
+
     fn load_room_example(&mut self) {
         self.cancel_drag();
         let result = serde_json::from_str::<Plan>(
@@ -1565,6 +1584,10 @@ impl eframe::App for EasyDraft {
             ui.label(format!("Interrupteurs non lies : {}", self.plan.unlinked_switches()));
             ui.separator();
             ui.heading("Circuits d'eclairage");
+            if ui.button("Charger l'exemple unifilaire A + B").clicked() {
+                self.load_unifilar_example();
+            }
+            ui.small("L'exemple remplace le plan courant (Annuler pour revenir).");
             if self.active_circuit_index >= self.plan.circuit_count() {
                 self.active_circuit_index = 0;
             }
