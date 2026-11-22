@@ -189,6 +189,7 @@ impl Stair {
 #[serde(default)]
 pub struct LightingCircuit {
     pub letter: String,
+    pub protection_kind: String,
     pub breaker_amp: u16,
     pub breaker_poles: u8,
     pub breaker_curve: String,
@@ -203,6 +204,7 @@ impl Default for LightingCircuit {
     fn default() -> Self {
         Self {
             letter: "A".into(),
+            protection_kind: String::new(),
             breaker_amp: 0,
             breaker_poles: 0,
             breaker_curve: String::new(),
@@ -219,6 +221,7 @@ impl LightingCircuit {
     pub fn missing_fields(&self) -> Vec<&'static str> {
         let mut missing = Vec::new();
         if self.letter.trim().is_empty() { missing.push("repere circuit"); }
+        if self.protection_kind.trim().is_empty() { missing.push("type de protection"); }
         if self.breaker_amp == 0 { missing.push("calibre protection"); }
         if self.breaker_poles == 0 { missing.push("nombre de poles"); }
         if self.breaker_curve.trim().is_empty() { missing.push("courbe/type protection"); }
@@ -231,7 +234,12 @@ impl LightingCircuit {
     }
 
     pub fn protection_label(&self) -> String {
-        let mut parts = vec!["Disjoncteur".to_owned()];
+        let kind = self.protection_kind.trim();
+        let mut parts = vec![if kind.is_empty() {
+            "Protection".to_owned()
+        } else {
+            kind.to_owned()
+        }];
         if self.breaker_poles > 0 { parts.push(format!("{}P", self.breaker_poles)); }
         if !self.breaker_curve.trim().is_empty() { parts.push(self.breaker_curve.trim().to_owned()); }
         if self.breaker_amp > 0 { parts.push(format!("{} A", self.breaker_amp)); }
