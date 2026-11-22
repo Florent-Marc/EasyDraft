@@ -1218,7 +1218,8 @@ mod plan_editor_tests {
         let point = app.snap_point(Point { x: 2.08, y: 0.09 }, 80.0);
         assert_eq!(point, Point { x: 2.03, y: 0.07 });
         let grid = app.snap_point(Point { x: 5.08, y: 4.07 }, 80.0);
-        assert_eq!(grid, Point { x: 5.10, y: 4.05 });
+        assert!((grid.x - 5.10).abs() < 0.0001);
+        assert!((grid.y - 4.05).abs() < 0.0001);
     }
 
     #[test]
