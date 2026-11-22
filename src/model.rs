@@ -624,6 +624,15 @@ impl Plan {
 
     /// Ajoute une demonstration fonctionnelle dans les deux vues, sans effacer le projet.
     pub fn add_demo_lighting(&mut self) {
+        let _ = self.add_demo_lighting_in_circuit(0);
+    }
+
+    pub fn add_demo_lighting_in_circuit(
+        &mut self, circuit_index: usize
+    ) -> Result<(), &'static str> {
+        if self.circuit(circuit_index).is_none() {
+            return Err("Circuit de demonstration inexistant");
+        }
         let offset = self.symbols.iter().map(|s| s.position.x).fold(0.0_f32, f32::max) + 1.0;
         let switch_index = self.symbols.len();
         self.symbols.push(ElectricalSymbol {
@@ -635,11 +644,8 @@ impl Plan {
             position: Point { x: offset + 2.0, y: 0.0 },
             kind: ElectricalKind::Light,
         });
-        self.lighting_connections.push(LightingConnection {
-            switch_index,
-            light_index,
-            circuit_index: 0,
-        });
+        // L'ajout de symboles est sur un plan local valide ; la liaison ne peut echouer.
+        self.connect_switch_to_light_in_circuit(switch_index, light_index, circuit_index)
     }
 
     /// Ajoute une ouverture centrée au clic sur un mur, sans dépasser ni chevaucher une autre ouverture.
@@ -1060,6 +1066,30 @@ mod tests {
         assert_eq!(roundtrip.lighting_point_ref(lamp).as_deref(), Some("B1"));
         assert!(roundtrip.connect_switch_to_light_in_circuit(sw, 1, 1).is_err());
         assert!(roundtrip.remove_lighting_circuit(1).is_err());
+    }
+
+    #[test]
+    fn multi_circuit_example_loads_and_has_independent_labels() {
+        let plan: Plan = serde_json::from_str(include_str!(
+            "../examples/unifilaire-deux-circuits.json"
+        )).unwrap();
+        assert_eq!(plan.circuit_count(), 2);
+        assert_eq!(plan.lighting_groups_for_circuit(0).len(), 1);
+        assert_eq!(plan.lighting_groups_for_circuit(1).len(), 1);
+        assert_eq!(plan.lighting_point_ref(1).as_deref(), Some("A1"));
+        assert_eq!(plan.lighting_point_ref(2).as_deref(), Some("A2"));
+        assert_eq!(plan.lighting_point_ref(4).as_deref(), Some("B1"));
+        assert_eq!(plan.unlinked_lights(), 0);
+        assert_eq!(plan.unlinked_switches(), 0);
+    }
+
+    #[test]
+    fn demo_can_be_inserted_in_selected_circuit() {
+        let mut plan = Plan::default();
+        let b = plan.add_lighting_circuit().unwrap();
+        plan.add_demo_lighting_in_circuit(b).unwrap();
+        assert_eq!(plan.lighting_point_ref(1).as_deref(), Some("B1"));
+        assert!(plan.add_demo_lighting_in_circuit(22).is_err());
     }
 
     #[test]
