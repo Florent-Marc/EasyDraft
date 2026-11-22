@@ -271,7 +271,7 @@ impl Canvas {
     }
 
     fn symbols(&mut self, plan: &Plan) {
-        for s in &plan.symbols {
+        for (index, s) in plan.symbols.iter().enumerate() {
             self.circle(s.position, 0.13, BLUE);
             let text = match s.kind {
                 ElectricalKind::Outlet => "P",
@@ -279,6 +279,19 @@ impl Canvas {
                 ElectricalKind::Light => "X",
             };
             self.centered_text(s.position, 10.0, text, BLUE);
+            let reference = match s.kind {
+                ElectricalKind::Outlet | ElectricalKind::Light => plan.point_ref(index),
+                ElectricalKind::Switch => {
+                    let refs = plan.switch_point_refs(index);
+                    if refs.is_empty() { None } else { Some(refs.join(",")) }
+                }
+            };
+            if let Some(reference) = reference {
+                self.centered_text(
+                    Point { x: s.position.x, y: s.position.y + 0.29 },
+                    7.0, &reference, BLUE,
+                );
+            }
         }
     }
 }
@@ -392,12 +405,20 @@ pub fn export_pdf(path: &str, plan: &Plan, show_dimensions: bool) -> Result<(), 
 /// PDF vectoriel du schema unifilaire de travail, distinct du plan architectural.
 /// Plusieurs pages A4 paysage sont generees pour ne pas ecraser les circuits charges.
 /// Les valeurs absentes restent explicitement "a renseigner".
+/// Entree unifilaire dessinee : soit une commande vers une lampe,
+/// soit une prise autonome affectee au circuit.
+enum CircuitEntry {
+    Light(usize),
+    Socket(usize),
+}
+
 pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
-    // Une succession de feuilles A4 par depart et par tranche de six liaisons.
-    // Les circuits differents ne partagent jamais un tronc d'alimentation.
+    // Une ou plusieurs pages par circuit, avec au plus six appareils par page.
+    // Pas de faux symbole de conformite ni de schema de raccordement.
     let mut page_specs = Vec::new();
     for circuit_index in 0..plan.circuit_count() {
-        let count = plan.active_lighting_connections_for_circuit(circuit_index).len();
+        let count = plan.active_lighting_connections_for_circuit(circuit_index).len()
+            + plan.outlets_on_circuit(circuit_index).len();
         for chunk_index in 0..count.max(1).div_ceil(6) {
             let start = chunk_index * 6;
             page_specs.push((circuit_index, start, (start + 6).min(count)));
@@ -411,19 +432,33 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
         let circuit = plan.circuit(circuit_index)
             .ok_or("Index de circuit invalide pendant l'export")?;
         let links = plan.active_lighting_connections_for_circuit(circuit_index);
+        let outlets = plan.outlets_on_circuit(circuit_index);
+        let mut items: Vec<CircuitEntry> = (0..links.len()).map(CircuitEntry::Light).collect();
+        items.extend(outlets.iter().copied().map(CircuitEntry::Socket));
+        items.sort_by_key(|item| match item {
+            CircuitEntry::Light(index) => links[*index].light_index,
+            CircuitEntry::Socket(index) => *index,
+        });
+
         let mut pdf = String::new();
         raw_pdf_text(
-            &mut pdf, 35.0, 559.0, 18.0,
+            &mut pdf, 35.0, 563.0, 17.0,
             "EasyDraft - SCHEMA UNIFILAIRE (PROTOTYPE)", color,
         );
         raw_pdf_text(
-            &mut pdf, 35.0, 540.0, 9.0,
-            "Document de travail NON CONFORME / non valide RGIE", (0.68, 0.25, 0.10),
+            &mut pdf, 35.0, 546.0, 10.0,
+            "Dossier de travail / NON CERTIFIE / controle RGIE requis le cas echeant",
+            (0.68, 0.25, 0.10),
         );
         raw_pdf_text(
-            &mut pdf, 35.0, 517.0, 12.0,
+            &mut pdf, 35.0, 529.0, 10.0,
+            &format!("Adresse : {}", truncate_pdf(&plan.installation_info.address, 82)),
+            color,
+        );
+        raw_pdf_text(
+            &mut pdf, 35.0, 512.0, 11.0,
             &format!(
-                "Circuit {}  |  Protection : {}",
+                "Circuit {} | Protection : {}",
                 pdf_safe_label(&circuit.letter),
                 if circuit.breaker_amp == 0 { "a renseigner".to_owned() }
                 else { circuit.protection_label() }
@@ -431,96 +466,120 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
             color,
         );
         raw_pdf_text(
-            &mut pdf, 35.0, 499.0, 11.0,
+            &mut pdf, 35.0, 496.0, 10.0,
             &format!("Canalisation : {}", circuit.cable_label()),
             color,
         );
         raw_pdf_text(
-            &mut pdf, 35.0, 481.0, 10.0,
+            &mut pdf, 35.0, 480.0, 9.0,
             &format!(
                 "Pose : {}  |  DDR amont : {}",
-                pdf_safe_label(&circuit.installation_method),
-                pdf_safe_label(&circuit.upstream_rdc),
+                truncate_pdf(&circuit.installation_method, 28),
+                truncate_pdf(&circuit.upstream_rdc, 32),
             ),
             color,
         );
         raw_pdf_text(
-            &mut pdf, 760.0, 555.0, 10.0,
+            &mut pdf, 715.0, 563.0, 9.0,
             &format!("Page {}/{}", page_index + 1, pages_count), color,
         );
         let missing_count = circuit.missing_fields().len();
         if missing_count > 0 {
             raw_pdf_text(
-                &mut pdf, 35.0, 461.0, 10.0,
-                &format!("ATTENTION : {missing_count} caracteristique(s) de circuit non renseignee(s)"),
+                &mut pdf, 35.0, 462.0, 9.0,
+                &format!("ATTENTION : {missing_count} donnee(s) de circuit non renseignee(s)"),
                 (0.67, 0.31, 0.08),
             );
         }
 
-        // Le depart est dessine symboliquement. Le DDR non renseigne n'est pas invente.
+        // Dessin simplifie du depart, sans hypothese sur le tableau reel.
         pdf_box(&mut pdf, 40.0, 390.0, 140.0, 42.0, color, 1.0);
-        raw_pdf_text(&mut pdf, 55.0, 406.0, 11.0, "Tableau / depart", color);
+        raw_pdf_text(&mut pdf, 50.0, 405.0, 11.0,
+            &truncate_pdf(&plan.installation_info.panel_name, 25), color);
         raw_pdf_line(&mut pdf, 180.0, 411.0, 207.0, 411.0, color, 1.6);
         raw_pdf_line(&mut pdf, 207.0, 411.0, 230.0, 430.0, color, 1.6);
         pdf_box(&mut pdf, 227.0, 427.0, 8.0, 8.0, color, 1.0);
         raw_pdf_line(&mut pdf, 248.0, 411.0, 310.0, 411.0, color, 1.6);
-        raw_pdf_text(&mut pdf, 188.0, 379.0, 9.0, "Protection (representation simplifiee)", DIM);
+        raw_pdf_text(&mut pdf, 188.0, 377.0, 9.0,
+            "Protection : symbole simplifie", DIM);
 
-        let first_y = 330.0;
+        let first_y = 329.0;
         let last_y = if end > start {
             first_y - (end - start - 1) as f32 * 46.0
-        } else {
-            first_y
-        };
+        } else { first_y };
         raw_pdf_line(&mut pdf, 310.0, 411.0, 310.0, last_y, color, 1.6);
-        for (index, link) in links[start..end].iter().enumerate() {
+
+        for (index, entry) in items[start..end].iter().enumerate() {
             let y = first_y - index as f32 * 46.0;
             raw_pdf_line(&mut pdf, 310.0, y, 431.0, y, color, 1.6);
-            // Interrupteur : contact ouvert.
-            raw_pdf_line(&mut pdf, 431.0, y, 451.0, y + 13.0, BLUE, 1.5);
-            raw_pdf_line(&mut pdf, 459.0, y, 478.0, y, color, 1.5);
-            raw_pdf_line(&mut pdf, 478.0, y, 655.0, y, color, 1.6);
-            raw_pdf_circle(&mut pdf, 670.0, y, 15.0, color);
-            raw_pdf_line(&mut pdf, 660.0, y - 10.0, 680.0, y + 10.0, color, 1.5);
-            raw_pdf_line(&mut pdf, 660.0, y + 10.0, 680.0, y - 10.0, color, 1.5);
-            let i_number = plan.symbol_number(link.switch_index).unwrap_or(link.switch_index + 1);
-            let l_number = plan.symbol_number(link.light_index).unwrap_or(link.light_index + 1);
-            raw_pdf_text(&mut pdf, 425.0, y - 22.0, 10.0, &format!("I{i_number}"), color);
-            raw_pdf_text(&mut pdf, 663.0, y - 22.0, 10.0, &format!("L{l_number}"), color);
-            raw_pdf_text(
-                &mut pdf, 330.0, y + 9.0, 9.0,
-                &format!(
-                    "{}.{}",
-                    pdf_safe_label(&circuit.letter),
-                    plan.lighting_point_number(link.light_index).unwrap_or(start + index + 1)
-                ),
-                DIM,
-            );
+            match entry {
+                CircuitEntry::Light(link_index) => {
+                    let link = links[*link_index];
+                    raw_pdf_line(&mut pdf, 431.0, y, 451.0, y + 13.0, BLUE, 1.5);
+                    raw_pdf_line(&mut pdf, 459.0, y, 478.0, y, color, 1.5);
+                    raw_pdf_line(&mut pdf, 478.0, y, 655.0, y, color, 1.6);
+                    raw_pdf_circle(&mut pdf, 670.0, y, 15.0, color);
+                    raw_pdf_line(&mut pdf, 660.0, y - 10.0, 680.0, y + 10.0, color, 1.5);
+                    raw_pdf_line(&mut pdf, 660.0, y + 10.0, 680.0, y - 10.0, color, 1.5);
+                    let i_num = plan.symbol_number(link.switch_index).unwrap_or(link.switch_index + 1);
+                    let l_num = plan.symbol_number(link.light_index).unwrap_or(link.light_index + 1);
+                    raw_pdf_text(&mut pdf, 424.0, y - 21.0, 10.0, &format!("I{i_num}"), color);
+                    raw_pdf_text(&mut pdf, 664.0, y - 21.0, 10.0, &format!("L{l_num}"), color);
+                    raw_pdf_text(&mut pdf, 718.0, y, 11.0,
+                        &plan.point_ref(link.light_index).unwrap_or_else(|| "?".into()),
+                        BLUE);
+                }
+                CircuitEntry::Socket(symbol_index) => {
+                    raw_pdf_line(&mut pdf, 431.0, y, 655.0, y, color, 1.6);
+                    raw_pdf_circle(&mut pdf, 670.0, y, 15.0, color);
+                    raw_pdf_line(&mut pdf, 661.0, y-5.0, 679.0, y-5.0, color, 1.4);
+                    raw_pdf_line(&mut pdf, 661.0, y+5.0, 679.0, y+5.0, color, 1.4);
+                    let p_num = plan.symbol_number(*symbol_index).unwrap_or(*symbol_index + 1);
+                    raw_pdf_text(&mut pdf, 664.0, y - 21.0, 10.0, &format!("P{p_num}"), color);
+                    raw_pdf_text(&mut pdf, 718.0, y, 11.0,
+                        &plan.point_ref(*symbol_index).unwrap_or_else(|| "?".into()),
+                        BLUE);
+                }
+            }
         }
-        if links.is_empty() {
+        if items.is_empty() {
             raw_pdf_text(
                 &mut pdf, 335.0, 326.0, 11.0,
-                "Aucune liaison interrupteur - lampe", DIM,
+                "Aucun appareil attribue au circuit", DIM,
             );
         }
-        raw_pdf_text(
-            &mut pdf, 35.0, 58.0, 10.0,
-            &format!(
-                "{} lampe(s) sans liaison | {} interrupteur(s) sans liaison",
-                plan.unlinked_lights(), plan.unlinked_switches()
-            ),
-            color,
-        );
-        raw_pdf_text(
-            &mut pdf, 35.0, 38.0, 9.0,
-            "Relations fonctionnelles simplifiees. Non utilisable comme schema d'execution ou dossier RGIE.",
-            DIM,
-        );
+        let info = &plan.installation_info;
+        raw_pdf_text(&mut pdf, 35.0, 84.0, 9.0,
+            &format!("Tension : {} | Courant : {} | Revision : {} | Date : {}",
+                truncate_pdf(&info.voltage, 12),
+                truncate_pdf(&info.current_kind, 16),
+                truncate_pdf(&info.revision, 9),
+                truncate_pdf(&info.drawing_date, 14)),
+            color);
+        raw_pdf_text(&mut pdf, 35.0, 66.0, 9.0,
+            &format!("Responsable : {} ({})",
+                truncate_pdf(&info.executor_name, 43),
+                truncate_pdf(&info.executor_role, 24)),
+            color);
+        raw_pdf_text(&mut pdf, 35.0, 49.0, 9.0,
+            &format!("Non affectes : {} lampe(s), {} interrupteur(s), {} prise(s)",
+                plan.unlinked_lights(), plan.unlinked_switches(), plan.unassigned_outlets()),
+            color);
+        raw_pdf_text(&mut pdf, 35.0, 32.0, 9.0,
+            "Symboles simplifiees. Non utilisable comme schema d'execution ou attestation de conformite.",
+            DIM);
         pages.push(pdf);
     }
 
     std::fs::write(path, build_pdf_pages(&pages))
         .map_err(|e| format!("Export du schema unifilaire impossible : {e}"))
+}
+
+fn truncate_pdf(value: &str, limit: usize) -> String {
+    let text = pdf_safe_label(value);
+    let mut chars = text.chars();
+    let part = chars.by_ref().take(limit).collect::<String>();
+    if chars.next().is_some() { format!("{part}...") } else { part }
 }
 
 fn pdf_safe_label(value: &str) -> &str {
@@ -641,6 +700,28 @@ mod tests {
         assert!(pdf.ends_with(b"%%EOF\n"));
         assert!(pdf.windows(b"/Count 2".len()).any(|chunk| chunk == b"/Count 2"));
         assert!(pdf.windows(b"A7".len()).any(|chunk| chunk == b"A7"));
+    }
+
+    #[test]
+    fn unifilar_pdf_includes_assigned_outlets_and_dossier_metadata() {
+        let mut plan = Plan::default();
+        plan.installation_info.address = "Maison test Belgique".into();
+        plan.installation_info.voltage = "230 V".into();
+        plan.symbols.push(crate::model::ElectricalSymbol {
+            position: Point { x: 2.0, y: 1.0 },
+            kind: ElectricalKind::Outlet,
+        });
+        plan.assign_outlet_to_circuit(0, 0).unwrap();
+        let target = std::env::temp_dir().join(format!(
+            "easydraft-prise-rgie-{}.pdf", std::process::id()
+        ));
+        export_unifilar_pdf(&target.to_string_lossy(), &plan).unwrap();
+        let bytes = std::fs::read(&target).unwrap();
+        let _ = std::fs::remove_file(target);
+        assert!(bytes.windows(b"Maison test Belgique".len()).any(|w| w == b"Maison test Belgique"));
+        assert!(bytes.windows(b"230 V".len()).any(|w| w == b"230 V"));
+        assert!(bytes.windows(b"(A1)".len()).any(|w| w == b"(A1)"));
+        assert!(bytes.starts_with(b"%PDF-1.4"));
     }
 
     #[test]
