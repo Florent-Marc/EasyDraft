@@ -1764,6 +1764,8 @@ impl eframe::App for EasyDraft {
                     ui.text_edit_singleline(&mut info.current_kind);
                     ui.label("Description alimentation");
                     ui.text_edit_singleline(&mut info.supply);
+                    ui.label("Cable d'entree du tableau (type et section)");
+                    ui.text_edit_singleline(&mut info.incoming_cable);
                     ui.label("Nom ou repere du tableau");
                     ui.text_edit_singleline(&mut info.panel_name);
                     ui.label("Date du dessin");
