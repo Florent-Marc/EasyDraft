@@ -283,6 +283,20 @@ impl Canvas {
     }
 }
 
+/// Helvetica Type1 emet du texte ASCII dans l'export PDF prototype.
+fn ascii_pdf_text(input: &str) -> String {
+    input.chars().map(|c| match c {
+        'à'|'á'|'â'|'ä'|'À'|'Á'|'Â'|'Ä' => 'a',
+        'é'|'è'|'ê'|'ë'|'É'|'È'|'Ê'|'Ë' => 'e',
+        'î'|'ï'|'ì'|'í'|'Î'|'Ï' => 'i',
+        'ô'|'ö'|'ò'|'ó'|'Ô'|'Ö' => 'o',
+        'ù'|'ú'|'û'|'ü'|'Ù'|'Ú'|'Û'|'Ü' => 'u',
+        'ç'|'Ç' => 'c',
+        _ if c.is_ascii() => c,
+        _ => '?',
+    }).collect()
+}
+
 fn build_pdf(stream: &str) -> Vec<u8> {
     let content = format!("<< /Length {} >>\nstream\n{}endstream", stream.len(), stream);
     let objects = [
@@ -326,6 +340,33 @@ pub fn export_pdf(path: &str, plan: &Plan, show_dimensions: bool) -> Result<(), 
     }
     for stair in &plan.stairs {
         pdf.stair(stair);
+    }
+    // Les pieces sont recalculees depuis les murs, comme dans l'editeur 2D.
+    // Noms et surfaces proviennent de la sauvegarde et de la geometrie partagees.
+    for room in crate::rooms::detect_rooms(&plan.walls) {
+        let title = plan.room_name(&room);
+        if !title.is_empty() {
+            pdf.centered_text(
+                Point { x: room.center.x, y: room.center.y - 0.18 },
+                11.0,
+                &ascii_pdf_text(title),
+                BLUE,
+            );
+        }
+        pdf.centered_text(
+            room.center,
+            9.0,
+            &format!("{:.2} m2", room.area_m2),
+            BLUE,
+        );
+        if room.rectangular {
+            pdf.centered_text(
+                Point { x: room.center.x, y: room.center.y + 0.17 },
+                8.0,
+                &format!("{:.2} x {:.2} m", room.width_m, room.height_m),
+                DIM,
+            );
+        }
     }
     pdf.symbols(plan);
 
