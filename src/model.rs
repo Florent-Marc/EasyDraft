@@ -203,7 +203,7 @@ impl LightingCircuit {
             || !self.section_mm2.is_finite() || self.section_mm2 <= 0.0 {
             return "Canalisation : a renseigner".to_owned();
         }
-        format!("{} {}G{} mm2", self.cable_type.trim(), self.conductor_count, self.section_mm2)
+        format!("{} {} x {} mm2", self.cable_type.trim(), self.conductor_count, self.section_mm2)
     }
 }
 
@@ -274,6 +274,15 @@ impl Plan {
             }
         }
         groups
+    }
+
+    /// Numero d'ordre du point lumineux parmi les liaisons valides du circuit.
+    /// Le meme numero est utilise sur le plan 2D, la vue unifilaire et le PDF.
+    pub fn lighting_point_number(&self, light_index: usize) -> Option<usize> {
+        self.lighting_connections.iter()
+            .filter(|link| self.lighting_connection_is_valid(link))
+            .position(|link| link.light_index == light_index)
+            .map(|index| index + 1)
     }
 
     pub fn unlinked_switches(&self) -> usize {
@@ -536,6 +545,8 @@ mod tests {
         plan.connect_switch_to_light(0, 2).unwrap();
         assert_eq!(plan.lighting_groups(), vec![(0, vec![1, 2])]);
         assert_eq!(plan.unlinked_switches(), 0);
+        assert_eq!(plan.lighting_point_number(1), Some(1));
+        assert_eq!(plan.lighting_point_number(2), Some(2));
         let restored: Plan = serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
         assert_eq!(restored.lighting_groups(), vec![(0, vec![1, 2])]);
     }
