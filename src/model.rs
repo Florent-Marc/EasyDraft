@@ -96,6 +96,44 @@ pub struct ElectricalSymbol {
     pub kind: ElectricalKind,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Stair {
+    /// Debut de l'escalier, en metres.
+    pub start: Point,
+    /// Fin de l'escalier, dans le sens de la montee.
+    pub end: Point,
+    /// Largeur perpendiculaire a la montee, en metres.
+    pub width_m: f32,
+    /// Nombre de marches representees en plan.
+    pub steps: u16,
+}
+
+impl Stair {
+    pub fn length_m(&self) -> f32 {
+        self.start.distance_to(self.end)
+    }
+
+    pub fn is_valid(&self) -> bool {
+        self.length_m() > 0.05
+            && self.width_m.is_finite()
+            && self.width_m > 0.0
+            && (2..=60).contains(&self.steps)
+    }
+
+    /// Les quatre coins du rectangle de l'escalier, selon son orientation.
+    pub fn corners(&self) -> [Point; 4] {
+        let len = self.length_m().max(0.0001);
+        let nx = -(self.end.y - self.start.y) / len * self.width_m / 2.0;
+        let ny = (self.end.x - self.start.x) / len * self.width_m / 2.0;
+        [
+            Point { x: self.start.x + nx, y: self.start.y + ny },
+            Point { x: self.end.x + nx, y: self.end.y + ny },
+            Point { x: self.end.x - nx, y: self.end.y - ny },
+            Point { x: self.start.x - nx, y: self.start.y - ny },
+        ]
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Plan {
     pub walls: Vec<Wall>,
@@ -103,6 +141,8 @@ pub struct Plan {
     /// La valeur par défaut garde la compatibilité avec les plans JSON anciens.
     #[serde(default)]
     pub openings: Vec<Opening>,
+    #[serde(default)]
+    pub stairs: Vec<Stair>,
 }
 
 impl Plan {
@@ -236,6 +276,34 @@ mod tests {
         assert_eq!(restored.openings.len(), 1);
         assert!(restored.openings[0].hinge_right);
         assert!(restored.openings[0].swing_flipped);
+    }
+
+    #[test]
+    fn old_plan_json_has_no_stairs() {
+        let old = r#"{"walls":[],"symbols":[]}"#;
+        let plan: Plan = serde_json::from_str(old).unwrap();
+        assert!(plan.stairs.is_empty());
+    }
+
+    #[test]
+    fn stair_geometry_and_json_round_trip() {
+        let stair = Stair {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 3.0, y: 0.0 },
+            width_m: 1.2,
+            steps: 12,
+        };
+        assert!(stair.is_valid());
+        assert_eq!(stair.length_m(), 3.0);
+        let corners = stair.corners();
+        assert_eq!(corners[0], Point { x: 0.0, y: 0.6 });
+        assert_eq!(corners[3], Point { x: 0.0, y: -0.6 });
+        let mut plan = Plan::default();
+        plan.stairs.push(stair);
+        let encoded = serde_json::to_string(&plan).unwrap();
+        let decoded: Plan = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.stairs.len(), 1);
+        assert_eq!(decoded.stairs[0].steps, 12);
     }
 
     #[test]
