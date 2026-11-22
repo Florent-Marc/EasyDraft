@@ -1713,6 +1713,36 @@ mod plan_editor_tests {
     }
 
     #[test]
+    fn cancel_drag_restores_original_and_does_not_create_undo_step() {
+        let mut app = EasyDraft::default();
+        app.plan.walls.push(Wall {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 4.0, y: 0.0 },
+            thickness_m: 0.15,
+        });
+        app.begin_drag(Point { x: 2.0, y: 0.0 }, 80.0);
+        app.update_drag(Point { x: 2.0, y: 1.0 }, 80.0);
+        assert!(app.plan.walls[0].start.y > 0.5);
+        app.cancel_drag();
+        assert_eq!(app.plan.walls[0].start.y, 0.0);
+        assert!(app.undo.is_empty());
+    }
+
+    #[test]
+    fn stationary_snap_does_not_add_to_history() {
+        let mut app = EasyDraft::default();
+        app.plan.walls.push(Wall {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 4.0, y: 0.0 },
+            thickness_m: 0.15,
+        });
+        app.begin_drag(Point { x: 2.0, y: 0.0 }, 80.0);
+        app.update_drag(Point { x: 2.01, y: 0.0 }, 80.0);
+        app.finish_drag();
+        assert!(app.undo.is_empty());
+    }
+
+    #[test]
     fn wall_end_handles_resize_without_changing_other_endpoint() {
         let mut app = EasyDraft::default();
         app.plan.walls.push(Wall {
