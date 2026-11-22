@@ -103,6 +103,10 @@ pub struct ElectricalSymbol {
 pub struct LightingConnection {
     pub switch_index: usize,
     pub light_index: usize,
+    /// 0 = circuit historique. L'absence du champ reste compatible
+    /// avec les projets enregistres avant la gestion multi-circuits.
+    #[serde(default)]
+    pub circuit_index: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,6 +233,9 @@ pub struct Plan {
     pub lighting_connections: Vec<LightingConnection>,
     #[serde(default)]
     pub lighting_circuit: LightingCircuit,
+    /// Circuits d'eclairage additionnels ; l'ancien circuit reste a l'indice zero.
+    #[serde(default)]
+    pub additional_lighting_circuits: Vec<LightingCircuit>,
     /// Les noms appartiennent a un point interieur, pas a un index de murs fragile.
     #[serde(default)]
     pub room_labels: Vec<RoomLabel>,
@@ -394,12 +401,94 @@ impl Plan {
         Ok(())
     }
 
-    /// Lie un interrupteur a un point lumineux (ce n'est pas un chemin de cable).
+    pub fn circuit_count(&self) -> usize {
+        1 + self.additional_lighting_circuits.len()
+    }
+
+    pub fn circuit(&self, index: usize) -> Option<&LightingCircuit> {
+        if index == 0 { Some(&self.lighting_circuit) }
+        else { self.additional_lighting_circuits.get(index - 1) }
+    }
+
+    pub fn add_lighting_circuit(&mut self) -> Result<usize, &'static str> {
+        if self.circuit_count() >= 16 {
+            return Err("Maximum de 16 circuits dans cette version");
+        }
+        // Genere un repere unique, sans modifier les reperes existants.
+        let letter = (1..=26).map(|index| ((b'A' + index) as char).to_string())
+            .find(|name| (0..self.circuit_count()).all(|i| {
+                self.circuit(i).is_some_and(|c| !c.letter.eq_ignore_ascii_case(name))
+            }))
+            .ok_or("Aucun repere libre")?;
+        let new_index = self.circuit_count();
+        self.additional_lighting_circuits.push(LightingCircuit {
+            letter,
+            ..LightingCircuit::default()
+        });
+        Ok(new_index)
+    }
+
+    pub fn update_lighting_circuit(
+        &mut self, index: usize, updated: LightingCircuit
+    ) -> Result<(), &'static str> {
+        let letter = updated.letter.trim();
+        if letter.is_empty() || letter.chars().count() > 4
+            || !letter.chars().all(|c| c.is_ascii_alphanumeric()) {
+            return Err("Repere de circuit: 1 a 4 lettres ou chiffres");
+        }
+        if (0..self.circuit_count()).any(|other| {
+            other != index && self.circuit(other)
+                .is_some_and(|c| c.letter.eq_ignore_ascii_case(letter))
+        }) {
+            return Err("Ce repere de circuit existe deja");
+        }
+        let mut edited = updated;
+        edited.letter = letter.to_ascii_uppercase();
+        if index == 0 {
+            self.lighting_circuit = edited;
+        } else if let Some(circuit) = self.additional_lighting_circuits.get_mut(index - 1) {
+            *circuit = edited;
+        } else {
+            return Err("Circuit introuvable");
+        }
+        Ok(())
+    }
+
+    /// Suppression reservee aux circuits sans liaison pour ne perdre aucun appareil.
+    pub fn remove_lighting_circuit(&mut self, index: usize) -> Result<(), &'static str> {
+        if index == 0 || index >= self.circuit_count() {
+            return Err("Ce circuit ne peut pas etre supprime");
+        }
+        if self.lighting_connections.iter().any(|link| link.circuit_index == index) {
+            return Err("Retire d'abord les liaisons de ce circuit");
+        }
+        self.additional_lighting_circuits.remove(index - 1);
+        for link in &mut self.lighting_connections {
+            if link.circuit_index > index { link.circuit_index -= 1; }
+        }
+        Ok(())
+    }
+
+    /// Ancien appel : toujours lie au circuit historique (index 0).
     pub fn connect_switch_to_light(
         &mut self,
         switch_index: usize,
         light_index: usize,
     ) -> Result<(), &'static str> {
+        self.connect_switch_to_light_in_circuit(switch_index, light_index, 0)
+    }
+
+    /// Lie un interrupteur et une lampe sur le circuit choisi. Ce n'est
+    /// ni un trace de cable ni une validation de cablage.
+    pub fn connect_switch_to_light_in_circuit(
+        &mut self,
+        switch_index: usize,
+        light_index: usize,
+        circuit_index: usize,
+    ) -> Result<(), &'static str> {
+        if self.circuit(circuit_index).is_none() {
+            return Err("Le circuit selectionne n'existe pas");
+        }
         if !matches!(self.symbols.get(switch_index), Some(s) if s.kind == ElectricalKind::Switch) {
             return Err("Choisis un interrupteur valide");
         }
@@ -409,15 +498,22 @@ impl Plan {
         if self.lighting_connections.iter().any(|c| c.light_index == light_index) {
             return Err("Ce point lumineux est deja lie a un interrupteur");
         }
+        if self.lighting_connections.iter().any(|c| {
+            c.switch_index == switch_index && c.circuit_index != circuit_index
+        }) {
+            return Err("Un interrupteur ne peut pas commander plusieurs circuits ici");
+        }
         self.lighting_connections.push(LightingConnection {
             switch_index,
             light_index,
+            circuit_index,
         });
         Ok(())
     }
 
     pub fn lighting_connection_is_valid(&self, link: &LightingConnection) -> bool {
-        matches!(self.symbols.get(link.switch_index), Some(s) if s.kind == ElectricalKind::Switch)
+        self.circuit(link.circuit_index).is_some()
+            && matches!(self.symbols.get(link.switch_index), Some(s) if s.kind == ElectricalKind::Switch)
             && matches!(self.symbols.get(link.light_index), Some(s) if s.kind == ElectricalKind::Light)
     }
 
@@ -440,11 +536,14 @@ impl Plan {
 
     /// Regroupe les points lumineux qui partagent le meme interrupteur.
     /// Cette vue a une unique definition, reutilisee par l'interface et l'export.
-    pub fn lighting_groups(&self) -> Vec<(usize, Vec<usize>)> {
+    /// Un groupe contient un interrupteur et les lampes qu'il commande dans ce circuit.
+    pub fn lighting_groups_for_circuit(&self, circuit_index: usize) -> Vec<(usize, Vec<usize>)> {
         let mut groups: Vec<(usize, Vec<usize>)> = Vec::new();
         let mut seen_lights = std::collections::HashSet::new();
         for link in &self.lighting_connections {
-            if !self.lighting_connection_is_valid(link) || !seen_lights.insert(link.light_index) {
+            if link.circuit_index != circuit_index
+                || !self.lighting_connection_is_valid(link)
+                || !seen_lights.insert(link.light_index) {
                 continue;
             }
             if let Some((_, lights)) = groups.iter_mut().find(|(i, _)| *i == link.switch_index) {
@@ -456,12 +555,32 @@ impl Plan {
         groups
     }
 
-    /// Numero d'ordre partage par le plan 2D, l'unifilaire et le PDF.
+    /// Compatibilite avec les appels existants de groupement.
+    pub fn lighting_groups(&self) -> Vec<(usize, Vec<usize>)> {
+        self.lighting_groups_for_circuit(0)
+    }
+
+    /// Numero d'ordre par circuit partage entre les deux vues et le PDF.
     pub fn lighting_point_number(&self, light_index: usize) -> Option<usize> {
-        self.active_lighting_connections()
-            .iter()
-            .position(|link| link.light_index == light_index)
-            .map(|index| index + 1)
+        let links = self.active_lighting_connections();
+        let link = links.iter().find(|link| link.light_index == light_index)?;
+        let circuit_index = link.circuit_index;
+        Some(links.iter().filter(|link| link.circuit_index == circuit_index)
+            .position(|link| link.light_index == light_index)? + 1)
+    }
+
+    pub fn lighting_point_ref(&self, light_index: usize) -> Option<String> {
+        let link = self.active_lighting_connections()
+            .into_iter().find(|link| link.light_index == light_index)?;
+        let letter = &self.circuit(link.circuit_index)?.letter;
+        Some(format!("{letter}{}", self.lighting_point_number(light_index)?))
+    }
+
+    pub fn active_lighting_connections_for_circuit(
+        &self, circuit_index: usize
+    ) -> Vec<&LightingConnection> {
+        self.active_lighting_connections().into_iter()
+            .filter(|link| link.circuit_index == circuit_index).collect()
     }
 
     pub fn unlinked_switches(&self) -> usize {
@@ -495,7 +614,11 @@ impl Plan {
             position: Point { x: offset + 2.0, y: 0.0 },
             kind: ElectricalKind::Light,
         });
-        self.lighting_connections.push(LightingConnection { switch_index, light_index });
+        self.lighting_connections.push(LightingConnection {
+            switch_index,
+            light_index,
+            circuit_index: 0,
+        });
     }
 
     /// Ajoute une ouverture centrée au clic sur un mur, sans dépasser ni chevaucher une autre ouverture.
@@ -887,6 +1010,60 @@ mod tests {
         assert!(plan.set_room_name(Point { x: 8.0, y: 8.0 }, "Cuisine").is_err());
         plan.set_room_name(Point { x: 1.0, y: 1.0 }, "").unwrap();
         assert_eq!(plan.room_name(&rooms[0]), "");
+    }
+
+    #[test]
+    fn different_circuits_have_independent_references_and_survive_json() {
+        let mut p = Plan::default();
+        p.add_demo_lighting();
+        let second_circuit = p.add_lighting_circuit().unwrap();
+        assert_eq!(second_circuit, 1);
+        let sw = p.symbols.len();
+        p.symbols.push(ElectricalSymbol {
+            position: Point { x: 5.0, y: 0.0 },
+            kind: ElectricalKind::Switch,
+        });
+        let lamp = p.symbols.len();
+        p.symbols.push(ElectricalSymbol {
+            position: Point { x: 6.0, y: 0.0 },
+            kind: ElectricalKind::Light,
+        });
+        p.connect_switch_to_light_in_circuit(sw, lamp, second_circuit).unwrap();
+        assert_eq!(p.lighting_point_ref(1).as_deref(), Some("A1"));
+        assert_eq!(p.lighting_point_ref(lamp).as_deref(), Some("B1"));
+        assert_eq!(p.lighting_groups_for_circuit(0).len(), 1);
+        assert_eq!(p.lighting_groups_for_circuit(1).len(), 1);
+        let data = serde_json::to_string(&p).unwrap();
+        let roundtrip: Plan = serde_json::from_str(&data).unwrap();
+        assert_eq!(roundtrip.circuit_count(), 2);
+        assert_eq!(roundtrip.lighting_point_ref(lamp).as_deref(), Some("B1"));
+        assert!(roundtrip.connect_switch_to_light_in_circuit(sw, 1, 1).is_err());
+        assert!(roundtrip.remove_lighting_circuit(1).is_err());
+    }
+
+    #[test]
+    fn legacy_json_assumes_circuit_zero() {
+        let data = r#"{"walls":[],"symbols":[{"position":{"x":0.0,"y":0.0},"kind":"Switch"},{"position":{"x":2.0,"y":0.0},"kind":"Light"}],"lighting_connections":[{"switch_index":0,"light_index":1}]}"#;
+        let plan: Plan = serde_json::from_str(data).unwrap();
+        assert_eq!(plan.circuit_count(), 1);
+        assert_eq!(plan.lighting_connections[0].circuit_index, 0);
+        assert_eq!(plan.lighting_point_ref(1).as_deref(), Some("A1"));
+    }
+
+    #[test]
+    fn circuit_rename_checks_duplicates_and_empty() {
+        let mut p = Plan::default();
+        p.add_lighting_circuit().unwrap();
+        let mut c = p.circuit(1).unwrap().clone();
+        c.letter = "A".into();
+        assert!(p.update_lighting_circuit(1, c.clone()).is_err());
+        c.letter = "  ".into();
+        assert!(p.update_lighting_circuit(1, c.clone()).is_err());
+        c.letter = " C ".into();
+        p.update_lighting_circuit(1, c).unwrap();
+        assert_eq!(p.circuit(1).unwrap().letter, "C");
+        p.remove_lighting_circuit(1).unwrap();
+        assert_eq!(p.circuit_count(), 1);
     }
 
     #[test]
