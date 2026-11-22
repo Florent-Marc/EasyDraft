@@ -57,7 +57,7 @@ EasyDraft détecte maintenant les **espaces fermés** formés par les murs. Il p
 - Case **« Pièces, surfaces et dimensions »** dans les calques visibles pour masquer/afficher les étiquettes sans effacer les données.
 - Les noms de pièces sont sauvegardés dans le **JSON** et restent associés à un point intérieur, même si l'ordre des murs change.
 
-**Exemple prêt à ouvrir** : `examples/maison-deux-pieces.json` contient un Salon et une Cuisine séparés par un mur commun avec une porte, ainsi qu'un interrupteur relié à une lampe. Pour le charger, mettez ce chemin dans le champ **Fichier JSON**, puis cliquez sur **Ouvrir**. Le logiciel doit détecter automatiquement **deux pièces**.
+**Exemple prêt à ouvrir** : cliquez sur **« Ouvrir l'exemple de 2 pièces »** dans la barre latérale. Le plan actuel est remplacé (bouton **Annuler** disponible). Le fichier source `examples/maison-deux-pieces.json` contient un Salon et une Cuisine séparés par un mur commun avec une porte, ainsi qu'un interrupteur relié à une lampe. Le logiciel doit détecter automatiquement **deux pièces**, chacune d'environ **10,64 m²** avec les murs de 20 cm. Vous pouvez également saisir le chemin du JSON dans **Fichier JSON** puis cliquer sur **Ouvrir**.
 
 **Limites** : il s'agit d'un calcul 2D géométrique, pas d'un métré réglementaire. Les surfaces de pièces concaves ou très complexes restent des estimations, et les cotes hors rectangles sont des dimensions d'encombrement. Les noms sont ancrés à une position dans la pièce : si un changement de murs déplace complètement la pièce, il peut être nécessaire de la renommer. Les ouvertures ne cassent pas la fermeture géométrique des murs.
 
