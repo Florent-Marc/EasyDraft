@@ -1,5 +1,6 @@
 mod model;
 mod pdf_export;
+mod unifilar;
 
 use eframe::egui::{self, Align2, Color32, FontId, Painter, Pos2, Sense, Stroke, Vec2};
 use model::{
@@ -11,6 +12,28 @@ const GRID_METERS: f32 = 0.5;
 const PIXELS_PER_METER: f32 = 80.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+enum View {
+    Plan2D,
+    Unifilar,
+}
+
+/// Pointilles indiquant une relation logique, pas le passage reel des cables.
+fn draw_logical_link(painter: &Painter, a: Pos2, b: Pos2) {
+    let delta = b - a;
+    let length = delta.length();
+    if length < 0.1 { return; }
+    let direction = delta / length;
+    let mut along = 0.0;
+    while along < length {
+        painter.line_segment(
+            [a + direction * along, a + direction * (along + 8.0_f32).min(length)],
+            Stroke::new(1.6, Color32::from_rgb(31, 135, 192)),
+        );
+        along += 14.0;
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Tool {
     Wall,
     SelectWall,
@@ -20,6 +43,7 @@ enum Tool {
     Outlet,
     Switch,
     Light,
+    LinkLighting,
     Pan,
 }
 
@@ -27,6 +51,8 @@ struct EasyDraft {
     plan: Plan,
     undo: Vec<Plan>,
     tool: Tool,
+    view: View,
+    pending_switch: Option<usize>,
     pending_wall: Option<Point>,
     pending_stair: Option<Point>,
     selected_wall: Option<usize>,
@@ -53,6 +79,8 @@ impl Default for EasyDraft {
             plan: Plan::default(),
             undo: Vec::new(),
             tool: Tool::Wall,
+            view: View::Plan2D,
+            pending_switch: None,
             pending_wall: None,
             pending_stair: None,
             selected_wall: None,
@@ -221,6 +249,7 @@ impl EasyDraft {
             self.plan = plan;
             self.pending_wall = None;
             self.pending_stair = None;
+            self.pending_switch = None;
             self.selected_wall = None;
             self.status = "Derniere modification annulee".into();
         }
@@ -246,6 +275,7 @@ impl EasyDraft {
                 self.plan = plan;
                 self.pending_wall = None;
                 self.pending_stair = None;
+                self.pending_switch = None;
                 self.selected_wall = None;
                 self.status = format!("Ouvert : {}", self.file_path);
             }
@@ -257,6 +287,7 @@ impl EasyDraft {
         self.tool = tool;
         self.pending_wall = None;
         self.pending_stair = None;
+        self.pending_switch = None;
     }
 
     fn find_wall(&self, point: Point, ppm: f32) -> Option<usize> {
@@ -284,6 +315,23 @@ impl EasyDraft {
             }
         }
         closest
+    }
+
+    fn find_electrical_symbol(&self, point: Point, ppm: f32, kind: ElectricalKind) -> Option<usize> {
+        self.plan.symbols.iter().enumerate()
+            .filter(|(_, symbol)| symbol.kind == kind)
+            .map(|(index, symbol)| (index, point.distance_to(symbol.position)))
+            .filter(|(_, distance)| *distance <= 18.0 / ppm)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(index, _)| index)
+    }
+
+    fn add_lighting_demo(&mut self) {
+        self.snapshot();
+        self.plan.add_demo_lighting();
+        self.pending_switch = None;
+        self.view = View::Plan2D;
+        self.status = "Exemple ajoute : I et L sont lies. Clique 'Schema unifilaire' pour voir le resultat.".into();
     }
 
     fn export_pdf(&mut self) {
@@ -369,6 +417,29 @@ impl EasyDraft {
                     self.status = "Clique sur un mur pour y placer l'ouverture".into();
                 }
             }
+            Tool::LinkLighting => {
+                if let Some(switch_index) = self.pending_switch {
+                    if let Some(light_index) = self.find_electrical_symbol(position, ppm, ElectricalKind::Light) {
+                        let mut updated = self.plan.clone();
+                        match updated.connect_switch_to_light(switch_index, light_index) {
+                            Ok(()) => {
+                                self.snapshot();
+                                self.plan = updated;
+                                self.pending_switch = None;
+                                self.status = "Liaison enregistree : visible dans le schema unifilaire.".into();
+                            }
+                            Err(error) => self.status = error.into(),
+                        }
+                    } else {
+                        self.status = "Clique sur une lampe (X) pour terminer la liaison.".into();
+                    }
+                } else if let Some(index) = self.find_electrical_symbol(position, ppm, ElectricalKind::Switch) {
+                    self.pending_switch = Some(index);
+                    self.status = "Interrupteur selectionne. Clique maintenant sur une lampe (X).".into();
+                } else {
+                    self.status = "Clique d'abord sur un interrupteur (I).".into();
+                }
+            }
             Tool::Outlet | Tool::Switch | Tool::Light => {
                 let kind = match self.tool {
                     Tool::Outlet => ElectricalKind::Outlet,
@@ -429,7 +500,7 @@ impl EasyDraft {
         if response.clicked() {
             if let Some(pos) = response.interact_pointer_pos() {
                 let world = to_world(pos);
-                let point = if matches!(self.tool, Tool::SelectWall | Tool::Door | Tool::Window) {
+                let point = if matches!(self.tool, Tool::SelectWall | Tool::Door | Tool::Window | Tool::LinkLighting) {
                     world
                 } else {
                     world.snapped(self.snap_m)
@@ -484,7 +555,19 @@ impl EasyDraft {
             draw_stair(&painter, stair, origin, ppm);
         }
 
-        for symbol in &self.plan.symbols {
+        for link in &self.plan.lighting_connections {
+            if !self.plan.lighting_connection_is_valid(link) { continue; }
+            let a = to_screen(self.plan.symbols[link.switch_index].position);
+            let b = to_screen(self.plan.symbols[link.light_index].position);
+            draw_logical_link(&painter, a, b);
+        }
+        if let Some(index) = self.pending_switch {
+            if let (Some(symbol), Some(cursor)) = (self.plan.symbols.get(index), response.hover_pos()) {
+                draw_logical_link(&painter, to_screen(symbol.position), cursor);
+            }
+        }
+
+        for (index, symbol) in self.plan.symbols.iter().enumerate() {
             let pos = to_screen(symbol.position);
             painter.circle_filled(pos, 13.0, Color32::WHITE);
             painter.circle_stroke(pos, 13.0, Stroke::new(2.0, Color32::from_rgb(20, 106, 190)));
@@ -494,6 +577,17 @@ impl EasyDraft {
                 ElectricalKind::Light => "X",
             };
             painter.text(pos, Align2::CENTER_CENTER, label, FontId::proportional(15.0), Color32::from_rgb(20, 106, 190));
+            let number = self.plan.symbol_number(index).unwrap_or(index + 1);
+            painter.text(
+                pos + Vec2::new(0.0, 23.0),
+                Align2::CENTER_CENTER,
+                format!("{label}{number}"),
+                FontId::proportional(12.0),
+                Color32::from_rgb(35, 77, 123),
+            );
+            if self.pending_switch == Some(index) {
+                painter.circle_stroke(pos, 17.0, Stroke::new(2.0, Color32::from_rgb(233, 139, 40)));
+            }
         }
 
         if let Some(start) = self.pending_stair {
@@ -542,12 +636,23 @@ impl eframe::App for EasyDraft {
             ui.horizontal(|ui| {
                 ui.heading("EasyDraft");
                 ui.separator();
+                if ui.selectable_label(self.view == View::Plan2D, "Plan 2D").clicked() {
+                    self.view = View::Plan2D;
+                }
+                if ui.selectable_label(self.view == View::Unifilar, "Schema unifilaire").clicked() {
+                    self.view = View::Unifilar;
+                }
+                ui.separator();
+                if ui.button("Ajouter demo I -> L").clicked() { self.add_lighting_demo(); }
+                ui.separator();
                 if ui.button("Nouveau").clicked() {
                     self.snapshot();
                     self.plan = Plan::default();
                     self.pending_wall = None;
                     self.pending_stair = None;
+                    self.pending_switch = None;
                     self.selected_wall = None;
+                    self.view = View::Plan2D;
                     self.status = "Nouveau plan".into();
                 }
                 if ui.button("Annuler").clicked() { self.undo(); }
@@ -576,6 +681,11 @@ impl eframe::App for EasyDraft {
             if ui.selectable_label(self.tool == Tool::Outlet, "Prise").clicked() { self.select_tool(Tool::Outlet); }
             if ui.selectable_label(self.tool == Tool::Switch, "Interrupteur").clicked() { self.select_tool(Tool::Switch); }
             if ui.selectable_label(self.tool == Tool::Light, "Point lumineux").clicked() { self.select_tool(Tool::Light); }
+            if ui.selectable_label(self.tool == Tool::LinkLighting, "Lier I -> L").clicked() {
+                self.select_tool(Tool::LinkLighting);
+                self.view = View::Plan2D;
+                self.status = "Clique sur un interrupteur I, puis sur une lampe X.".into();
+            }
             if ui.selectable_label(self.tool == Tool::Pan, "Deplacer la vue").clicked() { self.select_tool(Tool::Pan); }
             ui.separator();
             if self.tool == Tool::Door {
@@ -647,14 +757,30 @@ impl eframe::App for EasyDraft {
             ));
             ui.label(format!("Escaliers : {}", self.plan.stairs.len()));
             ui.label(format!("Symboles : {}", self.plan.symbols.len()));
-            ui.small("Symboles indicatifs, non certifies RGIE.");
+            ui.label(format!("Liaisons I -> L : {}", self.plan.lighting_connections.len()));
+            ui.label(format!("Lampes non liees : {}", self.plan.unlinked_lights()));
+            ui.separator();
+            if self.view == View::Unifilar {
+                ui.small("Le schema est automatiquement tire des liaisons du plan 2D.");
+                if ui.button("Retour au plan 2D").clicked() {
+                    self.view = View::Plan2D;
+                }
+            } else {
+                ui.small("La liaison pointillee est logique, pas un chemin de cable.");
+            }
+            ui.small("Prototype uniquement : pas de validation RGIE.");
         });
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.label(&self.status);
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| self.canvas(ui));
+        egui::CentralPanel::default().show(ctx, |ui| {
+            match self.view {
+                View::Plan2D => self.canvas(ui),
+                View::Unifilar => unifilar::show(ui, &self.plan),
+            }
+        });
     }
 }
 
