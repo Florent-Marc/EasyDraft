@@ -347,6 +347,223 @@ pub fn export_pdf(path: &str, plan: &Plan, show_dimensions: bool) -> Result<(), 
     std::fs::write(path, bytes).map_err(|err| format!("Export PDF impossible : {err}"))
 }
 
+
+/// PDF vectoriel du schema unifilaire de travail, distinct du plan architectural.
+/// Plusieurs pages A4 paysage sont generees pour ne pas ecraser les circuits charges.
+/// Les valeurs absentes restent explicitement "a renseigner".
+pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
+    let links: Vec<&crate::model::LightingConnection> = plan.lighting_connections.iter()
+        .filter(|link| plan.lighting_connection_is_valid(link))
+        .collect();
+    let pages_count = links.len().max(1).div_ceil(6);
+    let circuit = &plan.lighting_circuit;
+    let color = DARK;
+    let mut pages = Vec::new();
+
+    for page_index in 0..pages_count {
+        let start = page_index * 6;
+        let end = (start + 6).min(links.len());
+        let mut pdf = String::new();
+        raw_pdf_text(
+            &mut pdf, 35.0, 559.0, 18.0,
+            "EasyDraft - SCHEMA UNIFILAIRE (PROTOTYPE)", color,
+        );
+        raw_pdf_text(
+            &mut pdf, 35.0, 540.0, 9.0,
+            "Document de travail NON CONFORME / non valide RGIE", (0.68, 0.25, 0.10),
+        );
+        raw_pdf_text(
+            &mut pdf, 35.0, 517.0, 12.0,
+            &format!(
+                "Circuit {}  |  Protection : {}",
+                pdf_safe_label(&circuit.letter),
+                if circuit.breaker_amp == 0 { "a renseigner".to_owned() }
+                else { circuit.protection_label() }
+            ),
+            color,
+        );
+        raw_pdf_text(
+            &mut pdf, 35.0, 499.0, 11.0,
+            &format!("Canalisation : {}", circuit.cable_label()),
+            color,
+        );
+        raw_pdf_text(
+            &mut pdf, 35.0, 481.0, 10.0,
+            &format!(
+                "Pose : {}  |  DDR amont : {}",
+                pdf_safe_label(&circuit.installation_method),
+                pdf_safe_label(&circuit.upstream_rdc),
+            ),
+            color,
+        );
+        raw_pdf_text(
+            &mut pdf, 760.0, 555.0, 10.0,
+            &format!("{}/{}", page_index + 1, pages_count), color,
+        );
+        let missing_count = circuit.missing_fields().len();
+        if missing_count > 0 {
+            raw_pdf_text(
+                &mut pdf, 35.0, 461.0, 10.0,
+                &format!("ATTENTION : {missing_count} caracteristique(s) de circuit non renseignee(s)"),
+                (0.67, 0.31, 0.08),
+            );
+        }
+
+        // Le depart est dessine symboliquement. Le DDR non renseigne n'est pas invente.
+        pdf_box(&mut pdf, 40.0, 390.0, 140.0, 42.0, color, 1.0);
+        raw_pdf_text(&mut pdf, 55.0, 406.0, 11.0, "Tableau / depart", color);
+        raw_pdf_line(&mut pdf, 180.0, 411.0, 207.0, 411.0, color, 1.6);
+        raw_pdf_line(&mut pdf, 207.0, 411.0, 230.0, 430.0, color, 1.6);
+        pdf_box(&mut pdf, 227.0, 427.0, 8.0, 8.0, color, 1.0);
+        raw_pdf_line(&mut pdf, 248.0, 411.0, 310.0, 411.0, color, 1.6);
+        raw_pdf_text(&mut pdf, 188.0, 379.0, 9.0, "Protection (representation simplifiee)", DIM);
+
+        let first_y = 330.0;
+        let last_y = if end > start {
+            first_y - (end - start - 1) as f32 * 46.0
+        } else {
+            first_y
+        };
+        raw_pdf_line(&mut pdf, 310.0, 411.0, 310.0, last_y, color, 1.6);
+        for (index, link) in links[start..end].iter().enumerate() {
+            let y = first_y - index as f32 * 46.0;
+            raw_pdf_line(&mut pdf, 310.0, y, 431.0, y, color, 1.6);
+            // Interrupteur : contact ouvert.
+            raw_pdf_line(&mut pdf, 431.0, y, 451.0, y + 13.0, BLUE, 1.5);
+            raw_pdf_line(&mut pdf, 459.0, y, 478.0, y, color, 1.5);
+            raw_pdf_line(&mut pdf, 478.0, y, 655.0, y, color, 1.6);
+            raw_pdf_circle(&mut pdf, 670.0, y, 15.0, color);
+            raw_pdf_line(&mut pdf, 660.0, y - 10.0, 680.0, y + 10.0, color, 1.5);
+            raw_pdf_line(&mut pdf, 660.0, y + 10.0, 680.0, y - 10.0, color, 1.5);
+            let i_number = plan.symbol_number(link.switch_index).unwrap_or(link.switch_index + 1);
+            let l_number = plan.symbol_number(link.light_index).unwrap_or(link.light_index + 1);
+            raw_pdf_text(&mut pdf, 425.0, y - 22.0, 10.0, &format!("I{i_number}"), color);
+            raw_pdf_text(&mut pdf, 663.0, y - 22.0, 10.0, &format!("L{l_number}"), color);
+            raw_pdf_text(
+                &mut pdf, 330.0, y + 9.0, 9.0,
+                &format!(
+                    "{}.{}",
+                    pdf_safe_label(&circuit.letter),
+                    start + index + 1
+                ),
+                DIM,
+            );
+        }
+        if links.is_empty() {
+            raw_pdf_text(
+                &mut pdf, 335.0, 326.0, 11.0,
+                "Aucune liaison interrupteur - lampe", DIM,
+            );
+        }
+        raw_pdf_text(
+            &mut pdf, 35.0, 58.0, 10.0,
+            &format!(
+                "{} lampe(s) sans liaison | {} interrupteur(s) sans liaison",
+                plan.unlinked_lights(), plan.unlinked_switches()
+            ),
+            color,
+        );
+        raw_pdf_text(
+            &mut pdf, 35.0, 38.0, 9.0,
+            "Liaisons fonctionnelles, PAS un trajet de cable. A faire verifier avant toute utilisation technique.",
+            DIM,
+        );
+        pages.push(pdf);
+    }
+
+    std::fs::write(path, build_pdf_pages(&pages))
+        .map_err(|e| format!("Export du schema unifilaire impossible : {e}"))
+}
+
+fn pdf_safe_label(value: &str) -> &str {
+    if value.trim().is_empty() { "a renseigner" } else { value.trim() }
+}
+
+fn raw_pdf_line(out: &mut String, x1: f32, y1: f32, x2: f32, y2: f32, rgb: Rgb, width: f32) {
+    let _ = writeln!(
+        out,
+        "{:.3} {:.3} {:.3} RG {:.3} w {:.2} {:.2} m {:.2} {:.2} l S",
+        rgb.0, rgb.1, rgb.2, width, x1, y1, x2, y2
+    );
+}
+
+fn raw_pdf_text(out: &mut String, x: f32, y: f32, size: f32, text: &str, rgb: Rgb) {
+    // Type1 Helvetica sans encodage Unicode. Les caracteres non ASCII sont remplaces.
+    let ascii = text.chars().map(|ch| if ch.is_ascii() { ch } else { '?' }).collect::<String>();
+    let escaped = ascii.replace('\\', "\\\\").replace('(', "\\(").replace(')', "\\)");
+    let _ = writeln!(
+        out,
+        "BT /F1 {:.1} Tf {:.3} {:.3} {:.3} rg {:.2} {:.2} Td ({}) Tj ET",
+        size, rgb.0, rgb.1, rgb.2, x, y, escaped
+    );
+}
+
+fn pdf_box(out: &mut String, x: f32, y: f32, w: f32, h: f32, rgb: Rgb, thickness: f32) {
+    raw_pdf_line(out, x, y, x+w, y, rgb, thickness);
+    raw_pdf_line(out, x+w, y, x+w, y+h, rgb, thickness);
+    raw_pdf_line(out, x+w, y+h, x, y+h, rgb, thickness);
+    raw_pdf_line(out, x, y+h, x, y, rgb, thickness);
+}
+
+fn raw_pdf_circle(out: &mut String, x: f32, y: f32, r: f32, rgb: Rgb) {
+    let k = 0.55228475 * r;
+    let _ = writeln!(
+        out,
+        "{:.3} {:.3} {:.3} RG 1.2 w \
+         {:.2} {:.2} m \
+         {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c \
+         {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c \
+         {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c \
+         {:.2} {:.2} {:.2} {:.2} {:.2} {:.2} c S",
+        rgb.0, rgb.1, rgb.2,
+        x+r, y,
+        x+r, y+k, x+k, y+r, x, y+r,
+        x-k, y+r, x-r, y+k, x-r, y,
+        x-r, y-k, x-k, y-r, x, y-r,
+        x+k, y-r, x+r, y-k, x+r, y
+    );
+}
+
+fn build_pdf_pages(pages: &[String]) -> Vec<u8> {
+    let font_id = 3 + pages.len() * 2;
+    let page_refs = (0..pages.len())
+        .map(|index| format!("{} 0 R", 3 + index * 2))
+        .collect::<Vec<_>>().join(" ");
+    let mut objects = vec![
+        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+        format!("<< /Type /Pages /Kids [{}] /Count {} >>", page_refs, pages.len()),
+    ];
+    for (index, stream) in pages.iter().enumerate() {
+        let content_id = 4 + index * 2;
+        objects.push(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.0} {:.0}] /Resources << /Font << /F1 {} 0 R >> >> /Contents {} 0 R >>",
+            PAGE_W, PAGE_H, font_id, content_id
+        ));
+        objects.push(format!("<< /Length {} >>\nstream\n{}endstream", stream.len(), stream));
+    }
+    objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned());
+
+    let mut bytes = b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n".to_vec();
+    let mut offsets = vec![0usize];
+    for (index, obj) in objects.iter().enumerate() {
+        offsets.push(bytes.len());
+        bytes.extend_from_slice(format!("{} 0 obj\n{}\nendobj\n", index+1, obj).as_bytes());
+    }
+    let xref = bytes.len();
+    bytes.extend_from_slice(format!("xref\n0 {}\n", offsets.len()).as_bytes());
+    bytes.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in offsets.iter().skip(1) {
+        bytes.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    bytes.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+            offsets.len(), xref
+        ).as_bytes()
+    );
+    bytes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
