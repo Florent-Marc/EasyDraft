@@ -1818,6 +1818,20 @@ mod plan_editor_tests {
     use super::*;
 
     #[test]
+    fn placing_socket_assigns_it_to_selected_circuit() {
+        let mut app = EasyDraft::default();
+        let other = app.plan.add_lighting_circuit().unwrap();
+        app.active_circuit_index = other;
+        app.tool = Tool::Outlet;
+        app.place(Point { x: 1.0, y: 2.0 }, 80.0);
+        assert_eq!(app.plan.unassigned_outlets(), 0);
+        assert_eq!(app.plan.point_ref(0).as_deref(), Some("B1"));
+        assert_eq!(app.plan.outlets_on_circuit(other), vec![0]);
+        app.undo();
+        assert!(app.plan.symbols.is_empty());
+    }
+
+    #[test]
     fn undo_and_redo_restore_wall_and_new_changes_clear_redo() {
         let mut app = EasyDraft::default();
         app.snapshot();
