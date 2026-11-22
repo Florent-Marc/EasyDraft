@@ -225,6 +225,72 @@ pub struct Plan {
 }
 
 impl Plan {
+    /// Change les cotes d'un mur sans casser ses ouvertures existantes.
+    /// Les ouvertures restent mesurees depuis le point de depart du mur.
+    pub fn update_wall(&mut self, index: usize, start: Point, end: Point, thickness_m: f32)
+        -> Result<(), &'static str>
+    {
+        let wall = self.walls.get(index).ok_or("Mur introuvable")?;
+        let valid = [start.x, start.y, end.x, end.y, thickness_m]
+            .into_iter().all(f32::is_finite);
+        if !valid || !(0.05..=0.60).contains(&thickness_m) {
+            return Err("Coordonnees ou epaisseur invalides (5 a 60 cm)");
+        }
+        let length = start.distance_to(end);
+        if length < 0.05 {
+            return Err("Un mur doit mesurer au moins 5 cm");
+        }
+        if self.openings.iter().any(|opening| {
+            opening.wall_index == index
+                && (opening.start_m() < 0.049
+                    || opening.end_m() + 0.049 > length)
+        }) {
+            return Err("Une porte ou fenetre depasserait du mur");
+        }
+        let _ = wall;
+        self.walls[index] = Wall { start, end, thickness_m };
+        Ok(())
+    }
+
+    /// Supprime un mur et ses ouvertures, puis reajuste les references des autres murs.
+    pub fn remove_wall(&mut self, index: usize) -> Result<(), &'static str> {
+        if index >= self.walls.len() {
+            return Err("Mur introuvable");
+        }
+        self.walls.remove(index);
+        self.openings.retain(|opening| opening.wall_index != index);
+        for opening in &mut self.openings {
+            if opening.wall_index > index {
+                opening.wall_index -= 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Supprime un symbole electrique et reindexe les liaisons survivantes.
+    pub fn remove_symbol(&mut self, index: usize) -> Result<(), &'static str> {
+        if index >= self.symbols.len() {
+            return Err("Symbole introuvable");
+        }
+        self.symbols.remove(index);
+        self.lighting_connections.retain(|link|
+            link.switch_index != index && link.light_index != index
+        );
+        for link in &mut self.lighting_connections {
+            if link.switch_index > index { link.switch_index -= 1; }
+            if link.light_index > index { link.light_index -= 1; }
+        }
+        Ok(())
+    }
+
+    pub fn remove_stair(&mut self, index: usize) -> Result<(), &'static str> {
+        if index >= self.stairs.len() {
+            return Err("Escalier introuvable");
+        }
+        self.stairs.remove(index);
+        Ok(())
+    }
+
     /// Lie un interrupteur a un point lumineux (ce n'est pas un chemin de cable).
     pub fn connect_switch_to_light(
         &mut self,
@@ -567,6 +633,89 @@ mod tests {
         let plan: Plan = serde_json::from_str(r#"{"walls":[],"symbols":[]}"#).unwrap();
         assert_eq!(plan.lighting_circuit.letter, "A");
         assert_eq!(plan.lighting_circuit.breaker_amp, 0);
+    }
+
+    #[test]
+    fn removing_wall_cleans_openings_and_shifts_indices() {
+        let mut plan = Plan::default();
+        for x in [0.0, 4.0, 8.0] {
+            plan.walls.push(Wall {
+                start: Point { x, y: 0.0 },
+                end: Point { x: x + 3.0, y: 0.0 },
+                thickness_m: 0.15,
+            });
+        }
+        for wall_index in [0, 1, 2] {
+            plan.add_opening(
+                wall_index,
+                Point { x: wall_index as f32 * 4.0 + 1.5, y: 0.0 },
+                0.9, OpeningKind::Door, false, false, 0.05,
+            ).unwrap();
+        }
+        plan.remove_wall(1).unwrap();
+        assert_eq!(plan.walls.len(), 2);
+        assert_eq!(plan.openings.len(), 2);
+        assert_eq!(plan.openings[0].wall_index, 0);
+        assert_eq!(plan.openings[1].wall_index, 1);
+        assert!(plan.remove_wall(4).is_err());
+    }
+
+    #[test]
+    fn resizing_wall_preserves_or_rejects_openings() {
+        let mut plan = Plan::default();
+        plan.walls.push(Wall {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 4.0, y: 0.0 },
+            thickness_m: 0.15,
+        });
+        plan.add_opening(
+            0, Point { x: 3.0, y: 0.0 }, 0.9,
+            OpeningKind::Window, false, false, 0.05
+        ).unwrap();
+        let start = Point { x: 0.0, y: 0.0 };
+        assert!(plan.update_wall(0, start, Point { x: 2.0, y: 0.0 }, 0.20).is_err());
+        assert_eq!(plan.walls[0].length_m(), 4.0);
+        plan.update_wall(0, start, Point { x: 5.0, y: 0.0 }, 0.20).unwrap();
+        assert_eq!(plan.walls[0].thickness_m, 0.20);
+        assert_eq!(plan.openings.len(), 1);
+    }
+
+    #[test]
+    fn deleting_switch_cleans_and_reindexes_lighting_links() {
+        let mut plan = Plan::default();
+        plan.add_demo_lighting();
+        let switch2 = plan.symbols.len();
+        plan.symbols.push(ElectricalSymbol {
+            position: Point { x: 10.0, y: 0.0 },
+            kind: ElectricalKind::Switch,
+        });
+        let light2 = plan.symbols.len();
+        plan.symbols.push(ElectricalSymbol {
+            position: Point { x: 11.0, y: 0.0 },
+            kind: ElectricalKind::Light,
+        });
+        plan.connect_switch_to_light(switch2, light2).unwrap();
+        plan.remove_symbol(0).unwrap();
+        assert_eq!(plan.lighting_connections.len(), 1);
+        assert_eq!(plan.lighting_connections[0].switch_index, 1);
+        assert_eq!(plan.lighting_connections[0].light_index, 2);
+        assert!(plan.lighting_connection_is_valid(&plan.lighting_connections[0]));
+        assert!(plan.remove_symbol(500).is_err());
+        let saved: Plan = serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
+        assert_eq!(saved.lighting_connections, plan.lighting_connections);
+    }
+
+    #[test]
+    fn removing_stair_keeps_other_elements() {
+        let mut plan = Plan::default();
+        plan.stairs.push(Stair {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 2.0, y: 0.0 },
+            width_m: 1.0, steps: 10,
+        });
+        plan.remove_stair(0).unwrap();
+        assert!(plan.stairs.is_empty());
+        assert!(plan.remove_stair(0).is_err());
     }
 
     #[test]
