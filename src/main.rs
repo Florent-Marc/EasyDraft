@@ -418,6 +418,140 @@ impl EasyDraft {
         }
     }
 
+    /// Panneau d'edition numerique des objets selectionnes.
+    fn selected_properties(&mut self, ui: &mut egui::Ui) {
+        if let Some(index) = self.selected_wall {
+            if let Some(mut edited) = self.plan.walls.get(index).cloned() {
+                ui.heading(format!("Mur {}", index + 1));
+                let mut changed = false;
+                ui.label("Extremite de depart (metres)");
+                ui.horizontal(|ui| {
+                    changed |= ui.add(egui::DragValue::new(&mut edited.start.x).speed(0.05).prefix("X: ").suffix(" m")).changed();
+                    changed |= ui.add(egui::DragValue::new(&mut edited.start.y).speed(0.05).prefix("Y: ").suffix(" m")).changed();
+                });
+                ui.label("Extremite d'arrivee (metres)");
+                ui.horizontal(|ui| {
+                    changed |= ui.add(egui::DragValue::new(&mut edited.end.x).speed(0.05).prefix("X: ").suffix(" m")).changed();
+                    changed |= ui.add(egui::DragValue::new(&mut edited.end.y).speed(0.05).prefix("Y: ").suffix(" m")).changed();
+                });
+
+                let mut length = edited.length_m();
+                if ui.add(egui::DragValue::new(&mut length).speed(0.05).range(0.05..=500.0)
+                    .prefix("Longueur: ").suffix(" m")).changed() {
+                    let current = edited.length_m();
+                    let dx = if current > 0.0001 { (edited.end.x - edited.start.x) / current } else { 1.0 };
+                    let dy = if current > 0.0001 { (edited.end.y - edited.start.y) / current } else { 0.0 };
+                    edited.end = Point { x: edited.start.x + dx * length, y: edited.start.y + dy * length };
+                    changed = true;
+                }
+
+                let mut thickness_cm = edited.thickness_m * 100.0;
+                if ui.add(egui::DragValue::new(&mut thickness_cm).speed(1.0)
+                    .range(5.0..=60.0).prefix("Epaisseur: ").suffix(" cm")).changed() {
+                    edited.thickness_m = thickness_cm / 100.0;
+                    changed = true;
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Horizontal").clicked() {
+                        edited.end.y = edited.start.y;
+                        changed = true;
+                    }
+                    if ui.button("Vertical").clicked() {
+                        edited.end.x = edited.start.x;
+                        changed = true;
+                    }
+                });
+
+                if changed {
+                    let mut updated = self.plan.clone();
+                    match updated.update_wall(index, edited.start, edited.end, edited.thickness_m) {
+                        Ok(()) => {
+                            self.snapshot();
+                            self.plan = updated;
+                            self.status = "Mur modifie (portes et fenetres conservees)".into();
+                        }
+                        Err(error) => self.status = error.into(),
+                    }
+                }
+                ui.small("Les ouvertures restent a leur distance depuis le debut du mur.");
+                if ui.button("Supprimer ce mur").clicked() {
+                    self.delete_selected();
+                }
+                return;
+            }
+        }
+
+        if let Some(index) = self.selected_symbol {
+            if let Some(symbol) = self.plan.symbols.get(index).cloned() {
+                let kind = match symbol.kind {
+                    ElectricalKind::Outlet => "Prise",
+                    ElectricalKind::Switch => "Interrupteur",
+                    ElectricalKind::Light => "Point lumineux",
+                };
+                ui.heading(kind);
+                let mut position = symbol.position;
+                let mut changed = false;
+                ui.horizontal(|ui| {
+                    changed |= ui.add(egui::DragValue::new(&mut position.x)
+                        .speed(0.05).prefix("X: ").suffix(" m")).changed();
+                    changed |= ui.add(egui::DragValue::new(&mut position.y)
+                        .speed(0.05).prefix("Y: ").suffix(" m")).changed();
+                });
+                if changed && position.x.is_finite() && position.y.is_finite() {
+                    self.snapshot();
+                    self.plan.symbols[index].position = position;
+                    self.status = "Position de l'element electrique modifiee".into();
+                }
+                if ui.button("Supprimer cet appareil").clicked() {
+                    self.delete_selected();
+                }
+                ui.small("La suppression nettoie ses liaisons unifilaires.");
+                return;
+            }
+        }
+
+        if let Some(index) = self.selected_stair {
+            if let Some(mut stair) = self.plan.stairs.get(index).cloned() {
+                ui.heading("Escalier");
+                let mut changed = false;
+                ui.label("Depart");
+                ui.horizontal(|ui| {
+                    changed |= ui.add(egui::DragValue::new(&mut stair.start.x).speed(0.05).prefix("X: ").suffix(" m")).changed();
+                    changed |= ui.add(egui::DragValue::new(&mut stair.start.y).speed(0.05).prefix("Y: ").suffix(" m")).changed();
+                });
+                ui.label("Arrivee");
+                ui.horizontal(|ui| {
+                    changed |= ui.add(egui::DragValue::new(&mut stair.end.x).speed(0.05).prefix("X: ").suffix(" m")).changed();
+                    changed |= ui.add(egui::DragValue::new(&mut stair.end.y).speed(0.05).prefix("Y: ").suffix(" m")).changed();
+                });
+                let mut width_cm = stair.width_m * 100.0;
+                if ui.add(egui::DragValue::new(&mut width_cm).range(60.0..=250.0)
+                    .suffix(" cm").prefix("Largeur: ")).changed() {
+                    stair.width_m = width_cm / 100.0;
+                    changed = true;
+                }
+                changed |= ui.add(egui::Slider::new(&mut stair.steps, 3..=30)
+                    .text("Marches")).changed();
+                if changed {
+                    if stair.is_valid() && stair.start.x.is_finite() && stair.end.x.is_finite()
+                        && stair.start.y.is_finite() && stair.end.y.is_finite() {
+                        self.snapshot();
+                        self.plan.stairs[index] = stair;
+                        self.status = "Escalier modifie".into();
+                    } else {
+                        self.status = "Dimensions d'escalier invalides".into();
+                    }
+                }
+                if ui.button("Supprimer cet escalier").clicked() {
+                    self.delete_selected();
+                }
+                return;
+            }
+        }
+
+        ui.small("Selectionne un mur, un escalier ou un symbole sur le plan.");
+    }
+
     fn find_wall(&self, point: Point, ppm: f32) -> Option<usize> {
         let mut closest = None;
         let mut closest_distance = f32::INFINITY;
