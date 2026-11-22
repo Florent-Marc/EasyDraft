@@ -252,7 +252,11 @@ pub struct LightingCircuit {
     pub breaker_amp: u16,
     pub breaker_poles: u8,
     pub breaker_curve: String,
+    /// Ancienne description libre conservee pour la compatibilite JSON.
     pub upstream_rdc: String,
+    /// Lien structure vers Plan::differentials. Ne pas deduire d'un vieux texte.
+    #[serde(default)]
+    pub upstream_differential: Option<usize>,
     pub cable_type: String,
     pub conductor_count: u8,
     pub section_mm2: f32,
@@ -268,6 +272,7 @@ impl Default for LightingCircuit {
             breaker_poles: 0,
             breaker_curve: String::new(),
             upstream_rdc: String::new(),
+            upstream_differential: None,
             cable_type: String::new(),
             conductor_count: 0,
             section_mm2: 0.0,
@@ -284,7 +289,6 @@ impl LightingCircuit {
         if self.breaker_amp == 0 { missing.push("calibre protection"); }
         if self.breaker_poles == 0 { missing.push("nombre de poles"); }
         if self.breaker_curve.trim().is_empty() { missing.push("courbe/type protection"); }
-        if self.upstream_rdc.trim().is_empty() { missing.push("differentiel en amont"); }
         if self.cable_type.trim().is_empty() { missing.push("type de cable"); }
         if self.conductor_count == 0 { missing.push("nombre de conducteurs"); }
         if !self.section_mm2.is_finite() || self.section_mm2 <= 0.0 { missing.push("section du cable"); }
@@ -311,6 +315,42 @@ impl LightingCircuit {
             return "Canalisation : a renseigner".to_owned();
         }
         format!("{} {} x {} mm2", self.cable_type.trim(), self.conductor_count, self.section_mm2)
+    }
+}
+
+/// Caracteristiques RELEVEES d'une protection differentielle dans le tableau.
+/// Les champs a zero / vides sont explicitement inconnus.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DifferentialDevice {
+    pub reference: String,
+    pub kind: String,
+    pub rated_current_amp: u16,
+    pub sensitivity_ma: u16,
+    pub poles: u8,
+    pub notes: String,
+}
+
+impl DifferentialDevice {
+    pub fn missing_fields(&self) -> Vec<&'static str> {
+        let mut missing = Vec::new();
+        if self.reference.trim().is_empty() { missing.push("repere"); }
+        if self.kind.trim().is_empty() { missing.push("type du DDR"); }
+        if self.rated_current_amp == 0 { missing.push("courant nominal"); }
+        if self.sensitivity_ma == 0 { missing.push("sensibilite differentielle"); }
+        if self.poles == 0 { missing.push("nombre de poles"); }
+        missing
+    }
+
+    pub fn description(&self) -> String {
+        format!(
+            "{} - {} - {} A / {} mA - {}P",
+            self.reference,
+            if self.kind.trim().is_empty() { "type ?" } else { self.kind.trim() },
+            if self.rated_current_amp == 0 { "?".to_string() } else { self.rated_current_amp.to_string() },
+            if self.sensitivity_ma == 0 { "?".to_string() } else { self.sensitivity_ma.to_string() },
+            if self.poles == 0 { "?".to_string() } else { self.poles.to_string() },
+        )
     }
 }
 
@@ -341,6 +381,9 @@ pub struct Plan {
     /// Circuits d'eclairage additionnels ; l'ancien circuit reste a l'indice zero.
     #[serde(default)]
     pub additional_lighting_circuits: Vec<LightingCircuit>,
+    /// Protections differentielles du tableau ; elles peuvent alimenter plusieurs circuits.
+    #[serde(default)]
+    pub differentials: Vec<DifferentialDevice>,
     #[serde(default)]
     pub outlet_assignments: Vec<OutletAssignment>,
     #[serde(default)]
@@ -553,6 +596,116 @@ impl Plan {
     pub fn circuit(&self, index: usize) -> Option<&LightingCircuit> {
         if index == 0 { Some(&self.lighting_circuit) }
         else { self.additional_lighting_circuits.get(index - 1) }
+    }
+
+    pub fn add_differential(&mut self) -> Result<usize, &'static str> {
+        if self.differentials.len() >= 24 {
+            return Err("Maximum 24 protections differentielles dans ce prototype");
+        }
+        let reference = (1..=99).map(|n| format!("D{n}"))
+            .find(|candidate| !self.differentials.iter().any(|d| {
+                d.reference.eq_ignore_ascii_case(candidate)
+            }))
+            .ok_or("Aucun repere de differentiel libre")?;
+        let index = self.differentials.len();
+        self.differentials.push(DifferentialDevice {
+            reference,
+            ..DifferentialDevice::default()
+        });
+        Ok(index)
+    }
+
+    pub fn update_differential(
+        &mut self, index: usize, updated: DifferentialDevice
+    ) -> Result<(), &'static str> {
+        if index >= self.differentials.len() { return Err("Differentiel introuvable"); }
+        let reference = updated.reference.trim();
+        if reference.is_empty() || reference.len() > 12
+            || !reference.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+            return Err("Repere differentiel invalide (1 a 12 lettres, chiffres, tiret)");
+        }
+        if self.differentials.iter().enumerate().any(|(other, d)| {
+            other != index && d.reference.eq_ignore_ascii_case(reference)
+        }) {
+            return Err("Repere de differentiel deja utilise");
+        }
+        let mut device = updated;
+        device.reference = reference.to_ascii_uppercase();
+        self.differentials[index] = device;
+        Ok(())
+    }
+
+    pub fn set_circuit_differential(
+        &mut self, circuit_index: usize, upstream_index: Option<usize>
+    ) -> Result<(), &'static str> {
+        if upstream_index.is_some_and(|i| i >= self.differentials.len()) {
+            return Err("Le differentiel selectionne n'existe pas");
+        }
+        if circuit_index == 0 {
+            self.lighting_circuit.upstream_differential = upstream_index;
+        } else if let Some(circuit) = self.additional_lighting_circuits.get_mut(circuit_index - 1) {
+            circuit.upstream_differential = upstream_index;
+        } else {
+            return Err("Circuit introuvable");
+        }
+        Ok(())
+    }
+
+    pub fn differential_for_circuit(
+        &self, circuit_index: usize
+    ) -> Option<&DifferentialDevice> {
+        let index = self.circuit(circuit_index)?.upstream_differential?;
+        self.differentials.get(index)
+    }
+
+    pub fn differential_description_for_circuit(&self, circuit_index: usize) -> String {
+        if let Some(device) = self.differential_for_circuit(circuit_index) {
+            device.description()
+        } else {
+            "DDR non attribue".into()
+        }
+    }
+
+    /// Le champ descriptif ancien ne vaut jamais un raccordement de tableau.
+    pub fn circuit_missing_fields(&self, circuit_index: usize) -> Vec<&'static str> {
+        let Some(circuit) = self.circuit(circuit_index) else { return vec!["circuit introuvable"]; };
+        let mut missing = circuit.missing_fields();
+        if self.differential_for_circuit(circuit_index).is_none() {
+            missing.push("differentiel en amont non attribue");
+        }
+        missing
+    }
+
+    pub fn circuits_for_differential(&self, differential_index: usize) -> Vec<usize> {
+        (0..self.circuit_count()).filter(|&index| {
+            self.circuit(index).is_some_and(|c| {
+                c.upstream_differential == Some(differential_index)
+            })
+        }).collect()
+    }
+
+    pub fn circuits_without_differential(&self) -> Vec<usize> {
+        (0..self.circuit_count()).filter(|&index| {
+            self.differential_for_circuit(index).is_none()
+        }).collect()
+    }
+
+    /// Un differentiel utilise ne peut etre supprime (indices reindexes sinon).
+    pub fn remove_differential(&mut self, index: usize) -> Result<(), &'static str> {
+        if index >= self.differentials.len() { return Err("Differentiel introuvable"); }
+        if self.circuits_for_differential(index).len() > 0 {
+            return Err("Deconnecte d'abord les circuits de ce differentiel");
+        }
+        self.differentials.remove(index);
+        if let Some(i) = self.lighting_circuit.upstream_differential {
+            if i > index { self.lighting_circuit.upstream_differential = Some(i - 1); }
+        }
+        for circuit in &mut self.additional_lighting_circuits {
+            if let Some(i) = circuit.upstream_differential {
+                if i > index { circuit.upstream_differential = Some(i - 1); }
+            }
+        }
+        Ok(())
     }
 
     pub fn add_lighting_circuit(&mut self) -> Result<usize, &'static str> {
@@ -1461,6 +1614,63 @@ mod tests {
             assert!(ElectricalAppearance::choices(kind).iter().all(|style| style.valid_for(kind)));
             assert!(!ElectricalAppearance::choices(kind).is_empty());
         }
+    }
+
+    #[test]
+    fn one_differential_feeds_multiple_circuits_and_roundtrips() {
+        let mut p = Plan::default();
+        let b = p.add_lighting_circuit().unwrap();
+        let rcd = p.add_differential().unwrap();
+        p.set_circuit_differential(0, Some(rcd)).unwrap();
+        p.set_circuit_differential(b, Some(rcd)).unwrap();
+        let mut updated = p.differentials[rcd].clone();
+        updated.kind = "A".into();
+        updated.rated_current_amp = 40;
+        updated.sensitivity_ma = 30;
+        updated.poles = 2;
+        p.update_differential(rcd, updated).unwrap();
+        assert_eq!(p.circuits_for_differential(rcd), vec![0, 1]);
+        assert!(p.circuit_missing_fields(0).iter().all(|name| !name.contains("differentiel")));
+        assert!(p.remove_differential(rcd).is_err());
+        let saved = serde_json::to_string(&p).unwrap();
+        let restored: Plan = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.circuits_for_differential(rcd), vec![0, 1]);
+        assert_eq!(restored.differentials[0].sensitivity_ma, 30);
+    }
+
+    #[test]
+    fn old_free_text_differential_is_not_treated_as_a_connection() {
+        let old = r#"{"walls":[],"symbols":[],"lighting_circuit":{"letter":"A","upstream_rdc":"ancien DDR 30mA"}}"#;
+        let p: Plan = serde_json::from_str(old).unwrap();
+        assert!(p.differentials.is_empty());
+        assert!(p.differential_for_circuit(0).is_none());
+        assert!(p.circuit_missing_fields(0).iter().any(|name| name.contains("differentiel")));
+        assert_eq!(p.lighting_circuit.upstream_rdc, "ancien DDR 30mA");
+    }
+
+    #[test]
+    fn differential_deletion_reindexes_other_branches_safely() {
+        let mut p = Plan::default();
+        let first = p.add_differential().unwrap();
+        let second = p.add_differential().unwrap();
+        p.set_circuit_differential(0, Some(second)).unwrap();
+        assert!(p.remove_differential(second).is_err());
+        p.remove_differential(first).unwrap();
+        assert_eq!(p.differential_for_circuit(0).unwrap().reference, "D2");
+        assert_eq!(p.lighting_circuit.upstream_differential, Some(0));
+        assert!(p.set_circuit_differential(0, Some(55)).is_err());
+        p.set_circuit_differential(0, None).unwrap();
+        assert_eq!(p.circuits_without_differential(), vec![0]);
+    }
+
+    #[test]
+    fn differential_reference_must_be_unique() {
+        let mut p = Plan::default();
+        p.add_differential().unwrap();
+        p.add_differential().unwrap();
+        let mut edited = p.differentials[1].clone();
+        edited.reference = "d1".into();
+        assert!(p.update_differential(1, edited).is_err());
     }
 
     #[test]
