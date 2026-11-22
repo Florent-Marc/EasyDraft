@@ -422,6 +422,180 @@ impl EasyDraft {
         })
     }
 
+    /// Recherche une ouverture par sa projection sur le mur porteur.
+    fn find_opening(&self, point: Point, ppm: f32) -> Option<usize> {
+        self.plan.openings.iter().enumerate()
+            .filter_map(|(index, opening)| {
+                let wall = self.plan.walls.get(opening.wall_index)?;
+                let length = wall.length_m();
+                if length < 0.001 { return None; }
+                let projection = wall.projected_distance_m(point);
+                let distance_from_axis = {
+                    let ratio = projection / length;
+                    let closest = Point {
+                        x: wall.start.x + (wall.end.x - wall.start.x) * ratio,
+                        y: wall.start.y + (wall.end.y - wall.start.y) * ratio,
+                    };
+                    point.distance_to(closest)
+                };
+                let along_tolerance = 7.0 / ppm;
+                let tolerance = wall.thickness_m * 0.5 + 11.0 / ppm;
+                if projection >= opening.start_m() - along_tolerance
+                    && projection <= opening.end_m() + along_tolerance
+                    && distance_from_axis <= tolerance
+                {
+                    Some((index, distance_from_axis))
+                } else {
+                    None
+                }
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(index, _)| index)
+    }
+
+    /// Selectionne d'abord une ouverture, puis une poignee de mur, puis le corps du mur.
+    fn drag_target_at(&self, point: Point, ppm: f32) -> Option<DragTarget> {
+        if !self.show_architecture { return None; }
+        if let Some(index) = self.find_opening(point, ppm) {
+            return Some(DragTarget::Opening(index));
+        }
+        let mut nearest = None;
+        let mut distance = 12.0 / ppm;
+        for (index, wall) in self.plan.walls.iter().enumerate() {
+            for (candidate, endpoint) in [
+                (DragTarget::WallStart(index), wall.start),
+                (DragTarget::WallEnd(index), wall.end),
+            ] {
+                let d = point.distance_to(endpoint);
+                if d <= distance {
+                    nearest = Some(candidate);
+                    distance = d;
+                }
+            }
+        }
+        nearest.or_else(|| self.find_wall(point, ppm).map(DragTarget::WallBody))
+    }
+
+    fn snap_other_endpoint(&self, raw: Point, moving_wall: usize, ppm: f32) -> Point {
+        if self.snap_endpoints {
+            if let Some(point) = self.plan.walls.iter().enumerate()
+                .filter(|(index, _)| *index != moving_wall)
+                .flat_map(|(_, wall)| [wall.start, wall.end])
+                .filter(|point| raw.distance_to(*point) <= 13.0 / ppm)
+                .min_by(|a, b| raw.distance_to(*a).total_cmp(&raw.distance_to(*b)))
+            {
+                return point;
+            }
+        }
+        raw.snapped(self.snap_m)
+    }
+
+    fn begin_drag(&mut self, point: Point, ppm: f32) {
+        let Some(target) = self.drag_target_at(point, ppm) else { return; };
+        self.clear_selection();
+        match target {
+            DragTarget::Opening(index) => {
+                self.selected_opening = Some(index);
+                self.status = "Glisse la porte ou la fenetre le long du mur".into();
+            }
+            DragTarget::WallStart(index) | DragTarget::WallEnd(index) => {
+                self.selected_wall = Some(index);
+                self.status = "Deplace la poignee du mur (accrochage disponible)".into();
+            }
+            DragTarget::WallBody(index) => {
+                self.selected_wall = Some(index);
+                self.status = "Deplace le mur entier avec ses ouvertures".into();
+            }
+        }
+        self.drag = Some(ActiveDrag {
+            target,
+            from: point,
+            original: self.plan.clone(),
+            changed: false,
+        });
+    }
+
+    fn update_drag(&mut self, cursor: Point, ppm: f32) {
+        let Some(drag) = self.drag.as_ref() else { return; };
+        let from = drag.from;
+        let target = drag.target;
+        let delta = Point { x: cursor.x - from.x, y: cursor.y - from.y };
+        let mut updated = drag.original.clone();
+
+        let outcome = match target {
+            DragTarget::Opening(index) => {
+                if let Some(opening) = updated.openings.get(index) {
+                    if let Some(wall) = updated.walls.get(opening.wall_index) {
+                        let along = wall.projected_distance_m(cursor) - wall.projected_distance_m(from);
+                        let center = ((opening.center_m + along) / self.snap_m).round() * self.snap_m;
+                        let min_center = opening.width_m / 2.0 + 0.05;
+                        let max_center = wall.length_m() - min_center;
+                        if min_center <= max_center {
+                            updated.move_opening(index, center.clamp(min_center, max_center))
+                        } else {
+                            Err("Ce mur est trop court pour l'ouverture")
+                        }
+                    } else { Err("Mur introuvable") }
+                } else { Err("Ouverture introuvable") }
+            }
+            DragTarget::WallBody(index) => {
+                if let Some(wall) = updated.walls.get(index).cloned() {
+                    let d = Point {
+                        x: (delta.x / self.snap_m).round() * self.snap_m,
+                        y: (delta.y / self.snap_m).round() * self.snap_m,
+                    };
+                    updated.update_wall(
+                        index,
+                        Point { x: wall.start.x + d.x, y: wall.start.y + d.y },
+                        Point { x: wall.end.x + d.x, y: wall.end.y + d.y },
+                        wall.thickness_m,
+                    )
+                } else { Err("Mur introuvable") }
+            }
+            DragTarget::WallStart(index) | DragTarget::WallEnd(index) => {
+                if let Some(wall) = updated.walls.get(index).cloned() {
+                    let original_endpoint = match target {
+                        DragTarget::WallStart(_) => wall.start,
+                        _ => wall.end,
+                    };
+                    let candidate = Point {
+                        x: original_endpoint.x + delta.x,
+                        y: original_endpoint.y + delta.y,
+                    };
+                    let snapped = self.snap_other_endpoint(candidate, index, ppm);
+                    let (start, end) = match target {
+                        DragTarget::WallStart(_) => (snapped, wall.end),
+                        _ => (wall.start, snapped),
+                    };
+                    updated.update_wall(index, start, end, wall.thickness_m)
+                } else { Err("Mur introuvable") }
+            }
+        };
+
+        match outcome {
+            Ok(()) => {
+                // Toujours repartir de l'etat d'origine pour eviter l'accumulation d'erreurs
+                // de grille pendant un glisser-deposer.
+                self.plan = updated;
+                if let Some(active) = self.drag.as_mut() {
+                    active.changed = true;
+                }
+            }
+            Err(error) => self.status = format!("Deplacement refuse : {error}"),
+        }
+    }
+
+    fn finish_drag(&mut self) {
+        if let Some(session) = self.drag.take() {
+            if session.changed {
+                self.undo.push(session.original);
+                if self.undo.len() > 100 { self.undo.remove(0); }
+                self.redo.clear();
+                self.status = "Deplacement applique (Ctrl+Z pour annuler)".into();
+            }
+        }
+    }
+
     fn select_at(&mut self, point: Point, ppm: f32) {
         self.clear_selection();
         if self.show_electrical {
