@@ -207,6 +207,13 @@ impl LightingCircuit {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RoomLabel {
+    /// Position ancree a l'interieur de la piece.
+    pub position: Point,
+    pub name: String,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Plan {
     pub walls: Vec<Wall>,
@@ -222,9 +229,60 @@ pub struct Plan {
     pub lighting_connections: Vec<LightingConnection>,
     #[serde(default)]
     pub lighting_circuit: LightingCircuit,
+    /// Les noms appartiennent a un point interieur, pas a un index de murs fragile.
+    #[serde(default)]
+    pub room_labels: Vec<RoomLabel>,
 }
 
 impl Plan {
+    pub fn room_name<'a>(&'a self, room: &crate::rooms::DetectedRoom) -> &'a str {
+        self.room_labels.iter()
+            .find(|label| room.contains(label.position))
+            .map(|label| label.name.as_str())
+            .unwrap_or("")
+    }
+
+    /// Modifie le nom de la piece contenant le point indique.
+    /// Une chaine vide retire le nom, sans supprimer la piece geometrique.
+    pub fn set_room_name(&mut self, at: Point, name: &str)
+        -> Result<(), &'static str>
+    {
+        let rooms = crate::rooms::detect_rooms(&self.walls);
+        let room = rooms.iter().find(|room| room.contains(at))
+            .ok_or("Aucune piece fermee a cet endroit")?;
+        if name.chars().count() > 60 {
+            return Err("Nom limite a 60 caracteres");
+        }
+        let title = name.trim();
+        // Eviter deux labels concurrents si des pieces ont ete fusionnees.
+        let mut first = None;
+        for (index, label) in self.room_labels.iter().enumerate() {
+            if room.contains(label.position) {
+                first = Some(index);
+                break;
+            }
+        }
+        if title.is_empty() {
+            self.room_labels.retain(|label| !room.contains(label.position));
+        } else if let Some(index) = first {
+            self.room_labels[index].name = title.to_owned();
+            self.room_labels[index].position = room.center;
+            let anchor = room.center;
+            let mut has_first = false;
+            self.room_labels.retain(|label| {
+                if label.position == anchor {
+                    if has_first { false } else { has_first = true; true }
+                } else { !room.contains(label.position) }
+            });
+        } else {
+            self.room_labels.push(RoomLabel {
+                position: room.center,
+                name: title.to_owned(),
+            });
+        }
+        Ok(())
+    }
+
     /// Change les cotes d'un mur sans casser ses ouvertures existantes.
     /// Les ouvertures restent mesurees depuis le point de depart du mur.
     pub fn update_wall(&mut self, index: usize, start: Point, end: Point, thickness_m: f32)
@@ -716,6 +774,30 @@ mod tests {
         plan.remove_stair(0).unwrap();
         assert!(plan.stairs.is_empty());
         assert!(plan.remove_stair(0).is_err());
+    }
+
+    #[test]
+    fn room_name_survives_json_and_prior_plans_remain_compatible() {
+        let mut plan = Plan::default();
+        let coords = [(0.0, 0.0, 4.0, 0.0), (4.0, 0.0, 4.0, 3.0),
+            (4.0, 3.0, 0.0, 3.0), (0.0, 3.0, 0.0, 0.0)];
+        for (x1, y1, x2, y2) in coords {
+            plan.walls.push(Wall {
+                start: Point { x: x1, y: y1 },
+                end: Point { x: x2, y: y2 },
+                thickness_m: 0.2,
+            });
+        }
+        plan.set_room_name(Point { x: 1.0, y: 1.0 }, "Salon").unwrap();
+        let rooms = crate::rooms::detect_rooms(&plan.walls);
+        assert_eq!(plan.room_name(&rooms[0]), "Salon");
+        let restored: Plan = serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
+        assert_eq!(restored.room_name(&rooms[0]), "Salon");
+        let old: Plan = serde_json::from_str(r#"{"walls":[],"symbols":[]}"#).unwrap();
+        assert!(old.room_labels.is_empty());
+        assert!(plan.set_room_name(Point { x: 8.0, y: 8.0 }, "Cuisine").is_err());
+        plan.set_room_name(Point { x: 1.0, y: 1.0 }, "").unwrap();
+        assert_eq!(plan.room_name(&rooms[0]), "");
     }
 
     #[test]
