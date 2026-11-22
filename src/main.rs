@@ -961,11 +961,21 @@ impl EasyDraft {
     }
 
     fn add_lighting_demo(&mut self) {
-        self.snapshot();
-        self.plan.add_demo_lighting();
-        self.pending_switch = None;
-        self.view = View::Plan2D;
-        self.status = "Exemple ajoute : I et L sont lies. Clique 'Schema unifilaire' pour voir le resultat.".into();
+        let mut updated = self.plan.clone();
+        match updated.add_demo_lighting_in_circuit(self.active_circuit_index) {
+            Ok(()) => {
+                self.snapshot();
+                self.plan = updated;
+                self.pending_switch = None;
+                self.view = View::Plan2D;
+                self.status = format!(
+                    "Exemple ajoute au circuit {}. Ouvre le schema unifilaire.",
+                    self.plan.circuit(self.active_circuit_index)
+                        .map(|c| c.letter.as_str()).unwrap_or("?")
+                );
+            }
+            Err(error) => self.status = error.into(),
+        }
     }
 
     fn export_unifilar_pdf(&mut self) {
