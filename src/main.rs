@@ -752,7 +752,7 @@ impl EasyDraft {
             }
         }
         for index in 0..self.plan.differentials.len() {
-            let original = self.plan.differentials[index].clone();
+            let Some(original) = self.plan.differentials.get(index).cloned() else { break; };
             let circuits = self.plan.circuits_for_differential(index);
             egui::CollapsingHeader::new(format!(
                 "{} - {} circuit(s) en aval", original.reference, circuits.len()
