@@ -1,65 +1,64 @@
 # EasyDraft 🦀
 
-Éditeur de plans de maison en 2D et prototype de schéma unifilaire d'éclairage, développé en **Rust** avec **eframe/egui**.
+**EasyDraft** est un prototype en **Rust + egui/eframe** pour dessiner des plans de maison en 2D et construire des schémas électriques de travail.
 
-## Démarrer
+## Installation
 
-Installer [Rust](https://rustup.rs/), cloner le dépôt puis :
+Installez [Rust](https://rustup.rs/), puis :
 
 ```bash
 cargo run
 ```
 
-Pour lancer les tests unitaires :
+Pour lancer les tests (modèle, anciennes sauvegardes JSON, liaisons et PDF) :
 
 ```bash
 cargo test
 ```
 
-## Premier scénario à tester : un interrupteur et une lampe
+Les sources principales sont `src/model.rs`, `src/main.rs`, `src/unifilar.rs` et `src/pdf_export.rs`.
 
-1. Ouvrir **Plan 2D**. Sélectionner **Interrupteur** et cliquer sur le plan pour placer `I1`.
-2. Sélectionner **Point lumineux** et cliquer ailleurs pour placer `L1` (la lampe est représentée par un X).
-3. Sélectionner **Lier I -> L** dans la barre latérale.
-4. Cliquer d'abord sur `I1` puis sur `L1`. Une **liaison pointillée** apparaît sur le plan. Elle représente le lien logique, **pas le trajet physique du câble**.
-5. Cliquer sur **Schema unifilaire** en haut de l'application. La vue est **calculée à partir des mêmes liaisons enregistrées** et affiche le départ symbolique A, l'interrupteur I1 et la lampe L1.
-6. Cliquer sur **Enregistrer** pour sauvegarder le plan en JSON. Réouvrir le fichier avec **Ouvrir** : la liaison est conservée, ainsi que les murs et les autres éléments.
+## Démonstration électrique : une lampe et un interrupteur
 
-**Raccourci de test** : **Ajouter demo I -> L** crée un interrupteur, une lampe et leur liaison sans supprimer le reste du projet. Un exemple JSON de pièce équipée est aussi disponible dans [`examples/eclairage-simple.json`](examples/eclairage-simple.json) ; entrer son chemin dans **Fichier JSON**, puis cliquer sur **Ouvrir**.
+1. Dans **Plan 2D**, choisissez **Interrupteur** puis cliquez dans la pièce pour placer `I1`.
+2. Choisissez **Point lumineux** et cliquez pour placer `L1`.
+3. Choisissez **Lier I -> L**, cliquez d'abord sur **I1**, puis sur **L1**. Une ligne bleue pointillée représente **la relation fonctionnelle**, et **non le chemin réel du câble**.
+4. Cliquez sur **Schéma unifilaire** en haut. Un schéma du circuit d'éclairage apparaît avec départ, protection à renseigner, canalisation, commande et lampe.
+5. Dans le panneau gauche, déroulez **Circuit A - paramètres**. Saisissez les valeurs réelles de protection (calibre, pôles, courbe, différentiel en amont) et de canalisation (type, nombre de conducteurs, section, mode de pose).
+6. Vérifiez les avertissements de champs manquants. Cliquez sur **Enregistrer** pour conserver la configuration et les connexions dans le JSON.
 
-Pour chaque nouvelle lampe, on peut associer un seul interrupteur dans cette première version ; un interrupteur peut commander plusieurs lampes. Les doublons et les types erronés sont rejetés. Le schéma avertit aussi lorsqu'une lampe n'est reliée à rien.
+**Raccourci** : **Ajouter demo I -> L** ajoute un interrupteur et une lampe déjà reliés. Le fichier `examples/eclairage-simple.json` contient également une petite pièce avec une liaison.
 
-## Dessin architectural
+### Améliorations du schéma unifilaire
 
-- **Murs** : tracé en deux clics, épaisseur 5 à 60 cm et longueur cotée.
-- **Portes** : clic sur un mur, largeur réglable et sens d'ouverture configurable.
-- **Fenêtres** : clic sur un mur et largeur réglable.
-- **Escaliers droits** : deux clics, largeur, nombre de marches et flèche de montée.
-- **Grille**, aimantation réglable, zoom et déplacement de vue.
-- **Prises, interrupteurs, lampes** placés directement sur le plan.
-- **Annuler**, enregistrer et charger un fichier JSON. Les anciens JSON sans liaisons continuent à se charger.
+- Schéma de travail plus lisible : **tableau → disjoncteur → départ de circuit → interrupteur(s) → lampe(s)**.
+- Plusieurs lampes peuvent être commandées par un seul interrupteur et sont **regroupées visuellement**.
+- Repérage partagé entre le **plan 2D**, le schéma et le **PDF unifilaire** : `A1`, `A2`, etc. Les libellés `I1`, `L1` identifient les symboles d'édition.
+- Les informations du circuit sont éditables. **Aucun calibre, câble ni différentiel n'est inventé** : un champ vide reste indiqué comme « à renseigner ».
+- Les lampes et interrupteurs sans liaison sont comptés. Les connexions invalides ou dupliquées issues d'un fichier JSON sont ignorées ou signalées.
+- Chaque liaison peut être supprimée depuis la vue unifilaire ; cette suppression est visible immédiatement dans le plan 2D et peut être annulée.
+- Les caractéristiques, connexions et repères survivent aux sauvegardes JSON ; les anciens projets sans ces champs restent lisibles.
 
-## Export en PDF
+### Deux exports PDF distincts
 
-Le bouton **Exporter PDF** produit un plan **A4 paysage** vectoriel dans `plan-easydraft.pdf` (chemin modifiable). Le dessin est ajusté à la page et **n'est pas encore à l'échelle exacte 1:50 ou 1:100**.
+- **Exporter PDF plan** : le plan de la maison en A4 paysage vectoriel, automatiquement ajusté à la page (sans échelle d'impression 1:50 ou 1:100 garantie).
+- **Exporter PDF unifilaire** : un document A4 paysage vectoriel du circuit d'éclairage, **avec pagination automatique par lots de six liaisons**, les caractéristiques renseignées et les éléments manquants. Nom par défaut : `unifilaire-easydraft.pdf`.
 
-L'export PDF actuel porte sur le **plan 2D architectural**, pas encore sur la vue unifilaire.
+Un fichier de test couvrant **sept liaisons et deux pages PDF** est prévu dans les tests Rust.
 
-## Important : prototype non réglementaire
+## Dessin de la maison
 
-Le **schéma unifilaire est pour l'instant une démonstration fonctionnelle**, pas un dossier électrique belge complet. Il **ne représente pas** le type de protection, le calibre des disjoncteurs, les sections et types de conducteurs, ni toutes les conventions de symboles exigées. Il **ne garantit aucune conformité au RGIE** et ne doit pas être utilisé comme document d'exécution ou de contrôle. Aucune simulation de mise sous tension n'est implémentée.
+- Murs à deux clics, épaisseur de 5 à 60 cm, cotations axe-à-axe
+- Portes et fenêtres insérées dans les murs, avec largeur réglable
+- Escaliers droits, marches et flèche du sens de la montée
+- Grille, aimantation, zoom, déplacement, annulation
+- Prises, interrupteurs et lampes en superposition du plan 2D
 
-## Prochaines étapes
+## Limitations importantes
 
-- Circuit(s) personnalisables, protection et section de câble
-- Références stables pour les appareils et édition/suppression des liaisons
-- Symboles normalisés, vrais schémas unifilaires avec plusieurs types de circuits
-- Export PDF dédié au schéma unifilaire et contrôles de cohérence
-- Tests de compilation CI confirmés sur les plateformes cibles
+**Ce logiciel n'est pas un générateur de documents certifiés conformes au RGIE.** La vue unifilaire est un **prototype fonctionnel**, pas un schéma d'exécution ni une étude de dimensionnement. Elle ne prend pas encore en charge les circuits de prises, les boîtes, la distribution multi-tableaux, le schéma complet des différentiels, les symboles normalisés exhaustifs, ni les calculs de protection. Les valeurs saisies par l'utilisateur ne font l'objet d'aucune validation réglementaire. Pour une installation réelle, faire vérifier le dossier par un professionnel compétent.
 
-## Technique
-
-Rust 2024, eframe/egui 0.33, serde et serde_json. Les vues du plan et du schéma se basent sur une seule structure `Plan` dans `src/model.rs` ; la logique de dessin unifilaire se trouve dans `src/unifilar.rs`.
+L'unifilaire décrit actuellement **un seul circuit d'éclairage logique**, même si plusieurs interrupteurs et lampes peuvent être reliés. Les escaliers sont uniquement droits. La suppression individuelle des appareils et l'édition avancée des circuits restent à venir.
 
 ## Licence
 
