@@ -186,6 +186,8 @@ pub struct InstallationInfo {
     pub voltage: String,
     pub current_kind: String,
     pub supply: String,
+    /// Caracteristiques du cable d'entree au tableau principal.
+    pub incoming_cable: String,
     pub panel_name: String,
     pub revision: String,
     pub drawing_date: String,
