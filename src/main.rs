@@ -1632,6 +1632,79 @@ mod plan_editor_tests {
     }
 
     #[test]
+    fn dragging_wall_keeps_attached_opening_and_is_one_undo_step() {
+        let mut app = EasyDraft::default();
+        app.plan.walls.push(Wall {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 5.0, y: 0.0 },
+            thickness_m: 0.15,
+        });
+        app.plan.add_opening(
+            0, Point { x: 2.0, y: 0.0 }, 0.9,
+            OpeningKind::Door, false, false, 0.05,
+        ).unwrap();
+        app.begin_drag(Point { x: 3.2, y: 0.0 }, 80.0);
+        assert!(matches!(app.drag.as_ref().map(|d| d.target), Some(DragTarget::WallBody(0))));
+        app.update_drag(Point { x: 3.2, y: 1.0 }, 80.0);
+        app.update_drag(Point { x: 3.2, y: 1.5 }, 80.0);
+        assert_eq!(app.undo.len(), 0);
+        app.finish_drag();
+        assert_eq!(app.undo.len(), 1);
+        assert!((app.plan.walls[0].start.y - 1.5).abs() < 0.001);
+        assert_eq!(app.plan.openings[0].center_m, 2.0);
+        app.undo();
+        assert_eq!(app.plan.walls[0].start.y, 0.0);
+        app.redo();
+        assert!((app.plan.walls[0].start.y - 1.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn door_drags_only_along_its_wall_and_stops_before_another_opening() {
+        let mut app = EasyDraft::default();
+        app.plan.walls.push(Wall {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 5.0, y: 0.0 },
+            thickness_m: 0.15,
+        });
+        app.plan.add_opening(
+            0, Point { x: 1.0, y: 0.0 }, 0.9,
+            OpeningKind::Door, false, false, 0.05,
+        ).unwrap();
+        app.plan.add_opening(
+            0, Point { x: 4.0, y: 0.0 }, 1.2,
+            OpeningKind::Window, false, false, 0.05,
+        ).unwrap();
+
+        app.begin_drag(Point { x: 1.0, y: 0.0 }, 80.0);
+        assert!(matches!(app.drag.as_ref().map(|d| d.target), Some(DragTarget::Opening(0))));
+        app.update_drag(Point { x: 2.0, y: 0.3 }, 80.0);
+        assert!((app.plan.openings[0].center_m - 2.0).abs() < 0.001);
+        // La tentative suivante est invalide : l'ouverture ne se superpose pas.
+        app.update_drag(Point { x: 3.2, y: 0.0 }, 80.0);
+        assert!((app.plan.openings[0].center_m - 2.0).abs() < 0.001);
+        app.finish_drag();
+        assert_eq!(app.undo.len(), 1);
+        app.undo();
+        assert!((app.plan.openings[0].center_m - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn wall_end_handles_resize_without_changing_other_endpoint() {
+        let mut app = EasyDraft::default();
+        app.plan.walls.push(Wall {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 4.0, y: 0.0 },
+            thickness_m: 0.15,
+        });
+        app.begin_drag(Point { x: 4.0, y: 0.0 }, 80.0);
+        assert!(matches!(app.drag.as_ref().map(|d| d.target), Some(DragTarget::WallEnd(0))));
+        app.update_drag(Point { x: 5.0, y: 0.0 }, 80.0);
+        app.finish_drag();
+        assert_eq!(app.plan.walls[0].start.x, 0.0);
+        assert!((app.plan.walls[0].end.x - 5.0).abs() < 0.001);
+    }
+
+    #[test]
     fn removing_electric_symbol_cleans_unifilar_from_editor() {
         let mut app = EasyDraft::default();
         app.plan.add_demo_lighting();
