@@ -505,7 +505,7 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
         raw_pdf_line(&mut pdf, 180.0, 411.0, 202.0, 411.0, color, 1.6);
         draw_pdf_primitives(
             &mut pdf, 228.0, 411.0, 0.85,
-            &rgie_symbols::protection_primitives(
+            &rgie_symbols::horizontal_protection_primitives(
                 rgie_symbols::protection_from_text(&circuit.protection_kind)
             ),
             color,
