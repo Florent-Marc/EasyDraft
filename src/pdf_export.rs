@@ -566,6 +566,34 @@ fn build_pdf_pages(pages: &[String]) -> Vec<u8> {
 mod tests {
     use super::*;
     #[test]
+    fn unifilar_pdf_spreads_seven_links_across_two_pages() {
+        let mut plan = Plan::default();
+        plan.symbols.push(crate::model::ElectricalSymbol {
+            position: Point { x: 0.0, y: 0.0 },
+            kind: ElectricalKind::Switch,
+        });
+        for i in 0..7 {
+            let index = plan.symbols.len();
+            plan.symbols.push(crate::model::ElectricalSymbol {
+                position: Point { x: 1.0, y: i as f32 },
+                kind: ElectricalKind::Light,
+            });
+            plan.connect_switch_to_light(0, index).unwrap();
+        }
+        let path = std::env::temp_dir().join(format!(
+            "easydraft-unifilar-{}.pdf",
+            std::process::id()
+        ));
+        export_unifilar_pdf(&path.to_string_lossy(), &plan).unwrap();
+        let pdf = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(path);
+        assert!(pdf.starts_with(b"%PDF-1.4"));
+        assert!(pdf.ends_with(b"%%EOF\n"));
+        assert!(pdf.windows(b"/Count 2".len()).any(|chunk| chunk == b"/Count 2"));
+        assert!(pdf.windows(b"A7".len()).any(|chunk| chunk == b"A7"));
+    }
+
+    #[test]
     fn exports_minimal_valid_pdf_structure() {
         let mut plan = Plan::default();
         plan.walls.push(Wall {
