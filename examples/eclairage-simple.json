@@ -1,0 +1,72 @@
+{
+  "walls": [
+    {
+      "start": {
+        "x": 0,
+        "y": 0
+      },
+      "end": {
+        "x": 4,
+        "y": 0
+      },
+      "thickness_m": 0.15
+    },
+    {
+      "start": {
+        "x": 4,
+        "y": 0
+      },
+      "end": {
+        "x": 4,
+        "y": 3
+      },
+      "thickness_m": 0.15
+    },
+    {
+      "start": {
+        "x": 4,
+        "y": 3
+      },
+      "end": {
+        "x": 0,
+        "y": 3
+      },
+      "thickness_m": 0.15
+    },
+    {
+      "start": {
+        "x": 0,
+        "y": 3
+      },
+      "end": {
+        "x": 0,
+        "y": 0
+      },
+      "thickness_m": 0.15
+    }
+  ],
+  "symbols": [
+    {
+      "position": {
+        "x": 0.4,
+        "y": 0.6
+      },
+      "kind": "Switch"
+    },
+    {
+      "position": {
+        "x": 2,
+        "y": 1.5
+      },
+      "kind": "Light"
+    }
+  ],
+  "openings": [],
+  "stairs": [],
+  "lighting_connections": [
+    {
+      "switch_index": 0,
+      "light_index": 1
+    }
+  ]
+}
