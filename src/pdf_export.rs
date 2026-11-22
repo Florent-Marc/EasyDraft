@@ -418,6 +418,82 @@ enum CircuitEntry {
     Socket(usize),
 }
 
+// Tableau vectoriel de travail. Une feuille precede les details des circuits.
+enum BoardRow { Differential(usize), Circuit(usize), MissingDdr }
+
+fn board_pdf_pages(plan: &Plan) -> Vec<String> {
+    let mut rows = Vec::new();
+    for d in 0..plan.differentials.len() {
+        rows.push(BoardRow::Differential(d));
+        for i in plan.circuits_for_differential(d) { rows.push(BoardRow::Circuit(i)); }
+    }
+    let unlinked = plan.circuits_without_differential();
+    if !unlinked.is_empty() {
+        rows.push(BoardRow::MissingDdr);
+        for i in unlinked { rows.push(BoardRow::Circuit(i)); }
+    }
+    if rows.is_empty() { rows.push(BoardRow::MissingDdr); }
+    rows.chunks(12).map(|chunk| {
+        let mut out = String::new();
+        raw_pdf_text(&mut out, 32.0, 558.0, 17.0,
+            "EasyDraft - TABLEAU ELECTRIQUE - SYNOPTIQUE", DARK);
+        raw_pdf_text(&mut out, 32.0, 533.0, 10.0,
+            &format!("Alimentation : {}", truncate_pdf(&plan.installation_info.supply, 63)), DARK);
+        raw_pdf_text(&mut out, 32.0, 516.0, 10.0,
+            &format!("Cable d'entree : {}", truncate_pdf(&plan.installation_info.incoming_cable, 63)), DARK);
+        raw_pdf_text(&mut out, 32.0, 500.0, 10.0,
+            &format!("Tableau : {}", truncate_pdf(&plan.installation_info.panel_name, 55)), DARK);
+        pdf_box(&mut out, 35.0, 446.0, 140.0, 30.0, DARK, 1.0);
+        raw_pdf_text(&mut out, 50.0, 458.0, 10.0, "Alimentation", DARK);
+        let mut y = 431.0;
+        for entry in chunk {
+            match entry {
+                BoardRow::Differential(i) => {
+                    let d = &plan.differentials[*i];
+                    raw_pdf_line(&mut out, 106.0, y, 210.0, y, DARK, 1.1);
+                    pdf_box(&mut out, 212.0, y - 11.0, 135.0, 25.0, DARK, 1.0);
+                    raw_pdf_text(&mut out, 219.0, y - 2.0, 10.0,
+                        &format!("DDR {}", d.reference), BLUE);
+                    raw_pdf_text(&mut out, 359.0, y - 2.0, 10.0,
+                        &truncate_pdf(&d.description(), 69), DARK);
+                }
+                BoardRow::MissingDdr => {
+                    raw_pdf_text(&mut out, 209.0, y - 2.0, 11.0,
+                        "DDR NON ATTRIBUE - branche non reliee", (0.7, 0.35, 0.1));
+                }
+                BoardRow::Circuit(i) => {
+                    if let Some(c) = plan.circuit(*i) {
+                        let assigned = plan.differential_for_circuit(*i).is_some();
+                        let col = if assigned { DARK } else { (0.7, 0.35, 0.1) };
+                        raw_pdf_text(&mut out, 211.0, y - 2.0, 9.0,
+                            &format!("Via {}", plan.differential_for_circuit(*i)
+                                .map(|d| d.reference.as_str()).unwrap_or("?")), col);
+                        if assigned {
+                            raw_pdf_line(&mut out, 277.0, y, 319.0, y, DARK, 1.1);
+                        }
+                        draw_pdf_primitives(
+                            &mut out, 336.0, y, 0.72,
+                            &rgie_symbols::horizontal_protection_primitives(
+                                rgie_symbols::protection_from_text(&c.protection_kind)
+                            ), col
+                        );
+                        raw_pdf_line(&mut out, 355.0, y, 398.0, y, col, 1.1);
+                        raw_pdf_text(&mut out, 411.0, y - 2.0, 10.0,
+                            &format!("Circuit {} / {}", c.letter,
+                                truncate_pdf(&c.protection_label(), 25)), DARK);
+                        raw_pdf_text(&mut out, 635.0, y - 2.0, 9.0,
+                            &truncate_pdf(&c.cable_label(), 27), DIM);
+                    }
+                }
+            }
+            y -= 29.0;
+        }
+        raw_pdf_text(&mut out, 32.0, 45.0, 9.0,
+            "Topologie declaree, non verifiee sur place. Pas un schema de cablage.", DIM);
+        out
+    }).collect()
+}
+
 pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
     // Une ou plusieurs pages par circuit, avec au plus six appareils par page.
     // Pas de faux symbole de conformite ni de schema de raccordement.
@@ -430,9 +506,14 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
             page_specs.push((circuit_index, start, (start + 6).min(count)));
         }
     }
-    let pages_count = page_specs.len();
+    let mut pages = board_pdf_pages(plan);
+    let overview_count = pages.len();
+    let pages_count = overview_count + page_specs.len();
     let color = DARK;
-    let mut pages = Vec::new();
+    for (index, page) in pages.iter_mut().enumerate() {
+        raw_pdf_text(page, 720.0, 560.0, 9.0,
+            &format!("Page {}/{}", index + 1, pages_count), DARK);
+    }
 
     for (page_index, (circuit_index, start, end)) in page_specs.into_iter().enumerate() {
         let circuit = plan.circuit(circuit_index)
@@ -481,15 +562,15 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
             &format!(
                 "Pose : {}  |  DDR amont : {}",
                 truncate_pdf(&circuit.installation_method, 28),
-                truncate_pdf(&circuit.upstream_rdc, 32),
+                truncate_pdf(&plan.differential_description_for_circuit(circuit_index), 32),
             ),
             color,
         );
         raw_pdf_text(
             &mut pdf, 715.0, 563.0, 9.0,
-            &format!("Page {}/{}", page_index + 1, pages_count), color,
+            &format!("Page {}/{}", page_index + overview_count + 1, pages_count), color,
         );
-        let missing_count = circuit.missing_fields().len();
+        let missing_count = plan.circuit_missing_fields(circuit_index).len();
         if missing_count > 0 {
             raw_pdf_text(
                 &mut pdf, 35.0, 462.0, 9.0,
@@ -776,7 +857,7 @@ mod tests {
         let _ = std::fs::remove_file(path);
         assert!(pdf.starts_with(b"%PDF-1.4"));
         assert!(pdf.ends_with(b"%%EOF\n"));
-        assert!(pdf.windows(b"/Count 2".len()).any(|chunk| chunk == b"/Count 2"));
+        assert!(pdf.windows(b"/Count 3".len()).any(|chunk| chunk == b"/Count 3"));
         assert!(pdf.windows(b"A7".len()).any(|chunk| chunk == b"A7"));
     }
 
@@ -826,7 +907,7 @@ mod tests {
         export_unifilar_pdf(&filename.to_string_lossy(), &plan).unwrap();
         let pdf = std::fs::read(&filename).unwrap();
         let _ = std::fs::remove_file(filename);
-        assert!(pdf.windows(b"/Count 2".len()).any(|x| x == b"/Count 2"));
+        assert!(pdf.windows(b"/Count 3".len()).any(|x| x == b"/Count 3"));
         assert!(pdf.windows(b"Circuit A".len()).any(|x| x == b"Circuit A"));
         assert!(pdf.windows(b"Circuit B".len()).any(|x| x == b"Circuit B"));
     }
