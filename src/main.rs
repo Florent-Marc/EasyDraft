@@ -359,6 +359,25 @@ impl EasyDraft {
         }
     }
 
+    fn load_board_example(&mut self) {
+        self.cancel_drag();
+        match serde_json::from_str::<Plan>(
+            include_str!("../examples/tableau-deux-ddr-trois-circuits.json")
+        ) {
+            Ok(plan) => {
+                self.snapshot();
+                self.plan = plan;
+                self.reset_pending();
+                self.clear_selection();
+                self.active_circuit_index = 0;
+                self.view = View::Unifilar;
+                self.show_electrical = true;
+                self.status = "Exemple de tableau charge : D1 vers A/B, D2 vers C (caracteristiques a renseigner)".into();
+            }
+            Err(error) => self.status = format!("Exemple tableau invalide : {error}"),
+        }
+    }
+
     fn load_unifilar_example(&mut self) {
         self.cancel_drag();
         match serde_json::from_str::<Plan>(
@@ -712,6 +731,10 @@ impl EasyDraft {
     /// Edition des appareils de protection amont. Aucune valeur technique
     /// n'est pre-remplie : les caracteristiques doivent etre relevees sur place.
     fn board_editor(&mut self, ui: &mut egui::Ui) {
+        if ui.button("Charger l'exemple tableau D1 / D2").clicked() {
+            self.load_board_example();
+        }
+        ui.small("Exemple de topologie uniquement : aucune valeur de protection n'est supposee.");
         ui.label(format!(
             "{} dispositif(s) differentiel(s) - {} circuit(s) non attribue(s)",
             self.plan.differentials.len(),
@@ -1989,6 +2012,19 @@ impl eframe::App for EasyDraft {
 #[cfg(test)]
 mod plan_editor_tests {
     use super::*;
+
+    #[test]
+    fn example_board_topology_is_shared_by_three_circuits() {
+        let plan: Plan = serde_json::from_str(
+            include_str!("../examples/tableau-deux-ddr-trois-circuits.json")
+        ).unwrap();
+        assert_eq!(plan.circuit_count(), 3);
+        assert_eq!(plan.differentials.len(), 2);
+        assert_eq!(plan.circuits_for_differential(0), vec![0, 1]);
+        assert_eq!(plan.circuits_for_differential(1), vec![2]);
+        assert_eq!(plan.unassigned_outlets(), 0);
+        assert!(plan.differentials.iter().all(|d| !d.missing_fields().is_empty()));
+    }
 
     #[test]
     fn placing_socket_assigns_it_to_selected_circuit() {
