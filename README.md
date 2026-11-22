@@ -18,12 +18,31 @@ cargo test
 
 Les sources principales sont `src/model.rs`, `src/main.rs`, `src/unifilar.rs` et `src/pdf_export.rs`.
 
+## Préparation du dossier RGIE belge (prototype)
+
+Les documents de référence sont le **Livre 1 du RGIE belge (version 2026)** et les indications du [SPF Economie pour le contrôle d'installations domestiques](https://economie.fgov.be/fr/themes/energie/sources-et-vecteurs-denergie/electricite/securite-et-controle-des/controle-des-installations).
+
+EasyDraft ne prétend **pas** certifier une installation. Le bouton **« Dossier RGIE (vérification) »** ouvre une **liste d'informations manquantes ou à contrôler** ; il ne remplace pas le contrôle d'un organisme agréé.
+
+- **Identification du dossier** dans le panneau latéral : adresse, responsable de l'exécution, qualité, n° TVA si applicable, tension nominale, nature du courant, alimentation, tableau, date et révision. Les valeurs doivent être saisies, pas inventées.
+- **Circuits et protections** : caractéristiques distinctes par départ (protection, différentiel en amont, canalisation, conducteurs, section, pose).
+- **Prises de courant** : quand une prise est placée, elle est affectée au circuit actif. Une prise ancienne sans affectation peut être sélectionnée pour choisir son circuit dans **Propriétés de la sélection**.
+- **Concordance des repères** : chaque lampe et prise rattachée possède un repère A1, A2, B1… repris sur le plan de position 2D, dans l'unifilaire et les deux PDF. Les interrupteurs rappellent les repères des lampes qu'ils commandent.
+- **Détection des incohérences** : prises sans circuit, lampes sans commande, interrupteurs sans charge, liaisons invalides ou dupliquées, caractéristiques de départ et du dossier non renseignées.
+- **PDF** : adresse, tension, nature du courant, responsable, date et révision sur l'unifilaire ; repères des prises et points lumineux sur le plan et l'unifilaire.
+
+L'ordre des numéros est généré **selon l'ordre des appareils dans le projet**, et **non déterminé en traçant le véritable circuit électrique** : l'ordre physique depuis chaque protection doit être confirmé avant l'établissement d'un document réglementaire.
+
+**Limites non résolues :** symboles de travail à rapprocher du tableau 2.23 du RGIE, différences entre prises simples et multiples, boîtes de connexion et de dérivation, machines/appareils fixes, sources (PV, onduleurs, batteries), tableaux multiples, détail de la distribution différentielle, vraie liaison des conducteurs, terre, protections et dimensionnement en fonction des conditions réelles, mise à jour et signatures officielles. Aucun de ces points n'est déclaré conforme par le logiciel.
+
+La description exhaustive des écarts et des priorités est dans [`docs/RGIE-CHECKLIST.md`](docs/RGIE-CHECKLIST.md).
+
 ## Schéma unifilaire : plusieurs circuits d'éclairage
 
-Le prototype permet maintenant de gérer **plusieurs circuits distincts** (16 au maximum pour le moment). Dans le panneau gauche :
+Le prototype permet maintenant de gérer **plusieurs circuits distincts** (16 au maximum pour le moment, prises et éclairage associés). Dans le panneau gauche :
 
-1. Cliquez sur **« Charger l'exemple unifilaire A + B »** pour charger un projet de démonstration avec deux circuits, trois lampes, deux interrupteurs et une petite maison. **L'exemple remplace le plan courant** (Annuler permet de revenir en arrière).
-2. Ouvrez **« Schéma unifilaire »** : une **feuille indépendante par circuit** apparaît. A commande deux lampes (**A1**, **A2**) et B en commande une (**B1**).
+1. Cliquez sur **« Charger l'exemple unifilaire A + B »** pour charger un projet de démonstration avec deux circuits, trois lampes, deux interrupteurs, une prise et une petite maison. **L'exemple remplace le plan courant** (Annuler permet de revenir en arrière).
+2. Ouvrez **« Schéma unifilaire »** : une **feuille indépendante par circuit** apparaît. A commande deux lampes (**A1**, **A2**) et B comprend une lampe (**B1**) et une prise (**B2**).
 3. Cliquez sur **« Ajouter un circuit d'éclairage »** pour créer B, C, D, etc. Choisissez **« Circuit actif pour Lier I -> L »** avant de relier un interrupteur et une lampe sur le plan 2D. Le bouton de démonstration ajoute également une paire sur ce circuit actif.
 4. Déployez **« Circuit X - protection / conducteurs »** pour renseigner, séparément pour chaque circuit, sa protection, son différentiel en amont, sa canalisation, la section et le mode de pose. **Les champs ne sont pas remplis automatiquement avec des valeurs supposées**.
 5. Dans le schéma, utilisez **« Déplacer vers un autre circuit »** à côté d'un interrupteur pour transférer **toutes ses lampes** au circuit choisi sans refaire les liaisons. Une lampe ne peut appartenir qu'à une seule liaison, et un interrupteur ne peut commander des lampes de plusieurs circuits simultanément dans cette version.
