@@ -1,57 +1,65 @@
 # EasyDraft 🦀
 
-EasyDraft est un éditeur de plans de maison **2D en Rust**, avec placement d'équipements électriques.
-
-## Fonctions de la version prototype
-
-- **Murs** : tracé à deux clics, épaisseur réglable (5 à 60 cm), sélection et modification de l'épaisseur
-- **Cotations** : longueur axe-à-axe de chaque mur, lignes de cote affichables ou masquables
-- **Portes** : insertion dans un mur, largeur réglable, choix de la charnière et du sens d'ouverture, arc de débattement
-- **Fenêtres** : insertion dans un mur, largeur réglable, vitrage représenté en plan
-- **Escaliers droits** : deux clics définissent le début et la fin de la montée ; largeur et nombre de marches réglables ; flèche de montée visible
-- **Électricité** : placement de prises, interrupteurs et points lumineux (symboles indicatifs)
-- Grille 50 cm, aimantation 5 à 50 cm, zoom, déplacement et annulation
-- Sauvegarde et ouverture au format JSON, compatible avec les plans créés avant l'ajout des ouvertures et escaliers
-- **Export PDF** : dessin vectoriel sur une feuille **A4 paysage**, avec murs, ouvertures, escaliers, cotes (si activées) et symboles électriques
+Éditeur de plans de maison en 2D et prototype de schéma unifilaire d'éclairage, développé en **Rust** avec **eframe/egui**.
 
 ## Démarrer
 
-Installez [Rust](https://rustup.rs/) puis, dans le dossier du dépôt :
+Installer [Rust](https://rustup.rs/), cloner le dépôt puis :
 
 ```bash
 cargo run
 ```
 
-Pour exécuter les tests :
+Pour lancer les tests unitaires :
 
 ```bash
 cargo test
 ```
 
-## Dessiner un plan
+## Premier scénario à tester : un interrupteur et une lampe
 
-1. Choisissez l'outil **Mur**, réglez l'épaisseur et cliquez deux fois pour définir ses extrémités.
-2. Choisissez **Porte** ou **Fenêtre**, réglez la largeur et cliquez sur un mur. Une ouverture est découpée automatiquement dans le tracé du mur. Des ouvertures qui se chevauchent sont refusées.
-3. Choisissez **Escalier**, réglez largeur et nombre de marches, puis cliquez deux fois pour délimiter l'escalier. La flèche montre le sens de montée.
-4. Ajoutez éventuellement les symboles électriques.
-5. Cliquez sur **Enregistrer** pour sauvegarder le plan au format JSON.
+1. Ouvrir **Plan 2D**. Sélectionner **Interrupteur** et cliquer sur le plan pour placer `I1`.
+2. Sélectionner **Point lumineux** et cliquer ailleurs pour placer `L1` (la lampe est représentée par un X).
+3. Sélectionner **Lier I -> L** dans la barre latérale.
+4. Cliquer d'abord sur `I1` puis sur `L1`. Une **liaison pointillée** apparaît sur le plan. Elle représente le lien logique, **pas le trajet physique du câble**.
+5. Cliquer sur **Schema unifilaire** en haut de l'application. La vue est **calculée à partir des mêmes liaisons enregistrées** et affiche le départ symbolique A, l'interrupteur I1 et la lampe L1.
+6. Cliquer sur **Enregistrer** pour sauvegarder le plan en JSON. Réouvrir le fichier avec **Ouvrir** : la liaison est conservée, ainsi que les murs et les autres éléments.
 
-## Exporter un PDF
+**Raccourci de test** : **Ajouter demo I -> L** crée un interrupteur, une lampe et leur liaison sans supprimer le reste du projet. Un exemple JSON de pièce équipée est aussi disponible dans [`examples/eclairage-simple.json`](examples/eclairage-simple.json) ; entrer son chemin dans **Fichier JSON**, puis cliquer sur **Ouvrir**.
 
-Saisissez le chemin de sortie dans **Fichier PDF (A4 paysage)**, puis cliquez sur **Exporter en PDF**. Par défaut le document est enregistré dans `plan-easydraft.pdf` (dans le répertoire de lancement du logiciel).
+Pour chaque nouvelle lampe, on peut associer un seul interrupteur dans cette première version ; un interrupteur peut commander plusieurs lampes. Les doublons et les types erronés sont rejetés. Le schéma avertit aussi lorsqu'une lampe n'est reliée à rien.
 
-**Important :** le plan est automatiquement ajusté pour tenir sur une page. L'export **n'est pas encore à une échelle architecturale stricte** (1:50, 1:100...), même si les longueurs des murs sont en mètres. Une fonction d'impression à échelle exacte sera nécessaire pour des plans d'exécution.
+## Dessin architectural
 
-## Limites actuelles
+- **Murs** : tracé en deux clics, épaisseur 5 à 60 cm et longueur cotée.
+- **Portes** : clic sur un mur, largeur réglable et sens d'ouverture configurable.
+- **Fenêtres** : clic sur un mur et largeur réglable.
+- **Escaliers droits** : deux clics, largeur, nombre de marches et flèche de montée.
+- **Grille**, aimantation réglable, zoom et déplacement de vue.
+- **Prises, interrupteurs, lampes** placés directement sur le plan.
+- **Annuler**, enregistrer et charger un fichier JSON. Les anciens JSON sans liaisons continuent à se charger.
 
-- Escaliers droits uniquement ; pas encore de tournants ou colimaçons
-- Portes et fenêtres liées à un mur, non repositionnables après insertion via la souris (annulation disponible)
-- Pas encore de vérification des normes ou de schémas électriques unifilaires certifiés conformes au RGIE
-- Les symboles électriques sont provisoires et non normalisés
+## Export en PDF
 
-## Technologies
+Le bouton **Exporter PDF** produit un plan **A4 paysage** vectoriel dans `plan-easydraft.pdf` (chemin modifiable). Le dessin est ajusté à la page et **n'est pas encore à l'échelle exacte 1:50 ou 1:100**.
 
-Rust 2024, eframe/egui 0.33, serde, serde_json. Le PDF est généré directement en format vectoriel PDF 1.4, sans dépendance externe supplémentaire.
+L'export PDF actuel porte sur le **plan 2D architectural**, pas encore sur la vue unifilaire.
+
+## Important : prototype non réglementaire
+
+Le **schéma unifilaire est pour l'instant une démonstration fonctionnelle**, pas un dossier électrique belge complet. Il **ne représente pas** le type de protection, le calibre des disjoncteurs, les sections et types de conducteurs, ni toutes les conventions de symboles exigées. Il **ne garantit aucune conformité au RGIE** et ne doit pas être utilisé comme document d'exécution ou de contrôle. Aucune simulation de mise sous tension n'est implémentée.
+
+## Prochaines étapes
+
+- Circuit(s) personnalisables, protection et section de câble
+- Références stables pour les appareils et édition/suppression des liaisons
+- Symboles normalisés, vrais schémas unifilaires avec plusieurs types de circuits
+- Export PDF dédié au schéma unifilaire et contrôles de cohérence
+- Tests de compilation CI confirmés sur les plateformes cibles
+
+## Technique
+
+Rust 2024, eframe/egui 0.33, serde et serde_json. Les vues du plan et du schéma se basent sur une seule structure `Plan` dans `src/model.rs` ; la logique de dessin unifilaire se trouve dans `src/unifilar.rs`.
 
 ## Licence
 
