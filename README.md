@@ -39,22 +39,41 @@ L'interface contient une **Légende RGIE** permettant de consulter les formes ac
 
 L'ensemble du tableau 2.23 n'est **pas encore implémenté** (sont notamment absents : socles multiples, prises étanches, commandes complexes, boîtes, sources, appareils fixes, schémas complets de tableau). Les symboles et l'ordre de câblage doivent être revus avant toute présentation comme dossier réglementaire.
 
+## Tableau électrique et liaisons amont (prototype)
+
+Le tableau n'est plus une simple étiquette. Le modèle de `Plan` contient désormais des **protections différentielles identifiées** et une affectation explicite de chaque circuit à son DDR amont.
+
+Dans le panneau gauche :
+
+1. Dérouler **Tableau électrique - protections différentielles**, puis cliquer sur **Ajouter un différentiel (D1, D2...)**. Pour chaque DDR, renseigner son **repère, type, courant nominal, sensibilité en mA et nombre de pôles** d'après l'installation réelle. Toutes les valeurs restent inconnues par défaut.
+2. Dérouler les propriétés d'un circuit A/B/C : dans **Différentiel EN AMONT du circuit**, sélectionner D1 ou D2. Un DDR peut alimenter plusieurs circuits.
+3. Ouvrir **Schéma unifilaire** : le premier dessin est un **synoptique du tableau**, montrant `Alimentation → DDR → protection divisionnaire → circuit`. Les circuits sans DDR apparaissent séparément comme **non attribués**, sans fausse liaison à l'alimentation.
+4. Décrire la **canalisation d'entrée du tableau** sous **Identification du dossier RGIE** et conserver les caractéristiques de chaque départ.
+5. Cliquer sur **Exporter PDF unifilaire** : la première page présente le tableau, les suivantes montrent les circuits et leurs points d'utilisation. Les pages sont vectorielles.
+6. Cliquer sur **Dossier RGIE (vérification)** pour afficher les champs et liaisons manquants. Le tableau refuse la suppression d'un DDR tant que des circuits lui sont associés.
+
+**Exemple immédiatement utilisable** : cliquer sur **Charger l'exemple tableau D1 / D2**. La démonstration contient les circuits **A et B en aval de D1**, et le circuit **C en aval de D2**. Elle remplace le plan courant, ce qui est annulable. Les calibres, sensibilités et types sont **volontairement vides** : ils ne représentent aucun schéma d'installation à reproduire.
+
+**Compatibilité** : les anciens fichiers JSON restent chargeables. L'ancien champ `upstream_rdc` est conservé comme note historique, **mais n'établit jamais une liaison de tableau**. Pour tracer la topologie, il faut affecter explicitement un DDR.
+
+**Limite fondamentale :** le synoptique décrit les relations saisies, **pas les conducteurs réels**. Il ne modélise pas encore les barres de répartition, les protections en cascade, les chemins de câble, la terre, les bornes ou les calculs d'admissibilité et de sélectivité. Les boîtes des DDR sont des représentations de travail identifiées, pas une couverture complète de la symbolique réglementaire.
+
 ## Préparation du dossier RGIE belge (prototype)
 
 Les documents de référence sont le **Livre 1 du RGIE belge (version 2026)** et les indications du [SPF Economie pour le contrôle d'installations domestiques](https://economie.fgov.be/fr/themes/energie/sources-et-vecteurs-denergie/electricite/securite-et-controle-des/controle-des-installations).
 
 EasyDraft ne prétend **pas** certifier une installation. Le bouton **« Dossier RGIE (vérification) »** ouvre une **liste d'informations manquantes ou à contrôler** ; il ne remplace pas le contrôle d'un organisme agréé.
 
-- **Identification du dossier** dans le panneau latéral : adresse, responsable de l'exécution, qualité, n° TVA si applicable, tension nominale, nature du courant, alimentation, tableau, date et révision. Les valeurs doivent être saisies, pas inventées.
-- **Circuits et protections** : caractéristiques distinctes par départ (protection, différentiel en amont, canalisation, conducteurs, section, pose).
+- **Identification du dossier** dans le panneau latéral : adresse, responsable de l'exécution, qualité, n° TVA si applicable, tension nominale, nature du courant, alimentation, **câble d'entrée**, tableau, date et révision. Les valeurs doivent être saisies, pas inventées.
+- **Circuits et protections** : un DDR défini et associé aux circuits, puis des caractéristiques propres par départ (protection, canalisation, conducteurs, section, pose).
 - **Prises de courant** : quand une prise est placée, elle est affectée au circuit actif. Une prise ancienne sans affectation peut être sélectionnée pour choisir son circuit dans **Propriétés de la sélection**.
 - **Concordance des repères** : chaque lampe et prise rattachée possède un repère A1, A2, B1… repris sur le plan de position 2D, dans l'unifilaire et les deux PDF. Les interrupteurs rappellent les repères des lampes qu'ils commandent.
 - **Détection des incohérences** : prises sans circuit, lampes sans commande, interrupteurs sans charge, liaisons invalides ou dupliquées, caractéristiques de départ et du dossier non renseignées.
-- **PDF** : adresse, tension, nature du courant, responsable, date et révision sur l'unifilaire ; repères des prises et points lumineux sur le plan et l'unifilaire.
+- **PDF** : page de tableau, DDR attribués, adresse, tension, nature du courant, responsable, date et révision sur l'unifilaire ; repères des prises et points lumineux sur le plan et l'unifilaire.
 
 L'ordre des numéros est généré **selon l'ordre des appareils dans le projet**, et **non déterminé en traçant le véritable circuit électrique** : l'ordre physique depuis chaque protection doit être confirmé avant l'établissement d'un document réglementaire.
 
-**Limites non résolues :** symboles de travail à rapprocher du tableau 2.23 du RGIE, différences entre prises simples et multiples, boîtes de connexion et de dérivation, machines/appareils fixes, sources (PV, onduleurs, batteries), tableaux multiples, détail de la distribution différentielle, vraie liaison des conducteurs, terre, protections et dimensionnement en fonction des conditions réelles, mise à jour et signatures officielles. Aucun de ces points n'est déclaré conforme par le logiciel.
+**Limites non résolues :** symboles de travail à rapprocher du tableau 2.23 du RGIE, différences entre prises simples et multiples, boîtes de connexion et de dérivation, machines/appareils fixes, sources (PV, onduleurs, batteries), tableaux multiples, distribution sur jeux de barres, vraies liaisons des conducteurs, terre, protections et dimensionnement en fonction des conditions réelles, mise à jour et signatures officielles. Aucun de ces points n'est déclaré conforme par le logiciel.
 
 La description exhaustive des écarts et des priorités est dans [`docs/RGIE-CHECKLIST.md`](docs/RGIE-CHECKLIST.md).
 
@@ -67,7 +86,7 @@ Le prototype permet maintenant de gérer **plusieurs circuits distincts** (16 au
 3. Cliquez sur **« Ajouter un circuit (prototype) »** pour créer B, C, D, etc. Choisissez **« Circuit actif pour lampes et prises »** avant de relier un interrupteur et une lampe sur le plan 2D. Le bouton de démonstration ajoute également une paire sur ce circuit actif.
 4. Déployez **« Circuit X - protection / conducteurs »** pour renseigner, séparément pour chaque circuit, sa protection, son différentiel en amont, sa canalisation, la section et le mode de pose. **Les champs ne sont pas remplis automatiquement avec des valeurs supposées**.
 5. Dans le schéma, utilisez **« Déplacer vers un autre circuit »** à côté d'un interrupteur pour transférer **toutes ses lampes** au circuit choisi sans refaire les liaisons. Une lampe ne peut appartenir qu'à une seule liaison, et un interrupteur ne peut commander des lampes de plusieurs circuits simultanément dans cette version.
-6. **« Exporter PDF unifilaire »** génère des feuilles A4 paysage **séparées par circuit**, paginées par groupes de six liaisons. La même référence (A1, B1...) est reprise dans le plan 2D et le PDF.
+6. **« Exporter PDF unifilaire »** génère un **synoptique de tableau en première page**, puis des feuilles A4 paysage **séparées par circuit**, paginées par groupes de six liaisons. La même référence (A1, B1...) est reprise dans le plan 2D et le PDF.
 
 Les circuits associant prises et eclairage peuvent etre soumis a des prescriptions particulieres. Le logiciel signale ce cas pour une verification humaine ; il **ne valide pas les circuits mixtes**.
 
