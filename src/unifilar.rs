@@ -4,7 +4,8 @@
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Stroke, Vec2};
 
-use crate::model::{LightingCircuit, Plan};
+use crate::model::{ElectricalAppearance, ElectricalKind, LightingCircuit, Plan};
+use crate::rgie_symbols;
 
 const INK: Color32 = Color32::from_rgb(43, 56, 72);
 const BLUE: Color32 = Color32::from_rgb(37, 107, 180);
@@ -39,33 +40,38 @@ fn box_outline(p: &egui::Painter, top_left: Pos2, size: Vec2) {
     }
 }
 
-fn switch_symbol(p: &egui::Painter, at: Pos2) {
-    let left = at + Vec2::new(-18.0, 0.0);
-    let right = at + Vec2::new(18.0, 0.0);
-    segment(p, left + Vec2::new(-4.0, 0.0), left, INK, 2.0);
-    segment(p, right, right + Vec2::new(4.0, 0.0), INK, 2.0);
-    // Contact normalement ouvert, representation intentionnellement simplifiee.
-    p.circle_filled(left, 2.8, INK);
-    p.circle_filled(right, 2.8, INK);
-    segment(p, left, at + Vec2::new(12.0, -14.0), BLUE, 2.0);
+fn switch_symbol(
+    painter: &egui::Painter, at: Pos2, appearance: ElectricalAppearance
+) {
+    rgie_symbols::draw_egui(
+        painter, at,
+        &rgie_symbols::device_primitives(ElectricalKind::Switch, appearance),
+        INK, 0.91
+    );
 }
 
-fn light_symbol(p: &egui::Painter, at: Pos2) {
-    p.circle_stroke(at, 17.0, stroke(INK, 1.7));
-    segment(p, at + Vec2::new(-10.0, -10.0), at + Vec2::new(10.0, 10.0), INK, 1.7);
-    segment(p, at + Vec2::new(-10.0, 10.0), at + Vec2::new(10.0, -10.0), INK, 1.7);
+fn light_symbol(
+    painter: &egui::Painter, at: Pos2, appearance: ElectricalAppearance
+) {
+    rgie_symbols::draw_egui(
+        painter, at,
+        &rgie_symbols::device_primitives(ElectricalKind::Light, appearance),
+        INK, 1.1
+    );
 }
 
-fn breaker_symbol(p: &egui::Painter, left: Pos2) {
-    // Repère et contact de disjoncteur simplifié, sans allégation de symbolique normative.
-    let middle = left + Vec2::new(27.0, 0.0);
-    let right = left + Vec2::new(64.0, 0.0);
-    segment(p, left, middle, INK, 2.0);
-    segment(p, middle, middle + Vec2::new(18.0, -18.0), INK, 2.0);
-    let block = middle + Vec2::new(18.0, -18.0);
-    let top_left = block + Vec2::new(-4.0, -4.0);
-    box_outline(p, top_left, Vec2::new(9.0, 9.0));
-    segment(p, right + Vec2::new(-11.0, 0.0), right, INK, 2.0);
+fn protection_symbol(
+    painter: &egui::Painter, at: Pos2, type_name: &str
+) {
+    let variant = rgie_symbols::protection_from_text(type_name);
+    rgie_symbols::draw_egui(
+        painter, at,
+        &rgie_symbols::protection_primitives(variant),
+        INK, 0.8
+    );
+    if variant == rgie_symbols::ProtectionMark::Unspecified {
+        caption(painter, at, "?", 16.0, WARNING);
+    }
 }
 
 fn label_or_unknown(value: &str) -> &str {
@@ -91,7 +97,10 @@ fn draw_header(
         INK,
         2.0,
     );
-    breaker_symbol(painter, breaker_start);
+    protection_symbol(
+        painter, breaker_start + Vec2::new(32.0, 0.0),
+        &circuit.protection_kind,
+    );
     caption(
         painter,
         origin + Vec2::new(242.0, 62.0),
@@ -163,7 +172,7 @@ fn draw_groups(
             INK, 2.0,
         );
         painter.circle_filled(Pos2::new(spine_x, base_y), 4.0, BLUE);
-        switch_symbol(painter, switch_position);
+        switch_symbol(painter, switch_position, plan.symbol_appearance(*switch_index));
 
         let switch_number = plan.symbol_number(*switch_index).unwrap_or(switch_index + 1);
         caption(
@@ -205,7 +214,10 @@ fn draw_groups(
                 Pos2::new(right_x - 20.0, y),
                 INK, 2.0,
             );
-            light_symbol(painter, Pos2::new(right_x, y));
+            light_symbol(
+                painter, Pos2::new(right_x, y),
+                plan.symbol_appearance(*light_index),
+            );
             let lamp_number = plan.symbol_number(*light_index).unwrap_or(light_index + 1);
             caption(
                 painter,
@@ -249,14 +261,12 @@ fn draw_outlets(
         segment(painter, Pos2::new(spine_x, y), Pos2::new(x - 21.0, y), INK, 2.0);
         painter.circle_filled(Pos2::new(spine_x, y), 3.5, BLUE);
         let pos = Pos2::new(x, y);
-        painter.circle_stroke(pos, 17.0, stroke(INK, 1.7));
-        segment(
-            painter, pos + Vec2::new(-8.0, 5.0),
-            pos + Vec2::new(8.0, 5.0), INK, 1.8,
-        );
-        segment(
-            painter, pos + Vec2::new(-8.0, -5.0),
-            pos + Vec2::new(8.0, -5.0), INK, 1.8,
+        rgie_symbols::draw_egui(
+            painter, pos,
+            &rgie_symbols::device_primitives(
+                ElectricalKind::Outlet, plan.symbol_appearance(*symbol_index)
+            ),
+            INK, 0.94,
         );
         let local_number = plan.symbol_number(*symbol_index).unwrap_or(*symbol_index + 1);
         caption(painter, pos + Vec2::new(0.0, 30.0), &format!("P{local_number}"), 13.0, INK);
@@ -278,7 +288,7 @@ fn draw_outlets(
 /// Une feuille par circuit : les circuits ne sont pas branches sur le meme tronc.
 /// Les appareils et leurs associations proviennent uniquement du Plan partage.
 pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
-    ui.heading("Schema unifilaire - circuits d'eclairage");
+    ui.heading("Schema unifilaire - circuits d'eclairage et prises");
     ui.colored_label(
         WARNING,
         "Prototype fonctionnel : ni dessin reglementaire RGIE, ni plan de cablage ou calcul de protection.",
@@ -414,7 +424,8 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
             }
         }
     });
-    ui.small("Les circuits representent des liaisons logiques. Ne pas utiliser ce prototype pour raccorder une installation.");
+    ui.small("Symboles de base du tableau 2.23 (RGIE Livre 1). Les branchements restent fonctionnels et les protections doivent etre identifies.");
+    ui.small("Les variantes doivent correspondre au materiel pose. Ne pas utiliser ce prototype pour realiser un raccordement.");
     action
 }
 
