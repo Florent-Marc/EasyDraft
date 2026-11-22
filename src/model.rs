@@ -1212,6 +1212,8 @@ mod tests {
         assert_eq!(plan.lighting_point_ref(1).as_deref(), Some("A1"));
         assert_eq!(plan.lighting_point_ref(2).as_deref(), Some("A2"));
         assert_eq!(plan.lighting_point_ref(4).as_deref(), Some("B1"));
+        assert_eq!(plan.point_ref(5).as_deref(), Some("B2"));
+        assert_eq!(plan.unassigned_outlets(), 0);
         assert_eq!(plan.unlinked_lights(), 0);
         assert_eq!(plan.unlinked_switches(), 0);
     }
