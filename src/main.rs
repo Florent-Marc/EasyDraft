@@ -1,6 +1,7 @@
 mod model;
 mod pdf_export;
 mod unifilar;
+mod rooms;
 
 use eframe::egui::{self, Align2, Color32, FontId, Painter, Pos2, Sense, Stroke, Vec2};
 use model::{
@@ -59,6 +60,7 @@ struct EasyDraft {
     selected_wall: Option<usize>,
     selected_symbol: Option<usize>,
     selected_stair: Option<usize>,
+    selected_room: Option<Point>,
     new_wall_thickness_cm: f32,
     new_door_width_cm: f32,
     new_window_width_cm: f32,
@@ -68,6 +70,7 @@ struct EasyDraft {
     door_swing_flipped: bool,
     show_dimensions: bool,
     show_architecture: bool,
+    show_rooms: bool,
     show_electrical: bool,
     snap_endpoints: bool,
     snap_m: f32,
@@ -94,6 +97,7 @@ impl Default for EasyDraft {
             selected_wall: None,
             selected_symbol: None,
             selected_stair: None,
+            selected_room: None,
             new_wall_thickness_cm: DEFAULT_WALL_THICKNESS_M * 100.0,
             new_door_width_cm: 90.0,
             new_window_width_cm: 120.0,
@@ -103,6 +107,7 @@ impl Default for EasyDraft {
             door_swing_flipped: false,
             show_dimensions: true,
             show_architecture: true,
+            show_rooms: true,
             show_electrical: true,
             snap_endpoints: true,
             snap_m: 0.05,
@@ -263,6 +268,7 @@ impl EasyDraft {
         self.selected_wall = None;
         self.selected_symbol = None;
         self.selected_stair = None;
+        self.selected_room = None;
     }
 
     fn reset_pending(&mut self) {
@@ -386,6 +392,13 @@ impl EasyDraft {
             self.selected_wall = self.find_wall(point, ppm);
             if let Some(index) = self.selected_wall {
                 self.status = format!("Mur n°{} selectionne", index + 1);
+                return;
+            }
+            if let Some((index, _)) = rooms::detect_rooms(&self.plan.walls).iter().enumerate()
+                .find(|(_, room)| room.contains(point))
+            {
+                self.selected_room = Some(point);
+                self.status = format!("Piece {} selectionnee", index + 1);
                 return;
             }
         }
@@ -547,7 +560,36 @@ impl EasyDraft {
             }
         }
 
-        ui.small("Selectionne un mur, un escalier ou un symbole sur le plan.");
+        if let Some(at) = self.selected_room {
+            if let Some(room) = rooms::detect_rooms(&self.plan.walls).iter()
+                .find(|room| room.contains(at))
+            {
+                ui.heading("Piece fermee");
+                ui.label(format!("Surface interieure estimee : {:.2} m²", room.area_m2));
+                if room.rectangular {
+                    ui.label(format!("Dimensions interieures : {:.2} x {:.2} m", room.width_m, room.height_m));
+                } else {
+                    ui.label(format!("Emprise X/Y : {:.2} x {:.2} m", room.width_m, room.height_m));
+                    ui.small("Pour une piece non rectangulaire, ces deux mesures correspondent a son emprise.");
+                }
+                let mut name = self.plan.room_name(room).to_owned();
+                ui.label("Nom de la piece");
+                if ui.text_edit_singleline(&mut name).changed() {
+                    let mut updated = self.plan.clone();
+                    match updated.set_room_name(at, &name) {
+                        Ok(()) => {
+                            self.snapshot();
+                            self.plan = updated;
+                            self.status = "Nom de la piece mis a jour".into();
+                        },
+                        Err(err) => self.status = err.into(),
+                    }
+                }
+                ui.small("Les surfaces prennent en compte l'epaisseur des murs.");
+                return;
+            }
+        }
+        ui.small("Selectionne un mur, un escalier, un appareil ou l'interieur d'une piece.");
     }
 
     fn find_wall(&self, point: Point, ppm: f32) -> Option<usize> {
@@ -795,6 +837,53 @@ impl EasyDraft {
         }
 
         if self.show_architecture {
+        if self.show_rooms {
+            let detected_rooms = rooms::detect_rooms(&self.plan.walls);
+            for room in &detected_rooms {
+                let points: Vec<Pos2> = room.inner_polygon.iter().map(|&p| to_screen(p)).collect();
+                let selected = self.selected_room.is_some_and(|at| room.contains(at));
+                if points.len() >= 3 {
+                    painter.add(egui::Shape::closed_line(
+                        points,
+                        Stroke::new(
+                            if selected { 2.8 } else { 1.0 },
+                            if selected {
+                                Color32::from_rgb(38, 127, 204)
+                            } else {
+                                Color32::from_rgb(174, 196, 211)
+                            },
+                        ),
+                    ));
+                }
+                let pos = to_screen(room.center);
+                let name = self.plan.room_name(room);
+                painter.text(
+                    pos + Vec2::new(0.0, -18.0),
+                    Align2::CENTER_CENTER,
+                    if name.is_empty() { "Piece" } else { name },
+                    FontId::proportional(15.0),
+                    Color32::from_rgb(36, 89, 135),
+                );
+                painter.text(
+                    pos,
+                    Align2::CENTER_CENTER,
+                    format!("{:.2} m²", room.area_m2),
+                    FontId::proportional(13.0),
+                    Color32::from_rgb(36, 89, 135),
+                );
+                painter.text(
+                    pos + Vec2::new(0.0, 16.0),
+                    Align2::CENTER_CENTER,
+                    if room.rectangular {
+                        format!("{:.2} × {:.2} m", room.width_m, room.height_m)
+                    } else {
+                        "Dimensions d'emprise".to_owned()
+                    },
+                    FontId::proportional(11.0),
+                    Color32::from_rgb(75, 111, 141),
+                );
+            }
+        }
         for (index, wall) in self.plan.walls.iter().enumerate() {
             let a = to_screen(wall.start);
             let b = to_screen(wall.end);
@@ -1034,7 +1123,7 @@ impl eframe::App for EasyDraft {
                 self.status = "Clique sur un interrupteur I, puis sur une lampe X.".into();
             }
             if ui.selectable_label(self.tool == Tool::Pan, "Deplacer la vue").clicked() { self.select_tool(Tool::Pan); }
-            ui.small("Selectionner : clic pour choisir, Suppr pour effacer, Echap pour annuler.");
+            ui.small("Selection : clic sur mur, appareil ou interieur d'une piece pour la nommer.");
             ui.small("Ctrl+Z : annuler | Ctrl+Y : retablir.");
             ui.separator();
             if self.view == View::Plan2D && self.tool == Tool::Door {
@@ -1071,6 +1160,7 @@ impl eframe::App for EasyDraft {
             ui.separator();
             ui.label("Calques visibles");
             ui.checkbox(&mut self.show_architecture, "Architecture (murs, portes, escaliers)");
+            ui.checkbox(&mut self.show_rooms, "Pieces, surfaces et dimensions");
             ui.checkbox(&mut self.show_electrical, "Electricite (symboles et liaisons)");
             ui.checkbox(&mut self.show_dimensions, "Afficher les cotes (axe des murs)");
             ui.checkbox(&mut self.snap_endpoints, "Aimantation aux extremites de murs");
@@ -1100,6 +1190,7 @@ impl eframe::App for EasyDraft {
             }
             ui.separator();
             ui.label(format!("Murs : {}", self.plan.walls.len()));
+            ui.label(format!("Pieces fermees : {}", rooms::detect_rooms(&self.plan.walls).len()));
             ui.label(format!(
                 "Portes : {}",
                 self.plan.openings.iter().filter(|o| o.kind == OpeningKind::Door).count()
