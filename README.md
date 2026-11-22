@@ -46,6 +46,21 @@ Les sources principales sont `src/model.rs`, `src/main.rs`, `src/unifilar.rs` et
 
 Un fichier de test couvrant **sept liaisons et deux pages PDF** est prévu dans les tests Rust.
 
+## Pièces automatiques (prototype)
+
+EasyDraft détecte maintenant les **espaces fermés** formés par les murs. Il prend en compte les intersections et les jonctions en T pour séparer plusieurs pièces partageant une cloison.
+
+- **Surface intérieure estimée en m²** calculée à partir des faces intérieures des murs (épaisseurs comprises dans le calcul).
+- **Dimensions intérieures** pour une pièce rectangulaire, ou encombrement selon X/Y pour une forme non rectangulaire.
+- **Nom personnalisable** : sélectionner l'outil « Sélectionner un élément », puis cliquer **à l'intérieur d'une pièce**. Le panneau « Propriétés de la sélection » permet de saisir son nom (Salon, Cuisine, Chambre...).
+- **Étiquettes sur le plan** : nom, surface et dimensions estimées ; elles apparaissent aussi dans l'export PDF du plan.
+- Case **« Pièces, surfaces et dimensions »** dans les calques visibles pour masquer/afficher les étiquettes sans effacer les données.
+- Les noms de pièces sont sauvegardés dans le **JSON** et restent associés à un point intérieur, même si l'ordre des murs change.
+
+**Exemple prêt à ouvrir** : `examples/maison-deux-pieces.json` contient un Salon et une Cuisine séparés par un mur commun avec une porte, ainsi qu'un interrupteur relié à une lampe. Pour le charger, mettez ce chemin dans le champ **Fichier JSON**, puis cliquez sur **Ouvrir**. Le logiciel doit détecter automatiquement **deux pièces**.
+
+**Limites** : il s'agit d'un calcul 2D géométrique, pas d'un métré réglementaire. Les surfaces de pièces concaves ou très complexes restent des estimations, et les cotes hors rectangles sont des dimensions d'encombrement. Les noms sont ancrés à une position dans la pièce : si un changement de murs déplace complètement la pièce, il peut être nécessaire de la renommer. Les ouvertures ne cassent pas la fermeture géométrique des murs.
+
 ## Édition précise du plan 2D
 
 L'éditeur permet désormais de **modifier et supprimer les éléments sans recréer le plan** :
@@ -82,7 +97,7 @@ L'unifilaire décrit actuellement **un seul circuit d'éclairage logique**, mêm
 
 ## Vérification
 
-Des tests Rust supplémentaires couvrent l'édition et la suppression de murs avec leurs ouvertures, la conservation des index d'éléments électriques, l'aimantation aux extrémités et l'annulation/rétablissement. Ils sont destinés à être exécutés par `cargo test` ou le workflow CI ; les commits ne garantissent pas à eux seuls que la compilation a réussi.
+Des tests Rust supplémentaires couvrent l'édition et la suppression de murs avec leurs ouvertures, la conservation des index d'éléments électriques, l'aimantation aux extrémités, l'annulation/rétablissement, la détection des pièces fermées, les pièces séparées par une cloison, les calculs de surfaces rectangulaires et la persistance des noms. Ils sont destinés à être exécutés par `cargo test` ou le workflow CI ; les commits ne garantissent pas à eux seuls que la compilation a réussi.
 
 ## Licence
 
