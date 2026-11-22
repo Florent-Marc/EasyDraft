@@ -210,16 +210,14 @@ fn draw_groups(
                 &format!("L{lamp_number}"),
                 14.0, INK,
             );
-            if let Some(link_index) = plan.lighting_connections.iter().position(|link| {
-                link.light_index == *light_index && plan.lighting_connection_is_valid(link)
-            }) {
+            if let Some(point_number) = plan.lighting_point_number(*light_index) {
                 caption(
                     painter,
                     Pos2::new(right_x + 65.0, y),
                     &format!(
                         "{}{}",
                         label_or_unknown(&plan.lighting_circuit.letter),
-                        link_index + 1
+                        point_number
                     ),
                     13.0, BLUE,
                 );
