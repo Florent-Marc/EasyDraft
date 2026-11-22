@@ -96,6 +96,65 @@ pub struct ElectricalSymbol {
     pub kind: ElectricalKind,
 }
 
+/// Variante graphique RGIE choisie explicitement. Le symbole general ne
+/// suppose ni mise a la terre, ni obturateurs, ni fonction de commande complexe.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ElectricalAppearance {
+    General,
+    SwitchBipolar,
+    SwitchTwoWay,
+    PushButton,
+    OutletEarth,
+    OutletChild,
+    OutletEarthChild,
+    WallLight,
+}
+
+impl ElectricalAppearance {
+    pub fn valid_for(self, kind: ElectricalKind) -> bool {
+        match self {
+            Self::General => true,
+            Self::SwitchBipolar | Self::SwitchTwoWay | Self::PushButton =>
+                kind == ElectricalKind::Switch,
+            Self::OutletEarth | Self::OutletChild | Self::OutletEarthChild =>
+                kind == ElectricalKind::Outlet,
+            Self::WallLight => kind == ElectricalKind::Light,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::General => "Symbole general",
+            Self::SwitchBipolar => "Interrupteur bipolaire",
+            Self::SwitchTwoWay => "Interrupteur va-et-vient",
+            Self::PushButton => "Bouton-poussoir",
+            Self::OutletEarth => "Prise avec contact de terre",
+            Self::OutletChild => "Prise avec protection enfant",
+            Self::OutletEarthChild => "Prise avec terre et protection enfant",
+            Self::WallLight => "Point d'attente d'eclairage en applique",
+        }
+    }
+
+    pub fn choices(kind: ElectricalKind) -> &'static [Self] {
+        match kind {
+            ElectricalKind::Switch => &[
+                Self::General, Self::SwitchBipolar, Self::SwitchTwoWay, Self::PushButton
+            ],
+            ElectricalKind::Outlet => &[
+                Self::General, Self::OutletEarth, Self::OutletChild, Self::OutletEarthChild
+            ],
+            ElectricalKind::Light => &[Self::General, Self::WallLight],
+        }
+    }
+}
+
+/// Une entree par symbole personnalise. Les anciens JSON restent compatibles.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SymbolAppearanceRecord {
+    pub symbol_index: usize,
+    pub appearance: ElectricalAppearance,
+}
+
 /// Relation fonctionnelle entre un interrupteur et un luminaire.
  /// Les indices referencent la liste Plan::symbols ; ils restent coherents tant qu'on
  /// n'offre pas de suppression ou reordonnancement individuel des symboles.
@@ -266,6 +325,8 @@ pub struct RoomLabel {
 pub struct Plan {
     pub walls: Vec<Wall>,
     pub symbols: Vec<ElectricalSymbol>,
+    #[serde(default)]
+    pub symbol_appearances: Vec<SymbolAppearanceRecord>,
     /// La valeur par défaut garde la compatibilité avec les plans JSON anciens.
     #[serde(default)]
     pub openings: Vec<Opening>,
@@ -290,6 +351,34 @@ pub struct Plan {
 }
 
 impl Plan {
+    pub fn symbol_appearance(&self, symbol_index: usize) -> ElectricalAppearance {
+        let Some(symbol) = self.symbols.get(symbol_index) else {
+            return ElectricalAppearance::General;
+        };
+        self.symbol_appearances.iter()
+            .find(|record| record.symbol_index == symbol_index
+                && record.appearance.valid_for(symbol.kind))
+            .map(|record| record.appearance)
+            .unwrap_or(ElectricalAppearance::General)
+    }
+
+    pub fn set_symbol_appearance(
+        &mut self, symbol_index: usize, appearance: ElectricalAppearance
+    ) -> Result<(), &'static str> {
+        let kind = self.symbols.get(symbol_index)
+            .ok_or("Symbole electrique introuvable")?.kind;
+        if !appearance.valid_for(kind) {
+            return Err("Variante incompatible avec ce type d'appareil");
+        }
+        self.symbol_appearances.retain(|record| record.symbol_index != symbol_index);
+        if appearance != ElectricalAppearance::General {
+            self.symbol_appearances.push(SymbolAppearanceRecord {
+                symbol_index, appearance,
+            });
+        }
+        Ok(())
+    }
+
     pub fn room_name<'a>(&'a self, room: &crate::rooms::DetectedRoom) -> &'a str {
         self.room_labels.iter()
             .find(|label| room.contains(label.position))
@@ -431,6 +520,10 @@ impl Plan {
             return Err("Symbole introuvable");
         }
         self.symbols.remove(index);
+        self.symbol_appearances.retain(|record| record.symbol_index != index);
+        for record in &mut self.symbol_appearances {
+            if record.symbol_index > index { record.symbol_index -= 1; }
+        }
         self.outlet_assignments.retain(|item| item.symbol_index != index);
         for assignment in &mut self.outlet_assignments {
             if assignment.symbol_index > index { assignment.symbol_index -= 1; }
@@ -1335,6 +1428,39 @@ mod tests {
         assert_eq!(plan.outlet_assignments.len(), 1);
         plan.unassign_outlet(2);
         assert_eq!(plan.unassigned_outlets(), 1);
+    }
+
+    #[test]
+    fn symbol_appearances_are_type_safe_and_backward_compatible() {
+        let mut p = Plan::default();
+        p.symbols.push(ElectricalSymbol {
+            position: Point { x: 1.0, y: 1.0 }, kind: ElectricalKind::Outlet
+        });
+        p.symbols.push(ElectricalSymbol {
+            position: Point { x: 2.0, y: 1.0 }, kind: ElectricalKind::Switch
+        });
+        assert_eq!(p.symbol_appearance(0), ElectricalAppearance::General);
+        assert!(p.set_symbol_appearance(0, ElectricalAppearance::WallLight).is_err());
+        p.set_symbol_appearance(0, ElectricalAppearance::OutletEarthChild).unwrap();
+        p.set_symbol_appearance(1, ElectricalAppearance::SwitchTwoWay).unwrap();
+        let json = serde_json::to_string(&p).unwrap();
+        let decoded: Plan = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.symbol_appearance(0), ElectricalAppearance::OutletEarthChild);
+        assert_eq!(decoded.symbol_appearance(1), ElectricalAppearance::SwitchTwoWay);
+        p.remove_symbol(0).unwrap();
+        assert_eq!(p.symbol_appearance(0), ElectricalAppearance::SwitchTwoWay);
+        let old: Plan = serde_json::from_str(
+            r#"{"walls":[],"symbols":[{"position":{"x":0.0,"y":0.0},"kind":"Outlet"}]}"#
+        ).unwrap();
+        assert_eq!(old.symbol_appearance(0), ElectricalAppearance::General);
+    }
+
+    #[test]
+    fn appearance_catalog_has_only_compatible_choices() {
+        for kind in [ElectricalKind::Outlet, ElectricalKind::Switch, ElectricalKind::Light] {
+            assert!(ElectricalAppearance::choices(kind).iter().all(|style| style.valid_for(kind)));
+            assert!(!ElectricalAppearance::choices(kind).is_empty());
+        }
     }
 
     #[test]
