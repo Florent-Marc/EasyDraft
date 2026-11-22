@@ -14,6 +14,7 @@ const WARNING: Color32 = Color32::from_rgb(177, 93, 21);
 /// Actions remontées au niveau de l'application, pour enregistrer une annulation.
 pub enum Action {
     RemoveConnection(usize),
+    MoveGroup { switch_index: usize, target_circuit: usize },
 }
 
 fn stroke(color: Color32, width: f32) -> Stroke {
@@ -310,6 +311,29 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
                         MUTED,
                     );
                 });
+            ui.label("Commandes :");
+            for (switch_index, lamps) in &groups {
+                let switch_number = plan.symbol_number(*switch_index)
+                    .unwrap_or(switch_index + 1);
+                ui.horizontal(|ui| {
+                    ui.label(format!("I{switch_number} - {} lampe(s)", lamps.len()));
+                    if plan.circuit_count() > 1 {
+                        ui.menu_button("Deplacer vers un autre circuit", |ui| {
+                            for target in 0..plan.circuit_count() {
+                                if target == circuit_index { continue; }
+                                let code = plan.circuit(target)
+                                    .map(|c| c.letter.as_str()).unwrap_or("?");
+                                if ui.button(format!("Circuit {code}")).clicked() {
+                                    action = Some(Action::MoveGroup {
+                                        switch_index: *switch_index,
+                                        target_circuit: target,
+                                    });
+                                }
+                            }
+                        });
+                    }
+                });
+            }
             ui.label("Liaisons de ce circuit :");
             for (index, link) in plan.lighting_connections.iter().enumerate() {
                 if link.circuit_index != circuit_index || !plan.lighting_connection_is_valid(link) {
