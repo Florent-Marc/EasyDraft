@@ -1125,18 +1125,18 @@ impl EasyDraft {
         }
 
         if self.tool == Tool::SelectWall {
-            if response.drag_started() {
+            if response.drag_started_by(egui::PointerButton::Primary) {
                 let initial = ui.ctx().input(|i| i.pointer.press_origin());
                 if let Some(pos) = initial.or(response.interact_pointer_pos()) {
                     self.begin_drag(to_world(pos), ppm);
                 }
             }
-            if response.dragged() {
+            if response.dragged_by(egui::PointerButton::Primary) {
                 if let Some(cursor) = response.interact_pointer_pos() {
                     self.update_drag(to_world(cursor), ppm);
                 }
             }
-            if response.drag_stopped() {
+            if response.drag_stopped_by(egui::PointerButton::Primary) {
                 // Appliquer egalement la position de la souris au moment du relachement.
                 if let Some(cursor) = response.interact_pointer_pos() {
                     self.update_drag(to_world(cursor), ppm);
