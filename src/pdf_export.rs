@@ -352,9 +352,7 @@ pub fn export_pdf(path: &str, plan: &Plan, show_dimensions: bool) -> Result<(), 
 /// Plusieurs pages A4 paysage sont generees pour ne pas ecraser les circuits charges.
 /// Les valeurs absentes restent explicitement "a renseigner".
 pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
-    let links: Vec<&crate::model::LightingConnection> = plan.lighting_connections.iter()
-        .filter(|link| plan.lighting_connection_is_valid(link))
-        .collect();
+    let links = plan.active_lighting_connections();
     let pages_count = links.len().max(1).div_ceil(6);
     let circuit = &plan.lighting_circuit;
     let color = DARK;
