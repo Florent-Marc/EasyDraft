@@ -672,8 +672,22 @@ impl Plan {
     pub fn circuit_missing_fields(&self, circuit_index: usize) -> Vec<&'static str> {
         let Some(circuit) = self.circuit(circuit_index) else { return vec!["circuit introuvable"]; };
         let mut missing = circuit.missing_fields();
-        if self.differential_for_circuit(circuit_index).is_none() {
-            missing.push("differentiel en amont non attribue");
+        match self.differential_for_circuit(circuit_index) {
+            None => missing.push("differentiel en amont non attribue"),
+            Some(device) => {
+                if device.kind.trim().is_empty() {
+                    missing.push("type du differentiel en amont");
+                }
+                if device.rated_current_amp == 0 {
+                    missing.push("courant nominal du differentiel en amont");
+                }
+                if device.sensitivity_ma == 0 {
+                    missing.push("sensibilite du differentiel en amont");
+                }
+                if device.poles == 0 {
+                    missing.push("poles du differentiel en amont");
+                }
+            }
         }
         missing
     }
