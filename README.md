@@ -18,6 +18,27 @@ cargo test
 
 Les sources principales sont `src/model.rs`, `src/main.rs`, `src/unifilar.rs` et `src/pdf_export.rs`.
 
+## Symboles graphiques du RGIE (Livre 1, tableau 2.23)
+
+Les pictogrammes du plan de position et du schéma unifilaire utilisent désormais une **bibliothèque graphique commune** : `src/rgie_symbols.rs`, également utilisée par les deux exports PDF vectoriels.
+
+Les formes de base disponibles sont :
+
+- **Interrupteurs** : symbole général, bipolaire, va-et-vient unipolaire, bouton-poussoir.
+- **Prises** : symbole général, prise avec contact pour conducteur de protection, prise avec protection enfant, et combinaison des deux.
+- **Éclairage** : point lumineux (croix) et point d'attente en applique (croix avec trait de mur).
+- **Protections** : symbole de disjoncteur ou de coupe-circuit à fusible **selon le type renseigné**. Un type absent ou inconnu est représenté comme **non spécifié**, pas comme un disjoncteur inventé.
+
+Pour configurer un appareil déjà placé : outil **Sélectionner un élément** → cliquer sur la prise, l'interrupteur ou la lampe → **Propriétés de la sélection** → **Symbole (RGIE tableau 2.23)**. La variante choisie est sauvegardée dans le JSON, et les anciens plans sans variantes conservent un symbole général. La liste est limitée aux variantes compatibles avec le type d'appareil.
+
+L'interface contient une **Légende RGIE** permettant de consulter les formes actuellement prises en charge. Les variantes **ne sont pas détectées** automatiquement : l'utilisateur doit relever le type réel du matériel et sélectionner le pictogramme adéquat. En particulier, **aucune terre ni protection enfant n'est supposée sur une prise**. Un pictogramme va-et-vient ou bouton-poussoir ne constitue **pas** une simulation des conducteurs et commandes spécifiques.
+
+**Références officielles** :
+- [RGIE Livre 1 2026, tableau 2.23, chapitre 2.13](https://economie.fgov.be/sites/default/files/Files/Publications/files/RGIE-Annexe-Livre-1-Installations-a-basse-tenstion-et-a-tres-basse-tension-2026.pdf)
+- [Liste illustrée des symboles SPF Économie](https://economie.fgov.be/sites/default/files/Files/Energy/Symboles-fr.pdf)
+
+L'ensemble du tableau 2.23 n'est **pas encore implémenté** (sont notamment absents : socles multiples, prises étanches, commandes complexes, boîtes, sources, appareils fixes, schémas complets de tableau). Les symboles et l'ordre de câblage doivent être revus avant toute présentation comme dossier réglementaire.
+
 ## Préparation du dossier RGIE belge (prototype)
 
 Les documents de référence sont le **Livre 1 du RGIE belge (version 2026)** et les indications du [SPF Economie pour le contrôle d'installations domestiques](https://economie.fgov.be/fr/themes/energie/sources-et-vecteurs-denergie/electricite/securite-et-controle-des/controle-des-installations).
@@ -52,7 +73,7 @@ Les circuits associant prises et eclairage peuvent etre soumis a des prescriptio
 
 Les anciens fichiers JSON contenant un seul `lighting_circuit` et des liaisons sans `circuit_index` restent pris en charge : ces liaisons sont affectées au **circuit d'index 0**. Les nouveaux circuits sont stockés dans `additional_lighting_circuits`.
 
-**Attention :** représentation fonctionnelle indicative uniquement. Ce schéma **n'est pas un document réglementaire conforme au RGIE**. Les symboles électriques et la représentation des protections restent simplifiés ; aucun calcul de courant, dimensionnement, section admissible ou contrôle réglementaire n'est exécuté. Des métadonnées saisies ne garantissent pas la conformité d'une installation.
+**Attention :** représentation fonctionnelle indicative uniquement. Ce schéma **n'est pas un document réglementaire conforme au RGIE**. Les symboles de base ont été rapprochés du tableau 2.23 mais le catalogue et la représentation des protections restent partiels ; aucun calcul de courant, dimensionnement, section admissible ou contrôle réglementaire n'est exécuté. Des métadonnées saisies ne garantissent pas la conformité d'une installation.
 
 ## Démonstration électrique : une lampe et un interrupteur
 
