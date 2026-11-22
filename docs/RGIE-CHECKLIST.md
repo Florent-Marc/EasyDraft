@@ -14,15 +14,15 @@ Sources officielles :
 | Nom, qualité du responsable de l'exécution | Champs ajoutés | Identification et signature réelles restent à établir |
 | Numéro de TVA (si applicable) | Champ ajouté | Non contrôlé |
 | Date et révision | Champs ajoutés | Pas de signature électronique |
-| Tension et nature du courant | Champs ajoutés | Pas de simulation électrique |
+| Tension et nature du courant | Champs ajoutés, plus câble d'entrée du tableau | Pas de simulation électrique ni d'étude des protections |
 | Repérage des circuits | A, B, C… configurables | Seize départs max. dans le prototype |
 | Caractéristiques de la protection contre les surintensités | Champs calibre, pôles, courbe/type | Vérification des conditions réelles et dimensionnement absents |
-| DDR amont | Texte descriptif par circuit | Pas de modèle de distribution/protection complet |
+| DDR amont | Appareils DDR nommés avec type, In, sensibilité et pôles ; liaisons explicites vers les circuits | Pas encore de détail des barres, conducteurs internes ni coordination calculée |
 | Canalisations | Type, nombre de conducteurs, section, mode de pose | Pas de calcul du courant admissible, de la longueur ni de la chute de tension |
 | Points lumineux et commandes | Liens et repères partagés | Les commandes complexes ne sont pas modélisées |
 | Socles de prises | Affectation explicite au circuit, repères partagés | Pas de type de prise, socle multiple, commande ou PE modélisés |
 | Concordance plan 2D / unifilaire | Même modèle JSON, mêmes références | Ordre des éléments à confronter à l'installation réelle |
-| Export PDF | Plan 2D et unifilaire séparés | Symboles illustratifs, cartouche incomplet |
+| Export PDF | Plan 2D et unifilaire séparés, synoptique du tableau en tête | Dossier de travail seulement, cartouche incomplet |
 | Boîtes de connexion et dérivation | Non modélisées | À ajouter |
 | Appareils fixes / machines | Non modélisés | À ajouter |
 | Sources, PV, onduleurs, batteries | Non modélisées | À ajouter |
@@ -40,14 +40,14 @@ Les prises génériques ne sont pas affichées avec contact de terre par défaut
 
 L'onglet **Dossier RGIE (vérification)** distingue :
 
-- **Incomplet** : un champ documentaire important est vide, circuit sans récepteur affecté, prise non affectée, luminaire ou interrupteur sans lien, référence de liaison dupliquée ou invalide.
+- **Incomplet** : un DDR manque ou n'est pas attribué à un circuit, le câble d'entrée n'est pas décrit, un DDR manque de caractéristiques, un champ documentaire important est vide, circuit sans récepteur affecté, prise non affectée, luminaire ou interrupteur sans lien, référence de liaison dupliquée ou invalide.
 - **À vérifier** : valeurs de protection et de section non dimensionnées par EasyDraft, conventions graphiques, ordre réel des points, appareils et sources non modélisés, contrôle externe.
 
 Même lorsque **aucun champ n'est vide**, il reste des avertissements **À vérifier** : le programme ne devient pas « conforme ».
 
 ## Plan des améliorations futures
 
-1. Modèle de tableau, différentiels, barres/distribution, alimentation et protection de chaque départ.
+1. Tableau multi-niveaux : barres de distribution, protections différentielles en cascade, borne de terre et câbles physiques. Les liaisons simples DDR -> circuits sont maintenant modélisées.
 2. Catalogue RGIE de symboles et légende du schéma, propriétés des socles de prises (simples/multiples).
 3. Circuits et charges : boîtes, récepteurs fixes, appareils spéciaux, PV, onduleurs, alimentation.
 4. Repérage ordonné selon le chemin électrique réel, avec correspondance bidirectionnelle plan/unifilaire.
