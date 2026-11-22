@@ -1,0 +1,8 @@
+/target/
+*.rs.bk
+.idea/
+.vscode/
+*.log
+mon-plan.json
+*.plan2d.json
+.DS_Store
