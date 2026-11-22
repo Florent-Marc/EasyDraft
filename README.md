@@ -46,6 +46,21 @@ Les sources principales sont `src/model.rs`, `src/main.rs`, `src/unifilar.rs` et
 
 Un fichier de test couvrant **sept liaisons et deux pages PDF** est prévu dans les tests Rust.
 
+## Déplacement direct à la souris
+
+Pour modifier un plan existant, choisissez **« Sélectionner un élément »** dans le panneau d'outils.
+
+- **Déplacer un mur entier** : cliquez sur le corps du mur, maintenez le bouton gauche et glissez. Ses portes et fenêtres **restent attachées** au mur (leurs distances le long du mur ne changent pas).
+- **Changer la longueur ou l'orientation d'un mur** : sélectionnez-le puis faites glisser l'une de ses **poignées bleues**, à ses extrémités. L'extrémité opposée reste en place. Le mur s'accroche à la grille ou aux extrémités d'autres murs si l'option d'aimantation est activée.
+- **Déplacer une porte ou une fenêtre** : cliquez sur l'ouverture et glissez **dans le sens du mur**. Le logiciel limite la course à l'intérieur du mur et refuse les positions qui chevauchent une autre ouverture. Le point orange indique la sélection.
+- **Éditer précisément une ouverture** : sélectionnez-la par un simple clic, puis modifiez sa distance depuis le départ du mur, sa largeur et, pour les portes, son sens d'ouverture dans **Propriétés de la sélection**.
+- **Supprimer une ouverture** : sélectionnez-la et utilisez **Supprimer la sélection** ou **Suppr**.
+- **Annuler et rétablir** : le glissement complet compte comme **une seule opération** dans l'historique (**Ctrl+Z**, **Ctrl+Y**). Les modifications sont incluses dans le JSON et dans le prochain PDF du plan.
+
+**Limites actuelles :** le déplacement d'un mur ne fait **pas automatiquement suivre les murs voisins** connectés à ses extrémités. Si cela ouvre un contour, la détection des pièces s'actualise en conséquence. Raccordez les extrémités avec les poignées et l'aimantation pour fermer de nouveau la pièce. Déplacer un mur peut également modifier la surface calculée ou demander de renommer une pièce dont le point d'étiquette se trouve désormais hors du contour.
+
+Les mouvements à la souris sont actuellement disponibles pour les **murs, portes et fenêtres**. Les escaliers et les appareils électriques se repositionnent avec leurs champs X/Y dans le panneau de propriétés.
+
 ## Pièces automatiques (prototype)
 
 EasyDraft détecte maintenant les **espaces fermés** formés par les murs. Il prend en compte les intersections et les jonctions en T pour séparer plusieurs pièces partageant une cloison.
