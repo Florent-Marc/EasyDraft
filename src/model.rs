@@ -109,6 +109,42 @@ pub struct LightingConnection {
     pub circuit_index: usize,
 }
 
+/// Association explicite d'une prise placee sur le plan a un circuit.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OutletAssignment {
+    pub symbol_index: usize,
+    pub circuit_index: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct InstallationInfo {
+    pub address: String,
+    pub executor_name: String,
+    pub executor_role: String,
+    pub executor_vat: String,
+    /// Valeurs libres afin de ne pas supposer 230 V, 400 V ou mono/triphase.
+    pub voltage: String,
+    pub current_kind: String,
+    pub supply: String,
+    pub panel_name: String,
+    pub revision: String,
+    pub drawing_date: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReviewLevel {
+    Missing,
+    ToVerify,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReviewFinding {
+    pub level: ReviewLevel,
+    pub scope: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Stair {
     /// Debut de l'escalier, en metres.
@@ -236,6 +272,10 @@ pub struct Plan {
     /// Circuits d'eclairage additionnels ; l'ancien circuit reste a l'indice zero.
     #[serde(default)]
     pub additional_lighting_circuits: Vec<LightingCircuit>,
+    #[serde(default)]
+    pub outlet_assignments: Vec<OutletAssignment>,
+    #[serde(default)]
+    pub installation_info: InstallationInfo,
     /// Les noms appartiennent a un point interieur, pas a un index de murs fragile.
     #[serde(default)]
     pub room_labels: Vec<RoomLabel>,
@@ -383,6 +423,10 @@ impl Plan {
             return Err("Symbole introuvable");
         }
         self.symbols.remove(index);
+        self.outlet_assignments.retain(|item| item.symbol_index != index);
+        for assignment in &mut self.outlet_assignments {
+            if assignment.symbol_index > index { assignment.symbol_index -= 1; }
+        }
         self.lighting_connections.retain(|link|
             link.switch_index != index && link.light_index != index
         );
@@ -459,14 +503,65 @@ impl Plan {
         if index == 0 || index >= self.circuit_count() {
             return Err("Ce circuit ne peut pas etre supprime");
         }
-        if self.lighting_connections.iter().any(|link| link.circuit_index == index) {
-            return Err("Retire d'abord les liaisons de ce circuit");
+        if self.lighting_connections.iter().any(|link| link.circuit_index == index)
+            || self.outlet_assignments.iter().any(|item| item.circuit_index == index) {
+            return Err("Retire d'abord les appareils et liaisons de ce circuit");
         }
         self.additional_lighting_circuits.remove(index - 1);
         for link in &mut self.lighting_connections {
             if link.circuit_index > index { link.circuit_index -= 1; }
         }
+        for assignment in &mut self.outlet_assignments {
+            if assignment.circuit_index > index { assignment.circuit_index -= 1; }
+        }
         Ok(())
+    }
+
+    pub fn assign_outlet_to_circuit(
+        &mut self, symbol_index: usize, circuit_index: usize
+    ) -> Result<(), &'static str> {
+        if self.circuit(circuit_index).is_none() {
+            return Err("Circuit inexistant");
+        }
+        if !matches!(self.symbols.get(symbol_index), Some(s) if s.kind == ElectricalKind::Outlet) {
+            return Err("Selectionne une prise valide");
+        }
+        if let Some(existing) = self.outlet_assignments.iter_mut()
+            .find(|item| item.symbol_index == symbol_index)
+        {
+            existing.circuit_index = circuit_index;
+        } else {
+            self.outlet_assignments.push(OutletAssignment { symbol_index, circuit_index });
+        }
+        Ok(())
+    }
+
+    pub fn unassign_outlet(&mut self, symbol_index: usize) {
+        self.outlet_assignments.retain(|item| item.symbol_index != symbol_index);
+    }
+
+    pub fn active_outlet_assignments(&self) -> Vec<&OutletAssignment> {
+        let mut seen = std::collections::HashSet::new();
+        self.outlet_assignments.iter().filter(|item| {
+            matches!(self.symbols.get(item.symbol_index), Some(s) if s.kind == ElectricalKind::Outlet)
+                && self.circuit(item.circuit_index).is_some()
+                && seen.insert(item.symbol_index)
+        }).collect()
+    }
+
+    pub fn outlets_on_circuit(&self, circuit_index: usize) -> Vec<usize> {
+        self.active_outlet_assignments().into_iter()
+            .filter(|item| item.circuit_index == circuit_index)
+            .map(|item| item.symbol_index)
+            .collect()
+    }
+
+    pub fn unassigned_outlets(&self) -> usize {
+        let valid = self.active_outlet_assignments();
+        self.symbols.iter().enumerate().filter(|(index, symbol)| {
+            symbol.kind == ElectricalKind::Outlet
+                && !valid.iter().any(|item| item.symbol_index == *index)
+        }).count()
     }
 
     /// Ancien appel : toujours lie au circuit historique (index 0).
@@ -588,20 +683,53 @@ impl Plan {
         self.lighting_groups_for_circuit(0)
     }
 
-    /// Numero d'ordre par circuit partage entre les deux vues et le PDF.
+    /// Les reperes A1, A2, B1... sont numerotes parmi les appareils du
+    /// circuit, d'apres l'ordre des symboles dans le projet. L'ordre physique
+    /// reste a verifier lors de l'etablissement du dossier.
+    pub fn point_number_on_circuit(
+        &self, symbol_index: usize, circuit_index: usize
+    ) -> Option<usize> {
+        let mut points: Vec<usize> = self.active_lighting_connections_for_circuit(circuit_index)
+            .iter().map(|link| link.light_index).collect();
+        points.extend(self.outlets_on_circuit(circuit_index));
+        points.sort_unstable();
+        points.dedup();
+        points.iter().position(|index| *index == symbol_index).map(|i| i + 1)
+    }
+
+    pub fn point_ref(&self, symbol_index: usize) -> Option<String> {
+        let symbol = self.symbols.get(symbol_index)?;
+        let circuit_index = match symbol.kind {
+            ElectricalKind::Light => self.active_lighting_connections().into_iter()
+                .find(|link| link.light_index == symbol_index)?.circuit_index,
+            ElectricalKind::Outlet => self.active_outlet_assignments().into_iter()
+                .find(|item| item.symbol_index == symbol_index)?.circuit_index,
+            ElectricalKind::Switch => return None,
+        };
+        let letter = &self.circuit(circuit_index)?.letter;
+        Some(format!(
+            "{letter}{}",
+            self.point_number_on_circuit(symbol_index, circuit_index)?
+        ))
+    }
+
     pub fn lighting_point_number(&self, light_index: usize) -> Option<usize> {
-        let links = self.active_lighting_connections();
-        let link = links.iter().find(|link| link.light_index == light_index)?;
-        let circuit_index = link.circuit_index;
-        Some(links.iter().filter(|link| link.circuit_index == circuit_index)
-            .position(|link| link.light_index == light_index)? + 1)
+        let link = self.active_lighting_connections().into_iter()
+            .find(|link| link.light_index == light_index)?;
+        self.point_number_on_circuit(light_index, link.circuit_index)
     }
 
     pub fn lighting_point_ref(&self, light_index: usize) -> Option<String> {
-        let link = self.active_lighting_connections()
-            .into_iter().find(|link| link.light_index == light_index)?;
-        let letter = &self.circuit(link.circuit_index)?.letter;
-        Some(format!("{letter}{}", self.lighting_point_number(light_index)?))
+        if self.symbols.get(light_index)?.kind != ElectricalKind::Light { return None; }
+        self.point_ref(light_index)
+    }
+
+    /// Pour une commande unique on montre les references des lampes pilotees.
+    pub fn switch_point_refs(&self, switch_index: usize) -> Vec<String> {
+        self.active_lighting_connections().into_iter()
+            .filter(|link| link.switch_index == switch_index)
+            .filter_map(|link| self.point_ref(link.light_index))
+            .collect()
     }
 
     pub fn active_lighting_connections_for_circuit(
@@ -1155,6 +1283,48 @@ mod tests {
         assert_eq!(p.circuit(1).unwrap().letter, "C");
         p.remove_lighting_circuit(1).unwrap();
         assert_eq!(p.circuit_count(), 1);
+    }
+
+    #[test]
+    fn assigned_outlets_have_shared_references_and_preserve_legacy() {
+        let mut plan = Plan::default();
+        plan.add_demo_lighting(); // symboles 0=I1, 1=L1
+        let socket = plan.symbols.len();
+        plan.symbols.push(ElectricalSymbol {
+            position: Point { x: 3.0, y: 1.0 },
+            kind: ElectricalKind::Outlet,
+        });
+        assert_eq!(plan.unassigned_outlets(), 1);
+        plan.assign_outlet_to_circuit(socket, 0).unwrap();
+        assert_eq!(plan.lighting_point_ref(1).as_deref(), Some("A1"));
+        assert_eq!(plan.point_ref(socket).as_deref(), Some("A2"));
+        assert_eq!(plan.unassigned_outlets(), 0);
+        let out = serde_json::to_string(&plan).unwrap();
+        let restored: Plan = serde_json::from_str(&out).unwrap();
+        assert_eq!(restored.point_ref(socket).as_deref(), Some("A2"));
+        plan.remove_symbol(1).unwrap();
+        assert_eq!(plan.point_ref(1).as_deref(), Some("A1"));
+        assert_eq!(plan.outlet_assignments[0].symbol_index, 1);
+        let old: Plan = serde_json::from_str(r#"{"walls":[],"symbols":[]}"#).unwrap();
+        assert!(old.outlet_assignments.is_empty());
+        assert!(old.installation_info.voltage.is_empty());
+    }
+
+    #[test]
+    fn outlet_assignment_rejects_wrong_kind_and_missing_circuit() {
+        let mut plan = Plan::default();
+        plan.add_demo_lighting();
+        assert!(plan.assign_outlet_to_circuit(0, 0).is_err());
+        plan.symbols.push(ElectricalSymbol {
+            position: Point { x: 0.0, y: 0.0 },
+            kind: ElectricalKind::Outlet,
+        });
+        assert!(plan.assign_outlet_to_circuit(2, 4).is_err());
+        plan.assign_outlet_to_circuit(2, 0).unwrap();
+        plan.assign_outlet_to_circuit(2, 0).unwrap();
+        assert_eq!(plan.outlet_assignments.len(), 1);
+        plan.unassign_outlet(2);
+        assert_eq!(plan.unassigned_outlets(), 1);
     }
 
     #[test]
