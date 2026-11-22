@@ -596,10 +596,19 @@ impl EasyDraft {
             };
             painter.text(pos, Align2::CENTER_CENTER, label, FontId::proportional(15.0), Color32::from_rgb(20, 106, 190));
             let number = self.plan.symbol_number(index).unwrap_or(index + 1);
+            let ref_suffix = if symbol.kind == ElectricalKind::Light {
+                self.plan.lighting_point_number(index).map(|n| format!(
+                    " ({}{})",
+                    self.plan.lighting_circuit.letter,
+                    n
+                )).unwrap_or_default()
+            } else {
+                String::new()
+            };
             painter.text(
                 pos + Vec2::new(0.0, 23.0),
                 Align2::CENTER_CENTER,
-                format!("{label}{number}"),
+                format!("{label}{number}{ref_suffix}"),
                 FontId::proportional(12.0),
                 Color32::from_rgb(35, 77, 123),
             );
@@ -788,7 +797,7 @@ impl eframe::App for EasyDraft {
             ui.label(format!("Lampes non liees : {}", self.plan.unlinked_lights()));
             ui.label(format!("Interrupteurs non lies : {}", self.plan.unlinked_switches()));
             ui.separator();
-            ui.collapsing("Circuit d'eclairage (A)", |ui| {
+            ui.collapsing(format!("Circuit {} - parametres", self.plan.lighting_circuit.letter), |ui| {
                 ui.small("Valeurs a renseigner d'apres l'installation reelle. 0 = inconnu.");
                 let mut circuit = self.plan.lighting_circuit.clone();
                 ui.label("Repere du circuit");
