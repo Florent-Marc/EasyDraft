@@ -421,7 +421,6 @@ impl EasyDraft {
     fn find_wall(&self, point: Point, ppm: f32) -> Option<usize> {
         let mut closest = None;
         let mut closest_distance = f32::INFINITY;
-        if self.show_architecture {
         for (index, wall) in self.plan.walls.iter().enumerate() {
             let dx = wall.end.x - wall.start.x;
             let dy = wall.end.y - wall.start.y;
@@ -663,6 +662,7 @@ impl EasyDraft {
             }
         }
 
+        if self.show_architecture {
         for (index, wall) in self.plan.walls.iter().enumerate() {
             let a = to_screen(wall.start);
             let b = to_screen(wall.end);
