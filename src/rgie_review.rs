@@ -103,8 +103,12 @@ pub fn review(plan: &Plan) -> Vec<ReviewFinding> {
     }
 
     verify(
-        &mut findings, "Limite du logiciel",
-        "Symboles de travail : verifier les conventions du chapitre 2.13 et la legende",
+        &mut findings, "Symboles RGIE",
+        "Les formes de base des interrupteurs, prises et points lumineux suivent le tableau 2.23 ; confirmer chaque variante reelle (terre, protection enfant, type de commande)",
+    );
+    verify(
+        &mut findings, "Symboles RGIE",
+        "Protections : le symbole represente le type declare ; verifier les caracteristiques et la topologie du tableau reel",
     );
     verify(
         &mut findings, "Limite du logiciel",
