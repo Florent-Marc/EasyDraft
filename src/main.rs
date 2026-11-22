@@ -421,6 +421,7 @@ impl EasyDraft {
     fn find_wall(&self, point: Point, ppm: f32) -> Option<usize> {
         let mut closest = None;
         let mut closest_distance = f32::INFINITY;
+        if self.show_architecture {
         for (index, wall) in self.plan.walls.iter().enumerate() {
             let dx = wall.end.x - wall.start.x;
             let dy = wall.end.y - wall.start.y;
@@ -608,6 +609,21 @@ impl EasyDraft {
             self.pan += ui.ctx().input(|i| i.pointer.delta());
         }
 
+        if response.hovered() {
+            let scroll = ui.ctx().input(|i| i.smooth_scroll_delta.y);
+            if scroll.abs() > 0.1 {
+                if let Some(cursor) = response.hover_pos() {
+                    let old_zoom = self.zoom;
+                    let new_zoom = (old_zoom * (scroll * 0.002).exp()).clamp(0.3, 4.0);
+                    // Garder le point sous la souris fixe durant le zoom.
+                    let center = rect.center();
+                    let old_origin = center + self.pan;
+                    self.pan = cursor - center - (cursor - old_origin) * (new_zoom / old_zoom);
+                    self.zoom = new_zoom;
+                }
+            }
+        }
+
         let ppm = PIXELS_PER_METER * self.zoom;
         let origin = rect.center() + self.pan;
         let to_screen = |p: Point| -> Pos2 {
@@ -638,10 +654,10 @@ impl EasyDraft {
         if response.clicked() {
             if let Some(pos) = response.interact_pointer_pos() {
                 let world = to_world(pos);
-                let point = if matches!(self.tool, Tool::SelectWall | Tool::Door | Tool::Window | Tool::LinkLighting) {
-                    world
-                } else {
-                    world.snapped(self.snap_m)
+                let point = match self.tool {
+                    Tool::SelectWall | Tool::Door | Tool::Window | Tool::LinkLighting => world,
+                    Tool::Wall => self.snap_point(world, ppm),
+                    _ => world.snapped(self.snap_m),
                 };
                 self.place(point, ppm);
             }
@@ -689,10 +705,21 @@ impl EasyDraft {
             }
         }
 
-        for stair in &self.plan.stairs {
+        for (index, stair) in self.plan.stairs.iter().enumerate() {
             draw_stair(&painter, stair, origin, ppm);
+            if self.selected_stair == Some(index) && stair.is_valid() {
+                let corners = stair.corners().map(to_screen);
+                for j in 0..4 {
+                    painter.line_segment(
+                        [corners[j], corners[(j + 1) % 4]],
+                        Stroke::new(3.5, Color32::from_rgb(40, 135, 230))
+                    );
+                }
+            }
         }
+        } // fin du calque architectural
 
+        if self.show_electrical {
         for link in &self.plan.lighting_connections {
             if !self.plan.lighting_connection_is_valid(link) { continue; }
             let a = to_screen(self.plan.symbols[link.switch_index].position);
@@ -735,8 +762,13 @@ impl EasyDraft {
             if self.pending_switch == Some(index) {
                 painter.circle_stroke(pos, 17.0, Stroke::new(2.0, Color32::from_rgb(233, 139, 40)));
             }
+            if self.selected_symbol == Some(index) {
+                painter.circle_stroke(pos, 19.0, Stroke::new(3.0, Color32::from_rgb(40, 135, 230)));
+            }
         }
+        } // fin du calque electrique
 
+        if self.show_architecture {
         if let Some(start) = self.pending_stair {
             if let Some(cursor) = response.hover_pos() {
                 let end = to_world(cursor).snapped(self.snap_m);
@@ -751,7 +783,7 @@ impl EasyDraft {
 
         if let Some(start) = self.pending_wall {
             if let Some(cursor) = response.hover_pos() {
-                let end = to_world(cursor).snapped(self.snap_m);
+                let end = self.snap_point(to_world(cursor), ppm);
                 let width_px = self.new_wall_thickness_cm / 100.0 * ppm;
                 painter.line_segment(
                     [to_screen(start), to_screen(end)],
@@ -761,6 +793,19 @@ impl EasyDraft {
                     draw_dimension(&painter, to_screen(start), to_screen(end), width_px, start.distance_to(end));
                 }
             }
+        }
+
+        } // fin des apercus architecturaux
+
+        if let Some(pos) = response.hover_pos() {
+            let point = to_world(pos);
+            painter.text(
+                rect.right_top() + Vec2::new(-12.0, 12.0),
+                Align2::RIGHT_TOP,
+                format!("X: {:.2} m   Y: {:.2} m", point.x, point.y),
+                FontId::proportional(13.0),
+                Color32::DARK_GRAY,
+            );
         }
 
         painter.text(
@@ -779,6 +824,23 @@ impl EasyDraft {
 
 impl eframe::App for EasyDraft {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if !ctx.wants_keyboard_input() {
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
+                self.undo();
+            }
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y)) {
+                self.redo();
+            }
+            if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+                self.reset_pending();
+                self.clear_selection();
+                self.status = "Selection et trace en cours annules".into();
+            }
+            if self.view == View::Plan2D &&
+                ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)) {
+                self.delete_selected();
+            }
+        }
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("EasyDraft");
@@ -797,12 +859,16 @@ impl eframe::App for EasyDraft {
                     self.plan = Plan::default();
                     self.pending_wall = None;
                     self.pending_stair = None;
-                    self.pending_switch = None;
-                    self.selected_wall = None;
+                    self.reset_pending();
+                    self.clear_selection();
                     self.view = View::Plan2D;
                     self.status = "Nouveau plan".into();
                 }
                 if ui.button("Annuler").clicked() { self.undo(); }
+                if ui.button("Retablir").clicked() { self.redo(); }
+                if self.view == View::Plan2D && ui.button("Supprimer selection").clicked() {
+                    self.delete_selected();
+                }
                 if ui.button("Enregistrer").clicked() { self.save(); }
                 if ui.button("Ouvrir").clicked() { self.load(); }
                 if ui.button("Exporter PDF plan").clicked() { self.export_pdf(); }
@@ -816,7 +882,7 @@ impl eframe::App for EasyDraft {
             ui.heading("Outils");
             ui.separator();
             if ui.selectable_label(self.tool == Tool::Wall, "Mur").clicked() { self.select_tool(Tool::Wall); }
-            if ui.selectable_label(self.tool == Tool::SelectWall, "Selectionner un mur").clicked() {
+            if ui.selectable_label(self.tool == Tool::SelectWall, "Selectionner un element").clicked() {
                 self.select_tool(Tool::SelectWall);
             }
             if ui.selectable_label(self.tool == Tool::Door, "Porte").clicked() {
