@@ -310,6 +310,51 @@ impl Plan {
         Ok(())
     }
 
+    /// Deplace une ouverture le long de son mur, en verifiant ses limites.
+    /// Aucun decalage geometrique des autres ouvertures n'est autorise.
+    pub fn update_opening(
+        &mut self,
+        index: usize,
+        center_m: f32,
+        width_m: f32,
+    ) -> Result<(), &'static str> {
+        let opening = self.openings.get(index).ok_or("Ouverture introuvable")?;
+        let wall = self.walls.get(opening.wall_index).ok_or("Mur de l'ouverture introuvable")?;
+        let length = wall.length_m();
+        const MARGIN: f32 = 0.05;
+        if !center_m.is_finite() || !width_m.is_finite() || width_m <= 0.0 {
+            return Err("Position ou largeur invalide");
+        }
+        let start = center_m - width_m / 2.0;
+        let end = center_m + width_m / 2.0;
+        if start < MARGIN - 0.0001 || end > length - MARGIN + 0.0001 {
+            return Err("L'ouverture doit rester a l'interieur du mur (marge 5 cm)");
+        }
+        if self.openings.iter().enumerate().any(|(other_index, other)| {
+            other_index != index
+                && other.wall_index == opening.wall_index
+                && start < other.end_m() + MARGIN - 0.0001
+                && end > other.start_m() - MARGIN + 0.0001
+        }) {
+            return Err("L'ouverture chevaucherait une autre porte ou fenetre");
+        }
+        self.openings[index].center_m = center_m;
+        self.openings[index].width_m = width_m;
+        Ok(())
+    }
+
+    /// Deplacement d'une ouverture sans changement de largeur.
+    pub fn move_opening(&mut self, index: usize, center_m: f32) -> Result<(), &'static str> {
+        let width = self.openings.get(index).ok_or("Ouverture introuvable")?.width_m;
+        self.update_opening(index, center_m, width)
+    }
+
+    pub fn remove_opening(&mut self, index: usize) -> Result<(), &'static str> {
+        if index >= self.openings.len() { return Err("Ouverture introuvable"); }
+        self.openings.remove(index);
+        Ok(())
+    }
+
     /// Supprime un mur et ses ouvertures, puis reajuste les references des autres murs.
     pub fn remove_wall(&mut self, index: usize) -> Result<(), &'static str> {
         if index >= self.walls.len() {
@@ -561,6 +606,50 @@ mod tests {
         assert!(plan.add_opening(0, Point { x: 1.7, y: 0.0 }, 0.9, OpeningKind::Door, false, false, 0.05).is_err());
         assert!(plan.add_opening(0, Point { x: 0.0, y: 0.0 }, 3.0, OpeningKind::Door, false, false, 0.05).is_err());
         assert_eq!(plan.openings.len(), 1);
+    }
+
+    #[test]
+    fn opening_can_slide_but_cannot_overlap_or_leave_wall() {
+        let mut plan = Plan::default();
+        plan.walls.push(Wall {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 5.0, y: 0.0 },
+            thickness_m: 0.2,
+        });
+        plan.add_opening(0, Point { x: 1.0, y: 0.0 }, 0.9, OpeningKind::Door, false, false, 0.05).unwrap();
+        plan.add_opening(0, Point { x: 4.0, y: 0.0 }, 1.2, OpeningKind::Window, false, false, 0.05).unwrap();
+        plan.move_opening(0, 2.0).unwrap();
+        assert_eq!(plan.openings[0].center_m, 2.0);
+        assert!(plan.move_opening(0, 3.1).is_err());
+        assert!(plan.move_opening(0, 0.1).is_err());
+        assert_eq!(plan.openings[0].center_m, 2.0);
+        plan.remove_opening(0).unwrap();
+        assert_eq!(plan.openings.len(), 1);
+        assert_eq!(plan.openings[0].kind, OpeningKind::Window);
+    }
+
+    #[test]
+    fn moving_whole_wall_preserves_attached_opening_and_undo_data() {
+        let mut plan = Plan::default();
+        plan.walls.push(Wall {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 5.0, y: 0.0 },
+            thickness_m: 0.2,
+        });
+        plan.add_opening(0, Point { x: 2.0, y: 0.0 }, 0.9, OpeningKind::Door, false, false, 0.05).unwrap();
+        let old_json = serde_json::to_string(&plan).unwrap();
+        plan.update_wall(
+            0,
+            Point { x: 0.0, y: 2.0 },
+            Point { x: 5.0, y: 2.0 },
+            0.2,
+        ).unwrap();
+        assert_eq!(plan.openings[0].center_m, 2.0);
+        let restored: Plan = serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
+        assert_eq!(restored.walls[0].start.y, 2.0);
+        assert_eq!(restored.openings[0].center_m, 2.0);
+        let undo: Plan = serde_json::from_str(&old_json).unwrap();
+        assert_eq!(undo.walls[0].start.y, 0.0);
     }
 
     #[test]
