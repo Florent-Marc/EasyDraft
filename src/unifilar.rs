@@ -4,7 +4,7 @@
 
 use eframe::egui::{self, Align2, Color32, FontId, Pos2, Stroke, Vec2};
 
-use crate::model::{LightingCircuit, Plan, Point};
+use crate::model::{LightingCircuit, Plan};
 
 const INK: Color32 = Color32::from_rgb(43, 56, 72);
 const BLUE: Color32 = Color32::from_rgb(37, 107, 180);
@@ -141,7 +141,9 @@ fn draw_groups(
     plan: &Plan,
     origin: Pos2,
     groups: &[(usize, Vec<usize>)],
+    circuit: &LightingCircuit,
 ) {
+    let _ = circuit;
     let spine_x = origin.x + 382.0;
     let switch_x = origin.x + 565.0;
     let right_x = origin.x + 820.0;
@@ -210,17 +212,8 @@ fn draw_groups(
                 &format!("L{lamp_number}"),
                 14.0, INK,
             );
-            if let Some(point_number) = plan.lighting_point_number(*light_index) {
-                caption(
-                    painter,
-                    Pos2::new(right_x + 65.0, y),
-                    &format!(
-                        "{}{}",
-                        label_or_unknown(&plan.lighting_circuit.letter),
-                        point_number
-                    ),
-                    13.0, BLUE,
-                );
+            if let Some(reference) = plan.lighting_point_ref(*light_index) {
+                caption(painter, Pos2::new(right_x + 65.0, y), &reference, 13.0, BLUE);
             }
         }
         let row_height = 99.0 + (lamps.len() - 1) as f32 * 64.0;
@@ -237,101 +230,109 @@ fn draw_groups(
     );
 }
 
-/// Affiche un schéma derivé du modèle, et renvoie une demande de suppression éventuelle.
+/// Une feuille par circuit : les circuits ne sont pas branches sur le meme tronc.
+/// Les appareils et leurs associations proviennent uniquement du Plan partage.
 pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
-    ui.heading("Schéma unifilaire - éclairage");
-    ui.label("Vue de travail du circuit de commande : protections, canalisation et points commandés.");
+    ui.heading("Schema unifilaire - circuits d'eclairage");
     ui.colored_label(
         WARNING,
-        "Prototype : ce document n'est ni un schema de controle RGIE ni un plan de cablage.",
+        "Prototype fonctionnel : ni dessin reglementaire RGIE, ni plan de cablage ou calcul de protection.",
     );
+    ui.label("Chaque depart est independant. Les references du plan 2D sont reprises dans les feuilles.");
 
-    let missing = plan.lighting_circuit.missing_fields();
-    if !missing.is_empty() {
-        ui.colored_label(
-            WARNING,
-            format!(
-                "Informations manquantes ({}): {}.",
-                missing.len(),
-                missing.join(", ")
-            ),
-        );
-        ui.small("Renseigne ces caracteristiques dans le panneau de gauche. Aucun calibre ni type de cable n'est suppose.");
-    } else {
-        ui.label("Champs descriptifs remplis (coherence et conformite non verifiees).");
-    }
-
-    let groups = plan.lighting_groups();
-    let invalid = plan.lighting_connections.len() - plan.active_lighting_connections().len();
-
-    ui.horizontal_wrapped(|ui| {
-        ui.label(format!(
-            "{} commande(s) | {} liaison(s) | {} lampe(s) sans commande | {} interrupteur(s) sans charge",
-            groups.len(),
-            plan.lighting_connections.len().saturating_sub(invalid),
-            plan.unlinked_lights(),
-            plan.unlinked_switches(),
-        ));
-    });
-    if invalid > 0 {
+    let active = plan.active_lighting_connections();
+    let ignored = plan.lighting_connections.len().saturating_sub(active.len());
+    ui.label(format!(
+        "{} circuit(s) | {} liaison(s) | {} lampe(s) sans commande | {} interrupteur(s) sans charge",
+        plan.circuit_count(),
+        active.len(),
+        plan.unlinked_lights(),
+        plan.unlinked_switches(),
+    ));
+    if ignored > 0 {
         ui.colored_label(
             Color32::RED,
-            format!("{invalid} liaison(s) invalide(s) ou dupliquee(s) dans le fichier JSON : ignoree(s)."),
+            format!("{ignored} liaison(s) ignoree(s) : reference invalide ou doublon."),
         );
     }
 
     let mut action = None;
-    ui.separator();
-
-    if groups.is_empty() {
-        ui.label("Aucune commande reliee. Place un interrupteur et un point lumineux sur le plan 2D, puis utilise « Lier I -> L ».");
-        ui.label("Le bouton « Ajouter demo I -> L » permet d'obtenir un premier exemple immediatement.");
-        return None;
-    }
-
-    // La vue est de largeur fixe, pour rester lisible en petit et en grand ecran.
-    // Le défilement vertical/horizontal est gere par egui.
-    let rows_height: f32 = groups.iter().map(|(_, lamps)| {
-        (99.0 + lamps.len().saturating_sub(1) as f32 * 64.0).max(112.0)
-    }).sum();
-    let canvas_h = 270.0 + rows_height;
-
-    egui::ScrollArea::both().max_height(ui.available_height().max(220.0) * 0.75)
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            let (response, painter) = ui.allocate_painter(
-                Vec2::new(970.0, canvas_h),
-                egui::Sense::hover(),
-            );
-            painter.rect_filled(response.rect, 0.0, Color32::from_rgb(250, 251, 253));
-            let origin = response.rect.left_top() + Vec2::new(14.0, 8.0);
-            draw_header(&painter, origin, &plan.lighting_circuit);
-            draw_groups(&painter, plan, origin, &groups);
-            painter.text(
-                origin + Vec2::new(13.0, canvas_h - 35.0),
-                Align2::LEFT_CENTER,
-                "Lignes = relations fonctionnelles ; ne pas utiliser pour un raccordement reel",
-                FontId::proportional(12.0),
-                MUTED,
-            );
-        });
-
-    ui.separator();
-    ui.label("Connexions du projet (supprimer ici actualise aussi le plan 2D) :");
-    for (index, link) in plan.lighting_connections.iter().enumerate() {
-        if !plan.lighting_connection_is_valid(link) {
-            continue;
-        }
-        let switch_number = plan.symbol_number(link.switch_index).unwrap_or(link.switch_index + 1);
-        let lamp_number = plan.symbol_number(link.light_index).unwrap_or(link.light_index + 1);
-        ui.horizontal(|ui| {
-            ui.label(format!("Interrupteur I{switch_number}  ->  luminaire L{lamp_number}"));
-            if ui.small_button("Supprimer la liaison").clicked() {
-                action = Some(Action::RemoveConnection(index));
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        for circuit_index in 0..plan.circuit_count() {
+            let Some(circuit) = plan.circuit(circuit_index) else { continue; };
+            let links = plan.active_lighting_connections_for_circuit(circuit_index);
+            let groups = plan.lighting_groups_for_circuit(circuit_index);
+            ui.separator();
+            ui.heading(format!(
+                "Circuit {} - {} commande(s), {} point(s)",
+                circuit.letter,
+                groups.len(),
+                links.len(),
+            ));
+            let missing = circuit.missing_fields();
+            if !missing.is_empty() {
+                ui.colored_label(
+                    WARNING,
+                    format!(
+                        "Informations manquantes ({}): {}",
+                        missing.len(),
+                        missing.join(", "),
+                    ),
+                );
+            } else {
+                ui.label("Informations descriptives saisies (conformite non controlee).");
             }
-        });
-    }
-    ui.small("Symboles provisoires : les references et conventions RGIE restent a implementer.");
+            if groups.is_empty() {
+                ui.label("Aucune liaison sur ce circuit. Place un interrupteur et une lampe dans le plan 2D puis lie-les en selectionnant ce circuit.");
+                continue;
+            }
+            let rows_height: f32 = groups.iter().map(|(_, lamps)| {
+                (99.0 + lamps.len().saturating_sub(1) as f32 * 64.0).max(112.0)
+            }).sum();
+            let canvas_h = 270.0 + rows_height;
+            egui::ScrollArea::horizontal()
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    let (response, painter) = ui.allocate_painter(
+                        Vec2::new(970.0, canvas_h), egui::Sense::hover()
+                    );
+                    painter.rect_filled(
+                        response.rect, 0.0, Color32::from_rgb(250, 251, 253)
+                    );
+                    let origin = response.rect.left_top() + Vec2::new(14.0, 8.0);
+                    draw_header(&painter, origin, circuit);
+                    draw_groups(&painter, plan, origin, &groups, circuit);
+                    painter.text(
+                        origin + Vec2::new(13.0, canvas_h - 35.0),
+                        Align2::LEFT_CENTER,
+                        "Representation fonctionnelle uniquement. Le schema de protection et le trajet des conducteurs ne sont pas definis.",
+                        FontId::proportional(11.0),
+                        MUTED,
+                    );
+                });
+            ui.label("Liaisons de ce circuit :");
+            for (index, link) in plan.lighting_connections.iter().enumerate() {
+                if link.circuit_index != circuit_index || !plan.lighting_connection_is_valid(link) {
+                    continue;
+                }
+                let switch_number = plan.symbol_number(link.switch_index)
+                    .unwrap_or(link.switch_index + 1);
+                let lamp_number = plan.symbol_number(link.light_index)
+                    .unwrap_or(link.light_index + 1);
+                let reference = plan.lighting_point_ref(link.light_index)
+                    .unwrap_or_else(|| "?".to_owned());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!(
+                        "I{switch_number} -> L{lamp_number} (point {reference})"
+                    ));
+                    if ui.small_button(format!("Supprimer##link{index}")).clicked() {
+                        action = Some(Action::RemoveConnection(index));
+                    }
+                });
+            }
+        }
+    });
+    ui.small("Les circuits representent des liaisons logiques. Ne pas utiliser ce prototype pour raccorder une installation.");
     action
 }
 
@@ -344,5 +345,7 @@ mod tests {
         p.add_demo_lighting();
         assert_eq!(p.lighting_groups().len(), 1);
         assert_eq!(p.lighting_groups()[0].1.len(), 1);
+        let new_index = p.add_lighting_circuit().unwrap();
+        assert_eq!(p.lighting_groups_for_circuit(new_index).len(), 0);
     }
 }
