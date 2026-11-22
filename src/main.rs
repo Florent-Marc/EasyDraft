@@ -1667,7 +1667,7 @@ impl eframe::App for EasyDraft {
                     ui.small("Ces champs servent au dossier, sans validation automatique RGIE.");
                 });
             ui.separator();
-            ui.heading("Circuits et protections");
+            ui.heading("Circuits (eclairage / prises)");
             if ui.button("Charger l'exemple unifilaire A + B").clicked() {
                 self.load_unifilar_example();
             }
@@ -1675,7 +1675,7 @@ impl eframe::App for EasyDraft {
             if self.active_circuit_index >= self.plan.circuit_count() {
                 self.active_circuit_index = 0;
             }
-            egui::ComboBox::from_label("Circuit actif pour Lier I -> L")
+            egui::ComboBox::from_label("Circuit actif pour lampes et prises")
                 .selected_text(
                     self.plan.circuit(self.active_circuit_index)
                         .map(|c| c.letter.clone()).unwrap_or_else(|| "A".into())
@@ -1689,7 +1689,7 @@ impl eframe::App for EasyDraft {
                         ui.selectable_value(&mut self.active_circuit_index, index, title);
                     }
                 });
-            if ui.button("Ajouter un circuit d'eclairage").clicked() {
+            if ui.button("Ajouter un circuit (prototype)").clicked() {
                 let mut updated = self.plan.clone();
                 match updated.add_lighting_circuit() {
                     Ok(index) => {
