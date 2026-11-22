@@ -385,6 +385,15 @@ pub fn export_pdf(path: &str, plan: &Plan, show_dimensions: bool) -> Result<(), 
 
     // Le texte du titre est ajoute en coordonnees de page, sans transformation du plan.
     pdf.text_pt(MARGIN, PAGE_H - 34.0, 18.0, "EasyDraft - Plan 2D", DARK);
+    pdf.text_pt(
+        MARGIN, PAGE_H - 53.0, 9.0,
+        &format!(
+            "Adresse : {} | Revision : {}",
+            truncate_pdf(&plan.installation_info.address, 74),
+            truncate_pdf(&plan.installation_info.revision, 8),
+        ),
+        DIM,
+    );
     pdf.text_pt(MARGIN, 25.0, 9.0, "A4 paysage - Ajuste a la page (pas une echelle 1:50 ou 1:100)", DIM);
     pdf.text_pt(
         PAGE_W - 226.0, 25.0, 9.0,
@@ -549,24 +558,24 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
             );
         }
         let info = &plan.installation_info;
-        raw_pdf_text(&mut pdf, 35.0, 84.0, 9.0,
+        raw_pdf_text(&mut pdf, 35.0, 67.0, 9.0,
             &format!("Tension : {} | Courant : {} | Revision : {} | Date : {}",
                 truncate_pdf(&info.voltage, 12),
                 truncate_pdf(&info.current_kind, 16),
                 truncate_pdf(&info.revision, 9),
                 truncate_pdf(&info.drawing_date, 14)),
             color);
-        raw_pdf_text(&mut pdf, 35.0, 66.0, 9.0,
+        raw_pdf_text(&mut pdf, 35.0, 51.0, 9.0,
             &format!("Responsable : {} ({})",
                 truncate_pdf(&info.executor_name, 43),
                 truncate_pdf(&info.executor_role, 24)),
             color);
-        raw_pdf_text(&mut pdf, 35.0, 49.0, 9.0,
+        raw_pdf_text(&mut pdf, 35.0, 35.0, 9.0,
             &format!("Non affectes : {} lampe(s), {} interrupteur(s), {} prise(s)",
                 plan.unlinked_lights(), plan.unlinked_switches(), plan.unassigned_outlets()),
             color);
-        raw_pdf_text(&mut pdf, 35.0, 32.0, 9.0,
-            "Symboles simplifiees. Non utilisable comme schema d'execution ou attestation de conformite.",
+        raw_pdf_text(&mut pdf, 35.0, 19.0, 9.0,
+            "Symboles simplifies. Non utilisable comme schema d'execution ou attestation de conformite.",
             DIM);
         pages.push(pdf);
     }
@@ -596,7 +605,7 @@ fn raw_pdf_line(out: &mut String, x1: f32, y1: f32, x2: f32, y2: f32, rgb: Rgb, 
 
 fn raw_pdf_text(out: &mut String, x: f32, y: f32, size: f32, text: &str, rgb: Rgb) {
     // Type1 Helvetica sans encodage Unicode. Les caracteres non ASCII sont remplaces.
-    let ascii = text.chars().map(|ch| if ch.is_ascii() { ch } else { '?' }).collect::<String>();
+    let ascii = ascii_pdf_text(text);
     let escaped = ascii.replace('\\', "\\\\").replace('(', "\\(").replace(')', "\\)");
     let _ = writeln!(
         out,
