@@ -369,6 +369,31 @@ mod tests {
         assert_eq!(rooms.len(), 4);
     }
     #[test]
+    fn repo_example_has_two_named_rooms_and_one_lighting_link() {
+        let plan: crate::model::Plan =
+            serde_json::from_str(include_str!("../examples/maison-deux-pieces.json")).unwrap();
+        let rooms = detect_rooms(&plan.walls);
+        assert_eq!(rooms.len(), 2);
+        let names: Vec<&str> = rooms.iter().map(|room| plan.room_name(room)).collect();
+        assert!(names.contains(&"Salon"));
+        assert!(names.contains(&"Cuisine"));
+        for room in &rooms {
+            assert!((room.area_m2 - 10.64).abs() < 0.01);
+        }
+        assert_eq!(plan.lighting_connections.len(), 1);
+        assert!(plan.lighting_connection_is_valid(&plan.lighting_connections[0]));
+    }
+
+    #[test]
+    fn removing_a_wall_reopens_room() {
+        let mut plan = crate::model::Plan::default();
+        plan.walls = square();
+        assert_eq!(detect_rooms(&plan.walls).len(), 1);
+        plan.remove_wall(0).unwrap();
+        assert!(detect_rooms(&plan.walls).is_empty());
+    }
+
+    #[test]
     fn rectangular_detection_independent_of_wall_directions() {
         let mut walls = square();
         walls[0] = wall(4.0, 0.0, 0.0, 0.0, 0.2);
