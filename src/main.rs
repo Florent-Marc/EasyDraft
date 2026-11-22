@@ -606,6 +606,11 @@ impl EasyDraft {
             }
         }
         if self.show_architecture {
+            self.selected_opening = self.find_opening(point, ppm);
+            if self.selected_opening.is_some() {
+                self.status = "Porte ou fenetre selectionnee : glisse-la pour la deplacer".into();
+                return;
+            }
             self.selected_stair = self.find_stair(point, ppm);
             if self.selected_stair.is_some() {
                 self.status = "Escalier selectionne".into();
@@ -656,6 +661,53 @@ impl EasyDraft {
 
     /// Panneau d'edition numerique des objets selectionnes.
     fn selected_properties(&mut self, ui: &mut egui::Ui) {
+        if let Some(index) = self.selected_opening {
+            if let Some(opening) = self.plan.openings.get(index).cloned() {
+                ui.heading(match opening.kind {
+                    OpeningKind::Door => "Porte",
+                    OpeningKind::Window => "Fenetre",
+                });
+                ui.small("Glisse le symbole sur le mur pour le repositionner.");
+                let mut center = opening.center_m;
+                let mut width_cm = opening.width_m * 100.0;
+                let mut hinge_right = opening.hinge_right;
+                let mut swing_flipped = opening.swing_flipped;
+                let mut changed = false;
+                ui.label("Centre depuis le debut du mur");
+                changed |= ui.add(egui::DragValue::new(&mut center)
+                    .speed(0.05).suffix(" m")).changed();
+                ui.label("Largeur de l'ouverture");
+                let limits = match opening.kind {
+                    OpeningKind::Door => 50.0..=200.0,
+                    OpeningKind::Window => 40.0..=400.0,
+                };
+                changed |= ui.add(egui::DragValue::new(&mut width_cm)
+                    .range(limits).speed(1.0).suffix(" cm")).changed();
+                if opening.kind == OpeningKind::Door {
+                    changed |= ui.checkbox(&mut hinge_right, "Charniere a la fin du mur").changed();
+                    changed |= ui.checkbox(&mut swing_flipped, "Inverser l'ouverture").changed();
+                }
+                if changed {
+                    let mut updated = self.plan.clone();
+                    match updated.update_opening(index, center, width_cm / 100.0) {
+                        Ok(()) => {
+                            if let Some(element) = updated.openings.get_mut(index) {
+                                element.hinge_right = hinge_right;
+                                element.swing_flipped = swing_flipped;
+                            }
+                            self.snapshot();
+                            self.plan = updated;
+                            self.status = "Ouverture modifiee".into();
+                        }
+                        Err(error) => self.status = error.into(),
+                    }
+                }
+                if ui.button("Supprimer cette ouverture").clicked() {
+                    self.delete_selected();
+                }
+                return;
+            }
+        }
         if let Some(index) = self.selected_wall {
             if let Some(mut edited) = self.plan.walls.get(index).cloned() {
                 ui.heading(format!("Mur {}", index + 1));
@@ -1049,6 +1101,23 @@ impl EasyDraft {
             }
         }
 
+        if self.tool == Tool::SelectWall {
+            if response.drag_started() {
+                let initial = ui.ctx().input(|i| i.pointer.press_origin());
+                if let Some(pos) = initial.or(response.interact_pointer_pos()) {
+                    self.begin_drag(to_world(pos), ppm);
+                }
+            }
+            if response.dragged() {
+                if let Some(cursor) = response.interact_pointer_pos() {
+                    self.update_drag(to_world(cursor), ppm);
+                }
+            }
+            if response.drag_stopped() {
+                self.finish_drag();
+            }
+        }
+
         if response.clicked() {
             if let Some(pos) = response.interact_pointer_pos() {
                 let world = to_world(pos);
@@ -1116,12 +1185,13 @@ impl EasyDraft {
             let screen_length = (b - a).length();
             if screen_length > 0.001 {
                 let direction = (b - a) / screen_length;
-                let mut openings: Vec<&Opening> = self.plan.openings.iter()
-                    .filter(|o| o.wall_index == index)
+                let mut openings: Vec<(usize, &Opening)> = self.plan.openings.iter()
+                    .enumerate()
+                    .filter(|(_, o)| o.wall_index == index)
                     .collect();
-                openings.sort_by(|first, second| first.start_m().total_cmp(&second.start_m()));
+                openings.sort_by(|a, b| a.1.start_m().total_cmp(&b.1.start_m()));
                 let mut cursor_m = 0.0_f32;
-                for opening in openings {
+                for (opening_index, opening) in openings {
                     let from_m = opening.start_m().clamp(0.0, wall.length_m());
                     let to_m = opening.end_m().clamp(0.0, wall.length_m());
                     if from_m > cursor_m {
@@ -1134,6 +1204,14 @@ impl EasyDraft {
                         );
                     }
                     draw_opening(&painter, a, direction, width_px, ppm, opening);
+                    if self.selected_opening == Some(opening_index) {
+                        let handle = a + direction * (opening.center_m * ppm);
+                        painter.circle_filled(handle, 5.0, Color32::from_rgb(242, 178, 73));
+                        painter.circle_stroke(
+                            handle, 8.0,
+                            Stroke::new(2.0, Color32::from_rgb(40, 135, 230)),
+                        );
+                    }
                     cursor_m = cursor_m.max(to_m);
                 }
                 if cursor_m < wall.length_m() {
@@ -1148,6 +1226,15 @@ impl EasyDraft {
             }
             if self.show_dimensions {
                 draw_dimension(&painter, a, b, width_px, wall.length_m());
+            }
+            if self.selected_wall == Some(index) {
+                for endpoint in [a, b] {
+                    painter.circle_filled(endpoint, 6.0, Color32::WHITE);
+                    painter.circle_stroke(
+                        endpoint, 6.0,
+                        Stroke::new(2.5, Color32::from_rgb(40, 135, 230)),
+                    );
+                }
             }
         }
 
@@ -1349,7 +1436,8 @@ impl eframe::App for EasyDraft {
                 self.status = "Clique sur un interrupteur I, puis sur une lampe X.".into();
             }
             if ui.selectable_label(self.tool == Tool::Pan, "Deplacer la vue").clicked() { self.select_tool(Tool::Pan); }
-            ui.small("Selection : clic sur mur, appareil ou interieur d'une piece pour la nommer.");
+            ui.small("Selection : clic sur un element. Glisse un mur, ses poignees bleues ou une ouverture.");
+            ui.small("Deplacer une ouverture : elle reste sur son mur et ne peut pas chevaucher une autre.");
             ui.small("Ctrl+Z : annuler | Ctrl+Y : retablir.");
             ui.separator();
             if self.view == View::Plan2D && self.tool == Tool::Door {
