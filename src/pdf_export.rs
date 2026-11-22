@@ -947,6 +947,24 @@ mod tests {
     }
 
     #[test]
+    fn board_sample_export_contains_overview_and_three_circuit_pages() {
+        let plan: Plan = serde_json::from_str(
+            include_str!("../examples/tableau-deux-ddr-trois-circuits.json")
+        ).unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "easydraft-ddr-tableau-{}.pdf", std::process::id()
+        ));
+        export_unifilar_pdf(&path.to_string_lossy(), &plan).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(path);
+        assert!(bytes.starts_with(b"%PDF-1.4"));
+        assert!(bytes.windows(b"/Count 4".len()).any(|a| a == b"/Count 4"));
+        assert!(bytes.windows(b"DDR D1".len()).any(|a| a == b"DDR D1"));
+        assert!(bytes.windows(b"DDR D2".len()).any(|a| a == b"DDR D2"));
+        assert!(bytes.windows(b"Circuit C".len()).any(|a| a == b"Circuit C"));
+    }
+
+    #[test]
     fn board_overview_pdf_differentiates_connected_and_unassigned_departures() {
         let mut plan = Plan::default();
         plan.add_lighting_circuit().unwrap();
