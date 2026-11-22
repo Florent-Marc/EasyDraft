@@ -729,6 +729,9 @@ impl Plan {
     pub fn update_lighting_circuit(
         &mut self, index: usize, updated: LightingCircuit
     ) -> Result<(), &'static str> {
+        if updated.upstream_differential.is_some_and(|i| i >= self.differentials.len()) {
+            return Err("Differentiel en amont introuvable");
+        }
         let letter = updated.letter.trim();
         if letter.is_empty() || letter.chars().count() > 4
             || !letter.chars().all(|c| c.is_ascii_alphanumeric()) {
