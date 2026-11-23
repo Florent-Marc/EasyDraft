@@ -173,6 +173,9 @@ impl Canvas {
                         );
                     }
                 }
+                OpeningKind::Passage => {
+                    // Passage libre : seulement les deux tableaux de l'ouverture.
+                }
                 OpeningKind::Door => {
                     let hinge = if o.hinge_right { along(end) } else { along(start) };
                     let axial_sign = if o.hinge_right { -1.0 } else { 1.0 };
@@ -395,10 +398,11 @@ pub fn export_pdf(path: &str, plan: &Plan, show_dimensions: bool) -> Result<(), 
     pdf.text_pt(
         PAGE_W - 226.0, 25.0, 9.0,
         &format!(
-            "{} murs  |  {} portes  |  {} fenetres  |  {} escaliers",
+            "{} murs  |  {} portes  |  {} fenetres  |  {} passages  |  {} escaliers",
             plan.walls.len(),
             plan.openings.iter().filter(|o| o.kind == OpeningKind::Door).count(),
             plan.openings.iter().filter(|o| o.kind == OpeningKind::Window).count(),
+            plan.openings.iter().filter(|o| o.kind == OpeningKind::Passage).count(),
             plan.stairs.len()
         ),
         DIM,
