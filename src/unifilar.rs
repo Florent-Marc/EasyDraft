@@ -453,16 +453,181 @@ fn show_board_overview(ui: &mut egui::Ui, plan: &Plan) {
     });
 }
 
+/// Vue "feuille" sur une seule surface, avec une barre de distribution par
+/// DDR. Les circuits sans DDR restent visuellement NON raccordes.
+/// Ce dessin est un synoptique du modele, pas une topologie du cablage reel.
+fn show_schematic_sheet(ui: &mut egui::Ui, plan: &Plan) {
+    let mut groups: Vec<(Option<usize>, Vec<usize>)> = (0..plan.differentials.len())
+        .map(|i| (Some(i), plan.circuits_for_differential(i)))
+        .collect();
+    let unassigned = plan.circuits_without_differential();
+    if !unassigned.is_empty() { groups.push((None, unassigned)); }
+    let columns = groups.iter().map(|(_, circuits)| circuits.len()).max().unwrap_or(1).max(1);
+    let width = (330.0 + columns as f32 * 180.0).max(850.0);
+    let height = 88.0 + groups.len().max(1) as f32 * 250.0;
+
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.strong("VUE D'ENSEMBLE");
+            ui.separator();
+            ui.small(format!("{} depart(s)  |  {} DDR", plan.circuit_count(), plan.differentials.len()));
+        });
+        ui.small("Une barre par differentiel. Les circuits sans DDR sont affiches a part, sans raccordement invente.");
+        egui::ScrollArea::both()
+            .auto_shrink([false, false])
+            .max_height(480.0)
+            .show(ui, |ui| {
+                let (response, painter) = ui.allocate_painter(
+                    Vec2::new(width, height), egui::Sense::hover()
+                );
+                painter.rect_filled(response.rect, 0.0, Color32::WHITE);
+                let top = response.rect.left_top();
+                let heading = if plan.installation_info.address.trim().is_empty() {
+                    "INSTALLATION - ADRESSE NON RENSEIGNEE"
+                } else {
+                    plan.installation_info.address.as_str()
+                };
+                painter.text(
+                    top + Vec2::new(24.0, 22.0),
+                    Align2::LEFT_CENTER,
+                    heading,
+                    FontId::proportional(15.0),
+                    INK,
+                );
+                painter.text(
+                    top + Vec2::new(24.0, 45.0),
+                    Align2::LEFT_CENTER,
+                    "SCHEMA UNIFILAIRE - SYNOPTIQUE FONCTIONNEL",
+                    FontId::proportional(11.0),
+                    MUTED,
+                );
+                if groups.is_empty() {
+                    painter.text(
+                        top + Vec2::new(40.0, 140.0),
+                        Align2::LEFT_CENTER,
+                        "Ajoute des circuits et leurs protections depuis le panneau de droite.",
+                        FontId::proportional(14.0), WARNING,
+                    );
+                }
+                for (group_index, (ddr_index, circuits)) in groups.iter().enumerate() {
+                    let gy = top.y + 88.0 + group_index as f32 * 250.0;
+                    let bus_y = gy + 169.0;
+                    let color = if ddr_index.is_some() { INK } else { WARNING };
+                    let source = match ddr_index {
+                        Some(index) => {
+                            let ddr = &plan.differentials[*index];
+                            format!("DDR {}", ddr.reference)
+                        }
+                        None => "DDR non attribue".to_owned(),
+                    };
+                    // Bande de groupe et separateur.
+                    painter.rect_filled(
+                        egui::Rect::from_min_size(
+                            Pos2::new(top.x + 12.0, gy - 13.0),
+                            Vec2::new(width - 24.0, 230.0),
+                        ),
+                        5.0,
+                        Color32::from_rgb(247, 249, 252),
+                    );
+                    painter.text(
+                        Pos2::new(top.x + 24.0, gy + 14.0),
+                        Align2::LEFT_CENTER,
+                        &source,
+                        FontId::proportional(15.0),
+                        color,
+                    );
+                    if let Some(index) = ddr_index {
+                        let ddr = &plan.differentials[*index];
+                        let details = if ddr.missing_fields().is_empty() {
+                            ddr.description()
+                        } else { "Caracteristiques du differentiel a renseigner".to_owned() };
+                        painter.text(
+                            Pos2::new(top.x + 24.0, gy + 35.0),
+                            Align2::LEFT_CENTER, details,
+                            FontId::proportional(11.0), MUTED,
+                        );
+                    } else {
+                        painter.text(
+                            Pos2::new(top.x + 24.0, gy + 35.0),
+                            Align2::LEFT_CENTER, "Amont inconnu : aucune connexion dessinee",
+                            FontId::proportional(11.0), WARNING,
+                        );
+                    }
+                    let bus_left = top.x + 255.0;
+                    let bus_right = bus_left + circuits.len().saturating_sub(1) as f32 * 180.0;
+                    if ddr_index.is_some() && !circuits.is_empty() {
+                        segment(
+                            &painter,
+                            Pos2::new(top.x + 122.0, bus_y),
+                            Pos2::new(bus_left, bus_y), color, 2.5,
+                        );
+                    }
+                    if !circuits.is_empty() {
+                        segment(
+                            &painter,
+                            Pos2::new(bus_left, bus_y),
+                            Pos2::new(bus_right, bus_y), color, 2.5,
+                        );
+                    }
+                    painter.text(
+                        Pos2::new(top.x + 24.0, bus_y - 9.0),
+                        Align2::LEFT_CENTER,
+                        if ddr_index.is_some() { "DISTRIBUTION" } else { "NON RELIE" },
+                        FontId::proportional(11.0), color,
+                    );
+                    for (slot, &circuit_index) in circuits.iter().enumerate() {
+                        let Some(circuit) = plan.circuit(circuit_index) else { continue; };
+                        let x = bus_left + slot as f32 * 180.0;
+                        let branch_top = gy + 71.0;
+                        segment(
+                            &painter,
+                            Pos2::new(x, bus_y),
+                            Pos2::new(x, branch_top + 39.0), color, 1.8,
+                        );
+                        rgie_symbols::draw_egui(
+                            &painter,
+                            Pos2::new(x, branch_top + 31.0),
+                            &rgie_symbols::horizontal_protection_primitives(
+                                rgie_symbols::protection_from_text(&circuit.protection_kind)
+                            ),
+                            color, 0.76,
+                        );
+                        painter.text(
+                            Pos2::new(x, gy + 57.0), Align2::CENTER_CENTER,
+                            format!("Circuit {}", circuit.letter),
+                            FontId::proportional(14.0), BLUE,
+                        );
+                        painter.text(
+                            Pos2::new(x, branch_top + 65.0), Align2::CENTER_CENTER,
+                            circuit.protection_label(),
+                            FontId::proportional(11.0), INK,
+                        );
+                        let lamps = plan.active_lighting_connections_for_circuit(circuit_index).len();
+                        let sockets = plan.outlets_on_circuit(circuit_index).len();
+                        painter.text(
+                            Pos2::new(x, bus_y + 20.0), Align2::CENTER_CENTER,
+                            format!("{lamps} lum.  /  {sockets} prise(s)"),
+                            FontId::proportional(11.0), MUTED,
+                        );
+                        painter.text(
+                            Pos2::new(x, bus_y + 42.0), Align2::CENTER_CENTER,
+                            circuit.cable_label(), FontId::proportional(10.0), MUTED,
+                        );
+                    }
+                }
+            });
+    });
+}
+
 /// Une feuille par circuit : les circuits ne sont pas branches sur le meme tronc.
 /// Les appareils et leurs associations proviennent uniquement du Plan partage.
 pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
-    ui.heading("Schema unifilaire - circuits d'eclairage et prises");
-    ui.colored_label(
-        WARNING,
-        "Prototype fonctionnel : ni dessin reglementaire RGIE, ni plan de cablage ou calcul de protection.",
-    );
-    ui.label("Chaque depart et sa protection sont lies explicitement a un differentiel du tableau.");
-    show_board_overview(ui, plan);
+    ui.heading("Schema unifilaire");
+    ui.small("Representation du modele partage avec le plan de situation. Ne remplace pas le releve ni le controle RGIE.");
+    show_schematic_sheet(ui, plan);
+    egui::CollapsingHeader::new("Topologie detaillee du tableau")
+        .default_open(false)
+        .show(ui, |ui| show_board_overview(ui, plan));
 
     let active = plan.active_lighting_connections();
     let ignored = plan.lighting_connections.len().saturating_sub(active.len());
@@ -481,7 +646,10 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
     }
 
     let mut action = None;
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+    egui::CollapsingHeader::new("Details des circuits et liaisons")
+        .default_open(false)
+        .show(ui, |ui| {
+        egui::ScrollArea::vertical().max_height(620.0).show(ui, |ui| {
         for circuit_index in 0..plan.circuit_count() {
             let Some(circuit) = plan.circuit(circuit_index) else { continue; };
             let links = plan.active_lighting_connections_for_circuit(circuit_index);
@@ -595,7 +763,8 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
                 });
             }
         }
-    });
+        });
+        });
     ui.small("Symboles de base du tableau 2.23 (RGIE Livre 1). Les branchements restent fonctionnels et les protections doivent etre identifies.");
     ui.small("Les variantes doivent correspondre au materiel pose. Ne pas utiliser ce prototype pour realiser un raccordement.");
     action
