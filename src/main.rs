@@ -2770,6 +2770,16 @@ impl eframe::App for EasyDraft {
                             self.select_tool(Tool::SelectWall);
                             self.sidebar_tab = SidebarTab::Inspecteur;
                         }
+                        let join_enabled = !self.selected_handles.is_empty();
+                        if ui.add_enabled(join_enabled, egui::Button::new("Joindre")).clicked() {
+                            self.weld_selected_to_first();
+                        }
+                        let dissolve_enabled = self.plan.wall_joints.iter()
+                            .any(|joint| joint.endpoints.iter()
+                                .any(|endpoint| self.selected_handles.contains(endpoint)));
+                        if ui.add_enabled(dissolve_enabled, egui::Button::new("Dissoudre")).clicked() {
+                            self.dissolve_selected_joints();
+                        }
                         ui.small("Clic droit + glisser : naviguer");
                         if ui.button("Recentrer").clicked() {
                             self.pan = Vec2::ZERO;
@@ -2850,7 +2860,8 @@ impl eframe::App for EasyDraft {
                         ui.small("Clic gauche : selectionner ou encadrer.");
                         ui.small("Maj + clic sur un sommet : selectionner plusieurs extremites.");
                         ui.small("Maj + rectangle : choisir plusieurs sommets de murs.");
-                        ui.small("Glisser un sommet ambre : raccorder les points a une meme position.");
+                        ui.small("Glisser : deplacer les points sans les lier.");
+                        ui.small("Joindre / Dissoudre : commandes explicites en haut et dans Objet.");
                         ui.small("Clic droit + glisser : deplacer la vue, sans changer d'outil.");
                         ui.small("Mur : repere vert = horizontal / vertical ; Maj verrouille l'axe.");
                         ui.small("Un mur termine revient automatiquement a Selection.");
@@ -3001,15 +3012,24 @@ impl eframe::App for EasyDraft {
                 ui.heading("Element selectionne");
                 if !self.selected_handles.is_empty() {
                     ui.strong(format!("{} sommet(s) de mur", self.selected_handles.len()));
-                    ui.small("Maj + clic sur les extremites pour ajouter ou retirer des points.");
-                    ui.small("Maj + dessiner un rectangle vide pour selectionner plusieurs sommets.");
-                    ui.small("Glisse un sommet ambre : tous les points selectionnes seront raccordes au meme endroit.");
-                    ui.small("Le nouvel emplacement s'accroche a la grille et aux autres extremites de murs.");
-                    if self.selected_handles.len() >= 2
-                        && ui.button("Raccorder au premier point").clicked()
-                    {
-                        self.weld_selected_to_first();
+                    ui.small("Maj + clic (ou Maj + rectangle) : ajouter des points.");
+                    ui.small("Glisser : deplacer ensemble SANS les joindre automatiquement.");
+                    ui.small("Joindre : lier les points choisis au premier. Avec un seul point, raccorder a un mur proche (20 cm).");
+                    ui.small("Dissoudre : liberer une liaison. Les murs restent en place, mais les points peuvent ensuite bouger seuls.");
+                    let linked_count = self.plan.wall_joints.iter()
+                        .filter(|joint| joint.endpoints.iter()
+                            .any(|end| self.selected_handles.contains(end))).count();
+                    if linked_count > 0 {
+                        ui.label(format!("{linked_count} liaison(s) explicite(s)"));
                     }
+                    ui.horizontal(|ui| {
+                        if ui.button("Joindre").clicked() {
+                            self.weld_selected_to_first();
+                        }
+                        if ui.add_enabled(linked_count > 0, egui::Button::new("Dissoudre")).clicked() {
+                            self.dissolve_selected_joints();
+                        }
+                    });
                     if ui.button("Effacer la selection des points").clicked() {
                         self.clear_selection();
                     }
