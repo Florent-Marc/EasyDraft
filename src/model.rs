@@ -1588,7 +1588,7 @@ mod tests {
         assert_eq!(p.lighting_groups_for_circuit(0).len(), 1);
         assert_eq!(p.lighting_groups_for_circuit(1).len(), 1);
         let data = serde_json::to_string(&p).unwrap();
-        let roundtrip: Plan = serde_json::from_str(&data).unwrap();
+        let mut roundtrip: Plan = serde_json::from_str(&data).unwrap();
         assert_eq!(roundtrip.circuit_count(), 2);
         assert_eq!(roundtrip.lighting_point_ref(lamp).as_deref(), Some("B1"));
         assert!(roundtrip.connect_switch_to_light_in_circuit(sw, 1, 1).is_err());
