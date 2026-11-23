@@ -1420,6 +1420,66 @@ mod tests {
     }
 
     #[test]
+    fn passage_to_perpendicular_wall_recognizes_second_room() {
+        // Cloison partant du haut mais s'arretant 1 m avant le mur du bas :
+        // le passage est libre entre la pointe et le mur transversal.
+        let mut plan = Plan::default();
+        plan.walls = vec![
+            Wall { start: Point{x:0.0,y:0.0}, end:Point{x:6.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:6.0,y:0.0}, end:Point{x:6.0,y:4.0}, thickness_m:0.15 },
+            Wall { start: Point{x:6.0,y:4.0}, end:Point{x:0.0,y:4.0}, thickness_m:0.15 },
+            Wall { start: Point{x:0.0,y:4.0}, end:Point{x:0.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:3.0,y:0.0}, end:Point{x:3.0,y:3.0}, thickness_m:0.15 },
+        ];
+        assert_eq!(crate::rooms::detect_rooms(&plan.walls).len(), 1);
+        let width = plan.bridge_gap_with_passage(Point{x:3.0,y:3.5}).unwrap();
+        assert!((width - 1.0).abs() < 0.001);
+        assert_eq!(plan.openings.len(), 1);
+        assert_eq!(plan.openings[0].kind, OpeningKind::Passage);
+        assert_eq!(crate::rooms::detect_rooms(&plan.walls).len(), 2);
+        let restored: Plan = serde_json::from_str(
+            &serde_json::to_string(&plan).unwrap()
+        ).unwrap();
+        assert_eq!(crate::rooms::detect_rooms(&restored.walls).len(), 2);
+    }
+
+    #[test]
+    fn passage_almost_aligned_walls_keeps_both_rooms() {
+        let mut plan = Plan::default();
+        plan.walls = vec![
+            Wall { start: Point{x:0.0,y:0.0}, end:Point{x:6.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:6.0,y:0.0}, end:Point{x:6.0,y:4.0}, thickness_m:0.15 },
+            Wall { start: Point{x:6.0,y:4.0}, end:Point{x:0.0,y:4.0}, thickness_m:0.15 },
+            Wall { start: Point{x:0.0,y:4.0}, end:Point{x:0.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:3.0,y:0.0}, end:Point{x:3.0,y:1.0}, thickness_m:0.15 },
+            Wall { start: Point{x:3.08,y:2.5}, end:Point{x:3.0,y:4.0}, thickness_m:0.15 },
+        ];
+        assert_eq!(crate::rooms::detect_rooms(&plan.walls).len(), 1);
+        let width = plan.bridge_gap_with_passage(Point{x:3.04,y:1.75}).unwrap();
+        assert!((width - 1.502).abs() < 0.01);
+        assert_eq!(crate::rooms::detect_rooms(&plan.walls).len(), 2);
+    }
+
+    #[test]
+    fn passage_on_continuous_wall_never_opens_room_topology() {
+        let mut plan = Plan::default();
+        plan.walls = vec![
+            Wall { start: Point{x:0.0,y:0.0}, end:Point{x:6.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:6.0,y:0.0}, end:Point{x:6.0,y:4.0}, thickness_m:0.15 },
+            Wall { start: Point{x:6.0,y:4.0}, end:Point{x:0.0,y:4.0}, thickness_m:0.15 },
+            Wall { start: Point{x:0.0,y:4.0}, end:Point{x:0.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:3.0,y:0.0}, end:Point{x:3.0,y:4.0}, thickness_m:0.15 },
+        ];
+        assert_eq!(crate::rooms::detect_rooms(&plan.walls).len(), 2);
+        plan.add_opening(
+            4, Point{x:3.0,y:2.0}, 1.2, OpeningKind::Passage,
+            false, false, 0.05
+        ).unwrap();
+        assert_eq!(crate::rooms::detect_rooms(&plan.walls).len(), 2);
+        assert_eq!(plan.openings[0].kind, OpeningKind::Passage);
+    }
+
+    #[test]
     fn passage_between_separate_wall_ends_restores_two_rooms() {
         let mut plan = Plan::default();
         plan.walls = vec![
