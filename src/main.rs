@@ -2229,19 +2229,34 @@ impl EasyDraft {
                     ui.label(format!("Emprise X/Y : {:.2} x {:.2} m", room.width_m, room.height_m));
                     ui.small("Pour une piece non rectangulaire, ces deux mesures correspondent a son emprise.");
                 }
-                let mut name = self.plan.room_name(room).to_owned();
-                ui.label("Nom de la piece");
-                if ui.text_edit_singleline(&mut name).changed() {
+                let saved_name = self.plan.room_name(room);
+                let id = ui.id().with(("room_name", self.active_sheet, at.x.to_bits(), at.y.to_bits()));
+                // Le modèle retire les espaces en bordure. Garder le texte brut pendant la saisie
+                // pour que l’espace tapé entre deux mots survive au rendu suivant.
+                let mut name = ui.data_mut(|data| data.get_temp::<String>(id))
+                    .filter(|draft| draft.trim() == saved_name && ui.memory(|mem| mem.has_focus(id)))
+                    .unwrap_or_else(|| saved_name.to_owned());
+                ui.label("Nom de la pièce");
+                let input = ui.add(egui::TextEdit::singleline(&mut name).id(id).char_limit(60));
+                if input.changed() && name.trim() != saved_name {
                     let mut updated = self.plan.clone();
                     match updated.set_room_name(at, &name) {
                         Ok(()) => {
                             self.snapshot();
                             self.plan = updated;
-                            self.status = "Nom de la piece mis a jour".into();
-                        },
+                            self.status = "Nom de la pièce mis à jour".into();
+                        }
                         Err(err) => self.status = err.into(),
                     }
                 }
+                let focused = input.has_focus();
+                ui.data_mut(|data| {
+                    if focused {
+                        data.insert_temp(id, name);
+                    } else {
+                        data.remove::<String>(id);
+                    }
+                });
                 ui.small("Les surfaces prennent en compte l'epaisseur des murs.");
                 return;
             }
@@ -4593,6 +4608,42 @@ mod plan_editor_tests {
         assert_eq!(app.sheets[1].name, "Étage nord");
         app.undo();
         assert_eq!(app.sheets[1].name, "1er étage");
+    }
+
+    #[test]
+    fn room_name_accepts_spaces_typed_between_words() {
+        let mut app = EasyDraft::default();
+        app.load_room_example();
+        let room = rooms::detect_rooms(&app.plan.walls).remove(0);
+        let at = room.center;
+        app.selected_room = Some(at);
+        let ctx = egui::Context::default();
+        let mut field = None;
+        for (step, events) in [
+            vec![],
+            vec![
+                egui::Event::Key {
+                    key: egui::Key::A, physical_key: None, pressed: true, repeat: false,
+                    modifiers: egui::Modifiers::COMMAND,
+                },
+                egui::Event::Text("Salle".into()),
+            ],
+            vec![egui::Event::Text(" ".into())],
+            vec![egui::Event::Text("de".into())],
+            vec![egui::Event::Text(" ".into())],
+            vec![egui::Event::Text("bain".into())],
+        ].into_iter().enumerate() {
+            let _ = ctx.run(egui::RawInput { events, ..Default::default() }, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    field = Some(ui.id().with(("room_name", 0_usize, at.x.to_bits(), at.y.to_bits())));
+                    app.selected_properties(ui);
+                });
+            });
+            if step == 0 {
+                ctx.memory_mut(|mem| mem.request_focus(field.unwrap()));
+            }
+        }
+        assert_eq!(app.plan.room_name(&room), "Salle de bain");
     }
 
     #[test]
