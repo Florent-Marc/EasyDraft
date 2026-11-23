@@ -1124,73 +1124,147 @@ impl Plan {
         Ok(())
     }
 
-    /// Cree un passage libre dans un espace entre deux extremites de murs alignees.
+    /// Raccorde explicitement un passage deja dessine comme une lacune :
+    /// - entre deux troncons de murs collineaires, ou
+    /// - entre l'extremite d'une cloison et la face axiale d'un mur transversal.
     ///
-    /// L'axe de jonction est conserve comme limite virtuelle pour la detection des
-    /// pieces, tandis que son ouverture occupe toute la longueur : rien n'est
-    /// dessine dans le passage. Aucun lien n'est cree sans clic explicite.
+    /// Le segment ajoute ferme uniquement la frontiere topologique des pieces.
+    /// Son ouverture `Passage` couvre tout le segment et masque le mur dans le dessin.
     pub fn bridge_gap_with_passage(&mut self, clicked_at: Point)
         -> Result<f32, &'static str>
     {
-        let mut candidate: Option<(f32, Point, Point, f32)> = None;
-        for (i, left_wall) in self.walls.iter().enumerate() {
-            if left_wall.length_m() < 0.05 { continue; }
-            let left_ends = [
-                (left_wall.start, left_wall.end),
-                (left_wall.end, left_wall.start),
-            ];
-            for right_wall in self.walls.iter().skip(i + 1) {
-                if right_wall.length_m() < 0.05 { continue; }
-                let right_ends = [
-                    (right_wall.start, right_wall.end),
-                    (right_wall.end, right_wall.start),
-                ];
-                for &(a, a_inside) in &left_ends {
-                    for &(b, b_inside) in &right_ends {
+        if !clicked_at.x.is_finite() || !clicked_at.y.is_finite() {
+            return Err("Position du passage invalide");
+        }
+
+        // (precision du clic, depart, arrivee, epaisseur de reference).
+        let mut candidates: Vec<(f32, Point, Point, f32)> = Vec::new();
+        let near_segment = |a: Point, b: Point| -> Option<f32> {
+            let length = a.distance_to(b);
+            if !(0.35..=4.0).contains(&length) { return None; }
+            let ux = (b.x - a.x) / length;
+            let uy = (b.y - a.y) / length;
+            let along = (clicked_at.x - a.x) * ux + (clicked_at.y - a.y) * uy;
+            let cross = ((clicked_at.x - a.x) * uy
+                - (clicked_at.y - a.y) * ux).abs();
+            if along < -0.10 || along > length + 0.10 || cross > 0.30 {
+                return None;
+            }
+            // Favoriser la ligne explicitement indiquee par le clic.
+            Some(cross + if along < 0.0 || along > length { 0.10 } else { 0.0 }
+                + length * 0.005)
+        };
+
+        // Cas A : le vide est delimite par les deux extremites de murs
+        // quasi collineaires qui pointent l'un vers l'autre.
+        for (i, first) in self.walls.iter().enumerate() {
+            let length_first = first.length_m();
+            if length_first < 0.05 { continue; }
+            for second in self.walls.iter().skip(i + 1) {
+                let length_second = second.length_m();
+                if length_second < 0.05 { continue; }
+                for (a, inside_a) in [(first.start, first.end), (first.end, first.start)] {
+                    for (b, inside_b) in [
+                        (second.start, second.end), (second.end, second.start)
+                    ] {
+                        let Some(score) = near_segment(a, b) else { continue; };
                         let gap = a.distance_to(b);
-                        if !(0.35..=4.0).contains(&gap) { continue; }
                         let ux = (b.x - a.x) / gap;
                         let uy = (b.y - a.y) / gap;
-                        // Les deux troncons doivent pointer vers la meme lacune.
-                        let ax = (a.x - a_inside.x) / left_wall.length_m();
-                        let ay = (a.y - a_inside.y) / left_wall.length_m();
-                        let bx = (b.x - b_inside.x) / right_wall.length_m();
-                        let by = (b.y - b_inside.y) / right_wall.length_m();
-                        if ax * ux + ay * uy < 0.995 || bx * ux + by * uy > -0.995 {
+                        let towards_a = ((a.x - inside_a.x) * ux
+                            + (a.y - inside_a.y) * uy) / length_first;
+                        let towards_b = ((b.x - inside_b.x) * ux
+                            + (b.y - inside_b.y) * uy) / length_second;
+                        if towards_a < 0.98 || towards_b > -0.98 {
                             continue;
                         }
-                        let from_x = clicked_at.x - a.x;
-                        let from_y = clicked_at.y - a.y;
-                        let along = from_x * ux + from_y * uy;
-                        let perpendicular = (from_x * uy - from_y * ux).abs();
-                        if along < 0.0 || along > gap || perpendicular > 0.25 {
-                            continue;
-                        }
-                        let score = perpendicular + gap * 0.005;
-                        let thickness = ((left_wall.thickness_m + right_wall.thickness_m) / 2.0)
-                            .clamp(0.05, 0.60);
-                        if candidate.as_ref().is_none_or(|current| score < current.0) {
-                            candidate = Some((score, a, b, thickness));
-                        }
+                        candidates.push((
+                            score, a, b,
+                            ((first.thickness_m + second.thickness_m) * 0.5)
+                                .clamp(0.05, 0.60),
+                        ));
                     }
                 }
             }
         }
-        let Some((_, start, end, thickness_m)) = candidate else {
-            return Err("Aucun espace entre deux murs alignes trouve : clique sur le passage");
+
+        // Cas B : un mur se termine avant un mur PERPENDICULAIRE. Le passage
+        // est le vide entre la pointe de la cloison et le mur transversal.
+        // Ce T est frequent dans les plans et n'avait aucune reconnaissance.
+        for (i, first) in self.walls.iter().enumerate() {
+            let length_first = first.length_m();
+            if length_first < 0.05 { continue; }
+            for (j, second) in self.walls.iter().enumerate() {
+                if i == j { continue; }
+                let dx = second.end.x - second.start.x;
+                let dy = second.end.y - second.start.y;
+                let squared = dx * dx + dy * dy;
+                if squared < 0.0025 { continue; }
+                for (a, inside_a) in [(first.start, first.end), (first.end, first.start)] {
+                    let t = ((a.x - second.start.x) * dx
+                        + (a.y - second.start.y) * dy) / squared;
+                    // Le raccord en T ne doit pas se transformer en un
+                    // raccord de coin ; les extremites sont deja gerees en A.
+                    if !(0.02..=0.98).contains(&t) { continue; }
+                    let b = Point {
+                        x: second.start.x + t * dx,
+                        y: second.start.y + t * dy,
+                    };
+                    let Some(score) = near_segment(a, b) else { continue; };
+                    let gap = a.distance_to(b);
+                    let ux = (b.x - a.x) / gap;
+                    let uy = (b.y - a.y) / gap;
+                    let along_first = ((a.x - inside_a.x) * ux
+                        + (a.y - inside_a.y) * uy) / length_first;
+                    let along_second = (dx * ux + dy * uy) / squared.sqrt();
+                    if along_first < 0.98 || along_second.abs() > 0.10 {
+                        continue;
+                    }
+                    candidates.push((
+                        score + 0.005, a, b,
+                        ((first.thickness_m + second.thickness_m) * 0.5)
+                            .clamp(0.05, 0.60),
+                    ));
+                }
+            }
+        }
+
+        if candidates.is_empty() {
+            return Err("Aucun passage entre des murs raccordables a cet endroit");
+        }
+
+        // S'il existe plusieurs lacunes proches, privilegier CELLE qui
+        // referme une vraie piece, plutot qu'une liaison sans effet sur la
+        // detection. Ne jamais inventer une liaison hors du clic utilisateur.
+        let previous_room_count = crate::rooms::detect_rooms(&self.walls).len();
+        let mut best: Option<(usize, f32, Point, Point, f32)> = None;
+        for (score, a, b, thickness_m) in candidates {
+            let mut preview = self.walls.clone();
+            preview.push(Wall { start: a, end: b, thickness_m });
+            let improvement = crate::rooms::detect_rooms(&preview).len() > previous_room_count;
+            let priority = if improvement { 0 } else { 1 };
+            let key_better = best.as_ref().is_none_or(|current| {
+                priority < current.0 || (priority == current.0 && score < current.1)
+            });
+            if key_better {
+                best = Some((priority, score, a, b, thickness_m));
+            }
+        }
+        let Some((_, _, start, end, thickness_m)) = best else {
+            return Err("Passage introuvable");
         };
-        let gap = start.distance_to(end);
+        let length = start.distance_to(end);
         let wall_index = self.walls.len();
         self.walls.push(Wall { start, end, thickness_m });
         self.openings.push(Opening {
             wall_index,
-            center_m: gap / 2.0,
-            width_m: gap,
+            center_m: length * 0.5,
+            width_m: length,
             kind: OpeningKind::Passage,
             hinge_right: false,
             swing_flipped: false,
         });
-        Ok(gap)
+        Ok(length)
     }
 }
 
