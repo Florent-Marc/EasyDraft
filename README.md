@@ -18,6 +18,40 @@ cargo test
 
 Les sources principales sont `src/model.rs`, `src/main.rs`, `src/unifilar.rs` et `src/pdf_export.rs`.
 
+## Interface de CAO et passages libres
+
+EasyDraft affiche désormais une **barre d'outils par métier** en haut de la fenêtre
+(**Architecture**, **Électricité**) et des onglets latéraux qui évitent les longs
+formulaires mélangés :
+
+- **Dessin** : création de murs, portes, fenêtres, passages libres et escaliers, avec réglages des nouveaux éléments.
+- **Inspecteur** : propriétés de l'élément cliqué, édition des cotes et de l'épaisseur.
+- **Calques** : visibilité, grille, aimantation, zoom et recentrage.
+- **Élec.** : tableau électrique, circuits et symboles RGIE.
+- **RGIE** : identification du dossier.
+- **Fichiers** : chemins JSON et PDF. La barre supérieure contient également des menus **Fichier**, **Édition**, **Exporter**.
+
+### Créer un passage entre deux pièces sans porte
+
+1. **Méthode normale :** tracez une cloison continue, même là où le passage doit être.
+   Sélectionnez **Architecture → Passage libre**, réglez sa largeur, puis cliquez
+   sur la cloison. Une ouverture apparaît **sans battant**. Le calcul automatique
+   reconnaît toujours les deux pièces de part et d'autre de la cloison.
+2. **Pour réparer un ancien plan :** si la cloison est déjà dessinée en deux
+   segments avec un vide, sélectionnez **Passage libre** puis cliquez **dans ce vide**.
+   EasyDraft recherche deux extrémités de murs alignées et face à face, séparées
+   de **35 cm à 4 m**. Il relie leurs axes **uniquement pour le calcul des pièces**,
+   tandis que le passage reste visuellement ouvert. Une cloison vraiment absente
+   ne doit pas être reliée : il suffit de ne pas utiliser cet outil sur ce vide.
+3. Pour modifier la largeur ou l'emplacement, cliquez sur **Sélection** puis sur
+   l'ouverture : ses paramètres apparaissent dans **Inspecteur**. Les passages
+   et leurs dimensions sont enregistrés dans le JSON et affichés dans le PDF du plan.
+
+**Important :** les passages libres modélisent ici une séparation logique entre
+deux pièces, même si l'air circule librement. Les surfaces sont estimées en 2D
+par les faces intérieures des cloisons ; ce ne sont pas des volumes ni une
+vérification réglementaire des surfaces habitables.
+
 ## Symboles graphiques du RGIE (Livre 1, tableau 2.23)
 
 Les pictogrammes du plan de position et du schéma unifilaire utilisent désormais une **bibliothèque graphique commune** : `src/rgie_symbols.rs`, également utilisée par les deux exports PDF vectoriels.
@@ -29,7 +63,7 @@ Les formes de base disponibles sont :
 - **Éclairage** : point lumineux (croix) et point d'attente en applique (croix avec trait de mur).
 - **Protections** : symbole de disjoncteur ou de coupe-circuit à fusible **selon le type renseigné**. Un type absent ou inconnu est représenté comme **non spécifié**, pas comme un disjoncteur inventé.
 
-Pour configurer un appareil déjà placé : outil **Sélectionner un élément** → cliquer sur la prise, l'interrupteur ou la lampe → **Propriétés de la sélection** → **Symbole (RGIE tableau 2.23)**. La variante choisie est sauvegardée dans le JSON, et les anciens plans sans variantes conservent un symbole général. La liste est limitée aux variantes compatibles avec le type d'appareil.
+Pour configurer un appareil déjà placé : outil **Sélectionner un élément** → cliquer sur la prise, l'interrupteur ou la lampe → **Inspecteur** → **Symbole (RGIE tableau 2.23)**. La variante choisie est sauvegardée dans le JSON, et les anciens plans sans variantes conservent un symbole général. La liste est limitée aux variantes compatibles avec le type d'appareil.
 
 L'interface contient une **Légende RGIE** permettant de consulter les formes actuellement prises en charge. Les variantes **ne sont pas détectées** automatiquement : l'utilisateur doit relever le type réel du matériel et sélectionner le pictogramme adéquat. En particulier, **aucune terre ni protection enfant n'est supposée sur une prise**. Un pictogramme va-et-vient ou bouton-poussoir ne constitue **pas** une simulation des conducteurs et commandes spécifiques.
 
@@ -66,7 +100,7 @@ EasyDraft ne prétend **pas** certifier une installation. Le bouton **« Dossier
 
 - **Identification du dossier** dans le panneau latéral : adresse, responsable de l'exécution, qualité, n° TVA si applicable, tension nominale, nature du courant, alimentation, **câble d'entrée**, tableau, date et révision. Les valeurs doivent être saisies, pas inventées.
 - **Circuits et protections** : un DDR défini et associé aux circuits, puis des caractéristiques propres par départ (protection, canalisation, conducteurs, section, pose).
-- **Prises de courant** : quand une prise est placée, elle est affectée au circuit actif. Une prise ancienne sans affectation peut être sélectionnée pour choisir son circuit dans **Propriétés de la sélection**.
+- **Prises de courant** : quand une prise est placée, elle est affectée au circuit actif. Une prise ancienne sans affectation peut être sélectionnée pour choisir son circuit dans **Inspecteur**.
 - **Concordance des repères** : chaque lampe et prise rattachée possède un repère A1, A2, B1… repris sur le plan de position 2D, dans l'unifilaire et les deux PDF. Les interrupteurs rappellent les repères des lampes qu'ils commandent.
 - **Détection des incohérences** : prises sans circuit, lampes sans commande, interrupteurs sans charge, liaisons invalides ou dupliquées, caractéristiques de départ et du dossier non renseignées.
 - **PDF** : page de tableau, DDR attribués, adresse, tension, nature du courant, responsable, date et révision sur l'unifilaire ; repères des prises et points lumineux sur le plan et l'unifilaire.
