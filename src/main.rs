@@ -1277,7 +1277,13 @@ impl EasyDraft {
                             end: position,
                             thickness_m: self.new_wall_thickness_cm / 100.0,
                         });
-                        self.status = format!("Mur de {distance:.2} m ajoute");
+                        self.clear_selection();
+                        self.selected_wall = Some(self.plan.walls.len() - 1);
+                        self.tool = Tool::SelectWall;
+                        self.sidebar_tab = SidebarTab::Inspecteur;
+                        self.status = format!(
+                            "Mur de {distance:.2} m ajoute. Mode Selection actif : deplace ou modifie le mur."
+                        );
                     }
                 } else {
                     self.pending_wall = Some(position);
@@ -1770,6 +1776,8 @@ impl eframe::App for EasyDraft {
                         self.cancel_drag();
                         self.snapshot();
                         self.plan = Plan::default();
+                        self.file_path_assigned = false;
+                        self.file_path = "mon-plan.json".into();
                         self.reset_pending();
                         self.clear_selection();
                         self.active_circuit_index = 0;
@@ -1777,8 +1785,9 @@ impl eframe::App for EasyDraft {
                         self.sidebar_tab = SidebarTab::Dessin;
                         self.status = "Nouveau plan".into();
                     }
-                    if ui.button("Ouvrir le JSON").clicked() { self.load(); }
-                    if ui.button("Enregistrer le JSON").clicked() { self.save(); }
+                    if ui.button("Ouvrir...").clicked() { self.open_dialog(); }
+                    if ui.button("Enregistrer").clicked() { self.save(); }
+                    if ui.button("Enregistrer sous...").clicked() { self.save_as(); }
                     if ui.button("Chemins des fichiers...").clicked() {
                         self.sidebar_tab = SidebarTab::Fichiers;
                     }
@@ -1791,8 +1800,8 @@ impl eframe::App for EasyDraft {
                     }
                 });
                 ui.menu_button("Exporter", |ui| {
-                    if ui.button("Plan en PDF").clicked() { self.export_pdf(); }
-                    if ui.button("Schema unifilaire en PDF").clicked() { self.export_unifilar_pdf(); }
+                    if ui.button("Plan en PDF...").clicked() { self.export_pdf_dialog(); }
+                    if ui.button("Schema unifilaire en PDF...").clicked() { self.export_unifilar_pdf_dialog(); }
                 });
                 if ui.button("Enregistrer").clicked() { self.save(); }
             });
@@ -1930,16 +1939,22 @@ impl eframe::App for EasyDraft {
             } // Affichage
             if self.sidebar_tab == SidebarTab::Fichiers {
             ui.label("Fichier JSON");
-            ui.text_edit_singleline(&mut self.file_path);
+            if ui.text_edit_singleline(&mut self.file_path).changed() {
+                self.file_path_assigned = false;
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Ouvrir...").clicked() { self.open_dialog(); }
+                if ui.button("Enregistrer sous...").clicked() { self.save_as(); }
+            });
             ui.separator();
             ui.label("Fichier PDF du plan");
             ui.text_edit_singleline(&mut self.pdf_path);
-            if ui.button("Exporter le plan PDF").clicked() { self.export_pdf(); }
+            if ui.button("Exporter le plan PDF...").clicked() { self.export_pdf_dialog(); }
             ui.separator();
             ui.label("Fichier PDF unifilaire");
             ui.text_edit_singleline(&mut self.unifilar_pdf_path);
-            if ui.button("Exporter l'unifilaire PDF").clicked() {
-                self.export_unifilar_pdf();
+            if ui.button("Exporter l'unifilaire PDF...").clicked() {
+                self.export_unifilar_pdf_dialog();
             }
             ui.separator();
             } // Fichiers
