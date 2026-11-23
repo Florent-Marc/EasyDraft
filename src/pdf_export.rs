@@ -102,6 +102,8 @@ impl Canvas {
         self.text_pt(x - approximate_width * 0.5, y - size * 0.33, size, text, color);
     }
 
+    // Reserve au futur export des symboles vectoriels circulaires.
+    #[allow(dead_code)]
     fn circle(&mut self, center: Point, radius: f32, color: Rgb) {
         let (x, y) = self.xy(center);
         let r = radius * self.scale;

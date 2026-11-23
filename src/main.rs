@@ -42,7 +42,7 @@ fn draw_logical_link(painter: &Painter, a: Pos2, b: Pos2) {
     while along < length {
         painter.line_segment(
             [a + direction * along, a + direction * (along + 8.0_f32).min(length)],
-            Stroke::new(1.6, Color32::from_rgb(31, 135, 192)),
+            Stroke::new(1.6_f32, Color32::from_rgb(31, 135, 192)),
         );
         along += 14.0;
     }
@@ -176,7 +176,7 @@ fn draw_dimension(painter: &Painter, a: Pos2, b: Pos2, wall_width_px: f32, lengt
     let offset = wall_width_px * 0.5 + 26.0;
     let from = a + normal * offset;
     let to = b + normal * offset;
-    let stroke = Stroke::new(1.1, Color32::from_rgb(71, 108, 148));
+    let stroke = Stroke::new(1.1_f32, Color32::from_rgb(71, 108, 148));
     for anchor in [a, b] {
         painter.line_segment(
             [anchor + normal * (wall_width_px * 0.5 + 4.0), anchor + normal * (offset + 7.0)],
@@ -187,7 +187,7 @@ fn draw_dimension(painter: &Painter, a: Pos2, b: Pos2, wall_width_px: f32, lengt
     // Petites barres obliques a chaque extremite.
     for p in [from, to] {
         let tick = (direction + normal) * 4.0;
-        painter.line_segment([p - tick, p + tick], Stroke::new(1.5, stroke.color));
+        painter.line_segment([p - tick, p + tick], Stroke::new(1.5_f32, stroke.color));
     }
     let label_pos = from + (to - from) * 0.5 + normal * 12.0;
     painter.text(
@@ -226,7 +226,7 @@ fn draw_opening(
     let left = wall_start + direction * (opening.start_m() * ppm);
     let right = wall_start + direction * (opening.end_m() * ppm);
     let half_thickness = width_px * 0.5;
-    let frame = Stroke::new(1.5, Color32::from_rgb(45, 53, 65));
+    let frame = Stroke::new(1.5_f32, Color32::from_rgb(45, 53, 65));
 
     // Deux traits perpendiculaires ferment les extremites coupees du mur.
     for pos in [left, right] {
@@ -238,7 +238,7 @@ fn draw_opening(
 
     match opening.kind {
         OpeningKind::Window => {
-            let glass = Stroke::new(1.8, Color32::from_rgb(35, 136, 188));
+            let glass = Stroke::new(1.8_f32, Color32::from_rgb(35, 136, 188));
             for offset in [-0.3_f32, 0.0, 0.3] {
                 let shift = normal * (width_px * offset);
                 painter.line_segment([left + shift, right + shift], glass);
@@ -253,7 +253,7 @@ fn draw_opening(
             let swing_sign = if opening.swing_flipped { -1.0 } else { 1.0 };
             let radius = opening.width_m * ppm;
             let leaf_end = hinge + normal * (swing_sign * radius);
-            let stroke = Stroke::new(1.6, Color32::from_rgb(45, 92, 139));
+            let stroke = Stroke::new(1.6_f32, Color32::from_rgb(45, 92, 139));
             painter.line_segment([hinge, leaf_end], stroke);
 
             let mut arc = Vec::with_capacity(17);
@@ -267,7 +267,7 @@ fn draw_opening(
             }
             painter.add(egui::Shape::line(
                 arc,
-                Stroke::new(1.0, Color32::from_rgb(98, 130, 164)),
+                Stroke::new(1.0_f32, Color32::from_rgb(98, 130, 164)),
             ));
         }
     }
@@ -278,7 +278,7 @@ fn draw_stair(painter: &Painter, stair: &Stair, origin: Pos2, ppm: f32) {
     if !stair.is_valid() { return; }
     let to_screen = |p: Point| Pos2::new(origin.x + p.x * ppm, origin.y + p.y * ppm);
     let corners = stair.corners().map(to_screen);
-    let dark = Stroke::new(1.8, Color32::from_rgb(49, 59, 73));
+    let dark = Stroke::new(1.8_f32, Color32::from_rgb(49, 59, 73));
     for i in 0..4 {
         painter.line_segment([corners[i], corners[(i + 1) % 4]], dark);
     }
@@ -286,7 +286,7 @@ fn draw_stair(painter: &Painter, stair: &Stair, origin: Pos2, ppm: f32) {
         let t = i as f32 / stair.steps as f32;
         let p = corners[0] + (corners[1] - corners[0]) * t;
         let q = corners[3] + (corners[2] - corners[3]) * t;
-        painter.line_segment([p, q], Stroke::new(1.0, Color32::from_rgb(105, 116, 131)));
+        painter.line_segment([p, q], Stroke::new(1.0_f32, Color32::from_rgb(105, 116, 131)));
     }
     let a = to_screen(stair.start);
     let b = to_screen(stair.end);
@@ -294,7 +294,7 @@ fn draw_stair(painter: &Painter, stair: &Stair, origin: Pos2, ppm: f32) {
     let normal = Vec2::new(-direction.y, direction.x);
     let from = a + (b - a) * 0.2;
     let to = a + (b - a) * 0.83;
-    let arrow = Stroke::new(2.0, Color32::from_rgb(27, 123, 204));
+    let arrow = Stroke::new(2.0_f32, Color32::from_rgb(27, 123, 204));
     painter.line_segment([from, to], arrow);
     painter.line_segment([to, to - direction * 13.0 + normal * 6.0], arrow);
     painter.line_segment([to, to - direction * 13.0 - normal * 6.0], arrow);
@@ -1361,12 +1361,12 @@ impl EasyDraft {
             for i in left.max(-200)..=right.min(200) {
                 let x = origin.x + i as f32 * step;
                 let color = if i == 0 { Color32::GRAY } else { Color32::from_gray(225) };
-                painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.0, color));
+                painter.line_segment([Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], Stroke::new(1.0_f32, color));
             }
             for i in top.max(-200)..=bottom.min(200) {
                 let y = origin.y + i as f32 * step;
                 let color = if i == 0 { Color32::GRAY } else { Color32::from_gray(225) };
-                painter.line_segment([Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)], Stroke::new(1.0, color));
+                painter.line_segment([Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)], Stroke::new(1.0_f32, color));
             }
         }
 
@@ -1413,7 +1413,7 @@ impl EasyDraft {
                     painter.add(egui::Shape::closed_line(
                         points,
                         Stroke::new(
-                            if selected { 2.8 } else { 1.0 },
+                            if selected { 2.8_f32 } else { 1.0_f32 },
                             if selected {
                                 Color32::from_rgb(38, 127, 204)
                             } else {
@@ -1482,7 +1482,7 @@ impl EasyDraft {
                         painter.circle_filled(handle, 5.0, Color32::from_rgb(242, 178, 73));
                         painter.circle_stroke(
                             handle, 8.0,
-                            Stroke::new(2.0, Color32::from_rgb(40, 135, 230)),
+                            Stroke::new(2.0_f32, Color32::from_rgb(40, 135, 230)),
                         );
                     }
                     cursor_m = cursor_m.max(to_m);
@@ -1505,7 +1505,7 @@ impl EasyDraft {
                     painter.circle_filled(endpoint, 6.0, Color32::WHITE);
                     painter.circle_stroke(
                         endpoint, 6.0,
-                        Stroke::new(2.5, Color32::from_rgb(40, 135, 230)),
+                        Stroke::new(2.5_f32, Color32::from_rgb(40, 135, 230)),
                     );
                 }
             }
@@ -1518,7 +1518,7 @@ impl EasyDraft {
                 for j in 0..4 {
                     painter.line_segment(
                         [corners[j], corners[(j + 1) % 4]],
-                        Stroke::new(3.5, Color32::from_rgb(40, 135, 230))
+                        Stroke::new(3.5_f32, Color32::from_rgb(40, 135, 230))
                     );
                 }
             }
@@ -1572,10 +1572,10 @@ impl EasyDraft {
                 Color32::from_rgb(35, 77, 123),
             );
             if self.pending_switch == Some(index) {
-                painter.circle_stroke(pos, 17.0, Stroke::new(2.0, Color32::from_rgb(233, 139, 40)));
+                painter.circle_stroke(pos, 17.0, Stroke::new(2.0_f32, Color32::from_rgb(233, 139, 40)));
             }
             if self.selected_symbol == Some(index) {
-                painter.circle_stroke(pos, 24.0, Stroke::new(3.0, Color32::from_rgb(40, 135, 230)));
+                painter.circle_stroke(pos, 24.0, Stroke::new(3.0_f32, Color32::from_rgb(40, 135, 230)));
             }
         }
         } // fin du calque electrique
