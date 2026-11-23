@@ -21,6 +21,17 @@ enum View {
     RgieReview,
 }
 
+/// Onglets de la barre latérale : un seul ensemble de commandes à la fois.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SidebarTab {
+    Dessin,
+    Inspecteur,
+    Affichage,
+    Electricite,
+    Dossier,
+    Fichiers,
+}
+
 /// Pointilles indiquant une relation logique, pas le passage reel des cables.
 fn draw_logical_link(painter: &Painter, a: Pos2, b: Pos2) {
     let delta = b - a;
@@ -43,6 +54,7 @@ enum Tool {
     SelectWall,
     Door,
     Window,
+    Passage,
     Stair,
     Outlet,
     Switch,
@@ -74,6 +86,7 @@ struct EasyDraft {
     redo: Vec<Plan>,
     tool: Tool,
     view: View,
+    sidebar_tab: SidebarTab,
     pending_switch: Option<usize>,
     active_circuit_index: usize,
     pending_wall: Option<Point>,
@@ -87,6 +100,7 @@ struct EasyDraft {
     new_wall_thickness_cm: f32,
     new_door_width_cm: f32,
     new_window_width_cm: f32,
+    new_passage_width_cm: f32,
     new_stair_width_cm: f32,
     new_stair_steps: u16,
     door_hinge_right: bool,
@@ -114,6 +128,7 @@ impl Default for EasyDraft {
             redo: Vec::new(),
             tool: Tool::Wall,
             view: View::Plan2D,
+            sidebar_tab: SidebarTab::Dessin,
             pending_switch: None,
             active_circuit_index: 0,
             pending_wall: None,
@@ -127,6 +142,7 @@ impl Default for EasyDraft {
             new_wall_thickness_cm: DEFAULT_WALL_THICKNESS_M * 100.0,
             new_door_width_cm: 90.0,
             new_window_width_cm: 120.0,
+            new_passage_width_cm: 110.0,
             new_stair_width_cm: 100.0,
             new_stair_steps: 12,
             door_hinge_right: false,
@@ -227,6 +243,9 @@ fn draw_opening(
                 let shift = normal * (width_px * offset);
                 painter.line_segment([left + shift, right + shift], glass);
             }
+        }
+        OpeningKind::Passage => {
+            // L'ouverture reste vide : elle definit toutefois une limite entre pieces.
         }
         OpeningKind::Door => {
             let hinge = if opening.hinge_right { right } else { left };
@@ -428,7 +447,7 @@ impl EasyDraft {
         if matches!(tool, Tool::Outlet | Tool::Switch | Tool::Light | Tool::LinkLighting) {
             self.show_electrical = true;
         }
-        if matches!(tool, Tool::Wall | Tool::Door | Tool::Window | Tool::Stair) {
+        if matches!(tool, Tool::Wall | Tool::Door | Tool::Window | Tool::Passage | Tool::Stair) {
             self.show_architecture = true;
         }
     }
@@ -581,7 +600,8 @@ impl EasyDraft {
                     if let Some(wall) = updated.walls.get(opening.wall_index) {
                         let along = wall.projected_distance_m(cursor) - wall.projected_distance_m(from);
                         let center = ((opening.center_m + along) / self.snap_m).round() * self.snap_m;
-                        let min_center = opening.width_m / 2.0 + 0.05;
+                        let margin = if opening.kind == OpeningKind::Passage { 0.0 } else { 0.05 };
+                        let min_center = opening.width_m / 2.0 + margin;
                         let max_center = wall.length_m() - min_center;
                         if min_center <= max_center {
                             updated.move_opening(index, center.clamp(min_center, max_center))
@@ -666,6 +686,7 @@ impl EasyDraft {
 
     fn select_at(&mut self, point: Point, ppm: f32) {
         self.clear_selection();
+        self.sidebar_tab = SidebarTab::Inspecteur;
         if self.show_electrical {
             self.selected_symbol = self.find_symbol_any(point, ppm);
             if self.selected_symbol.is_some() {
@@ -813,6 +834,7 @@ impl EasyDraft {
                 ui.heading(match opening.kind {
                     OpeningKind::Door => "Porte",
                     OpeningKind::Window => "Fenetre",
+                    OpeningKind::Passage => "Passage libre",
                 });
                 ui.small("Glisse le symbole sur le mur pour le repositionner.");
                 let mut center = opening.center_m;
@@ -827,6 +849,7 @@ impl EasyDraft {
                 let limits = match opening.kind {
                     OpeningKind::Door => 50.0..=200.0,
                     OpeningKind::Window => 40.0..=400.0,
+                    OpeningKind::Passage => 40.0..=400.0,
                 };
                 changed |= ui.add(egui::DragValue::new(&mut width_cm)
                     .range(limits).speed(1.0).suffix(" cm")).changed();
@@ -1187,17 +1210,17 @@ impl EasyDraft {
                     self.status = "Clique le deuxieme point pour definir la montee".into();
                 }
             }
-            Tool::Door | Tool::Window => {
+            Tool::Door | Tool::Window | Tool::Passage => {
                 if let Some(wall_index) = self.find_wall(position, ppm) {
-                    let kind = if self.tool == Tool::Door {
-                        OpeningKind::Door
-                    } else {
-                        OpeningKind::Window
+                    let kind = match self.tool {
+                        Tool::Door => OpeningKind::Door,
+                        Tool::Window => OpeningKind::Window,
+                        _ => OpeningKind::Passage,
                     };
-                    let width_m = if self.tool == Tool::Door {
-                        self.new_door_width_cm / 100.0
-                    } else {
-                        self.new_window_width_cm / 100.0
+                    let width_m = match self.tool {
+                        Tool::Door => self.new_door_width_cm / 100.0,
+                        Tool::Window => self.new_window_width_cm / 100.0,
+                        _ => self.new_passage_width_cm / 100.0,
                     };
                     // On valide avant de creer une entree dans l'historique d'annulation.
                     let mut updated = self.plan.clone();
@@ -1216,9 +1239,25 @@ impl EasyDraft {
                             self.status = match kind {
                                 OpeningKind::Door => format!("Porte de {:.0} cm ajoutee", width_m * 100.0),
                                 OpeningKind::Window => format!("Fenetre de {:.0} cm ajoutee", width_m * 100.0),
+                                OpeningKind::Passage => format!("Passage libre de {:.0} cm ajoute : pieces conservees", width_m * 100.0),
                             };
                         }
                         Err(err) => self.status = err.into(),
+                    }
+                } else if self.tool == Tool::Passage {
+                    // Les murs ont deja ete separes pour dessiner un passage : referme
+                    // la limite topologique, mais conserve graphiquement le vide.
+                    let mut updated = self.plan.clone();
+                    match updated.bridge_gap_with_passage(position) {
+                        Ok(width) => {
+                            self.snapshot();
+                            self.plan = updated;
+                            self.status = format!(
+                                "Passage de {:.2} m relie : separation des pieces retablie",
+                                width
+                            );
+                        }
+                        Err(error) => self.status = error.into(),
                     }
                 } else {
                     self.status = "Clique sur un mur pour y placer l'ouverture".into();
@@ -1356,7 +1395,7 @@ impl EasyDraft {
             if let Some(pos) = response.interact_pointer_pos() {
                 let world = to_world(pos);
                 let point = match self.tool {
-                    Tool::SelectWall | Tool::Door | Tool::Window | Tool::LinkLighting => world,
+                    Tool::SelectWall | Tool::Door | Tool::Window | Tool::Passage | Tool::LinkLighting => world,
                     Tool::Wall => self.snap_point(world, ppm),
                     _ => world.snapped(self.snap_m),
                 };
@@ -1616,74 +1655,119 @@ impl eframe::App for EasyDraft {
             }
         }
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 ui.heading("EasyDraft");
                 ui.separator();
                 if ui.selectable_label(self.view == View::Plan2D, "Plan 2D").clicked() {
                     self.view = View::Plan2D;
+                    self.sidebar_tab = SidebarTab::Dessin;
                 }
                 if ui.selectable_label(self.view == View::Unifilar, "Schema unifilaire").clicked() {
                     self.view = View::Unifilar;
+                    self.sidebar_tab = SidebarTab::Electricite;
                 }
-                if ui.selectable_label(self.view == View::RgieReview, "Dossier RGIE (verification)").clicked() {
+                if ui.selectable_label(self.view == View::RgieReview, "Dossier RGIE").clicked() {
                     self.view = View::RgieReview;
+                    self.sidebar_tab = SidebarTab::Dossier;
                 }
                 ui.separator();
-                if ui.button("Ajouter demo I -> L").clicked() { self.add_lighting_demo(); }
-                ui.separator();
-                if ui.button("Nouveau").clicked() {
-                    self.cancel_drag();
-                    self.snapshot();
-                    self.plan = Plan::default();
-                    self.reset_pending();
-                    self.clear_selection();
-                    self.active_circuit_index = 0;
-                    self.view = View::Plan2D;
-                    self.status = "Nouveau plan".into();
-                }
-                if ui.button("Annuler").clicked() { self.undo(); }
-                if ui.button("Retablir").clicked() { self.redo(); }
-                if self.view == View::Plan2D && ui.button("Supprimer selection").clicked() {
-                    self.delete_selected();
-                }
+                ui.menu_button("Fichier", |ui| {
+                    if ui.button("Nouveau plan").clicked() {
+                        self.cancel_drag();
+                        self.snapshot();
+                        self.plan = Plan::default();
+                        self.reset_pending();
+                        self.clear_selection();
+                        self.active_circuit_index = 0;
+                        self.view = View::Plan2D;
+                        self.sidebar_tab = SidebarTab::Dessin;
+                        self.status = "Nouveau plan".into();
+                    }
+                    if ui.button("Ouvrir le JSON").clicked() { self.load(); }
+                    if ui.button("Enregistrer le JSON").clicked() { self.save(); }
+                    if ui.button("Chemins des fichiers...").clicked() {
+                        self.sidebar_tab = SidebarTab::Fichiers;
+                    }
+                });
+                ui.menu_button("Edition", |ui| {
+                    if ui.button("Annuler (Ctrl+Z)").clicked() { self.undo(); }
+                    if ui.button("Retablir (Ctrl+Y)").clicked() { self.redo(); }
+                    if self.view == View::Plan2D && ui.button("Supprimer la selection").clicked() {
+                        self.delete_selected();
+                    }
+                });
+                ui.menu_button("Exporter", |ui| {
+                    if ui.button("Plan en PDF").clicked() { self.export_pdf(); }
+                    if ui.button("Schema unifilaire en PDF").clicked() { self.export_unifilar_pdf(); }
+                });
                 if ui.button("Enregistrer").clicked() { self.save(); }
-                if ui.button("Ouvrir").clicked() { self.load(); }
-                if ui.button("Exporter PDF plan").clicked() { self.export_pdf(); }
-                if self.view == View::Unifilar && ui.button("Exporter PDF unifilaire").clicked() {
-                    self.export_unifilar_pdf();
-                }
             });
+            if self.view == View::Plan2D {
+                ui.separator();
+                ui.horizontal_wrapped(|ui| {
+                    ui.strong("Architecture");
+                    if ui.selectable_label(self.tool == Tool::SelectWall, "Selection").clicked() {
+                        self.select_tool(Tool::SelectWall);
+                        self.sidebar_tab = SidebarTab::Inspecteur;
+                    }
+                    if ui.selectable_label(self.tool == Tool::Wall, "Mur").clicked() { self.select_tool(Tool::Wall); self.sidebar_tab = SidebarTab::Dessin; }
+                    if ui.selectable_label(self.tool == Tool::Passage, "Passage libre").clicked() { self.select_tool(Tool::Passage); self.sidebar_tab = SidebarTab::Dessin; }
+                    if ui.selectable_label(self.tool == Tool::Door, "Porte").clicked() { self.select_tool(Tool::Door); self.sidebar_tab = SidebarTab::Dessin; }
+                    if ui.selectable_label(self.tool == Tool::Window, "Fenetre").clicked() { self.select_tool(Tool::Window); self.sidebar_tab = SidebarTab::Dessin; }
+                    if ui.selectable_label(self.tool == Tool::Stair, "Escalier").clicked() { self.select_tool(Tool::Stair); self.sidebar_tab = SidebarTab::Dessin; }
+                    ui.separator();
+                    ui.strong("Electricite");
+                    if ui.selectable_label(self.tool == Tool::Outlet, "Prise").clicked() { self.select_tool(Tool::Outlet); self.sidebar_tab = SidebarTab::Electricite; }
+                    if ui.selectable_label(self.tool == Tool::Switch, "Interrupteur").clicked() { self.select_tool(Tool::Switch); self.sidebar_tab = SidebarTab::Electricite; }
+                    if ui.selectable_label(self.tool == Tool::Light, "Luminaire").clicked() { self.select_tool(Tool::Light); self.sidebar_tab = SidebarTab::Electricite; }
+                    if ui.selectable_label(self.tool == Tool::LinkLighting, "Lier I → L").clicked() {
+                        self.select_tool(Tool::LinkLighting);
+                        self.sidebar_tab = SidebarTab::Electricite;
+                        self.status = "Clique sur un interrupteur puis sur un luminaire".into();
+                    }
+                    ui.separator();
+                    if ui.selectable_label(self.tool == Tool::Pan, "Deplacer").clicked() { self.select_tool(Tool::Pan); }
+                });
+            }
         });
 
-        egui::SidePanel::left("tools").resizable(true).default_width(275.0).show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.heading("Outils");
+        egui::SidePanel::left("tools").resizable(true)
+            .default_width(288.0).min_width(235.0).max_width(390.0)
+            .show(ctx, |ui| {
+            ui.heading(match self.sidebar_tab {
+                SidebarTab::Dessin => "Dessin",
+                SidebarTab::Inspecteur => "Proprietes",
+                SidebarTab::Affichage => "Affichage",
+                SidebarTab::Electricite => "Electricite",
+                SidebarTab::Dossier => "Dossier RGIE",
+                SidebarTab::Fichiers => "Fichiers et exports",
+            });
+            ui.horizontal_wrapped(|ui| {
+                ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Dessin, "Dessin");
+                ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Inspecteur, "Inspecteur");
+                ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Affichage, "Calques");
+                ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Electricite, "Elec.");
+                ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Dossier, "RGIE");
+                ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Fichiers, "Fichiers");
+            });
             ui.separator();
-            if ui.selectable_label(self.tool == Tool::Wall, "Mur").clicked() { self.select_tool(Tool::Wall); }
-            if ui.selectable_label(self.tool == Tool::SelectWall, "Selectionner un element").clicked() {
-                self.select_tool(Tool::SelectWall);
-            }
-            if ui.selectable_label(self.tool == Tool::Door, "Porte").clicked() {
-                self.select_tool(Tool::Door);
-            }
-            if ui.selectable_label(self.tool == Tool::Window, "Fenetre").clicked() {
-                self.select_tool(Tool::Window);
-            }
-            if ui.selectable_label(self.tool == Tool::Stair, "Escalier").clicked() {
-                self.select_tool(Tool::Stair);
-            }
-            if ui.selectable_label(self.tool == Tool::Outlet, "Prise").clicked() { self.select_tool(Tool::Outlet); }
-            if ui.selectable_label(self.tool == Tool::Switch, "Interrupteur").clicked() { self.select_tool(Tool::Switch); }
-            if ui.selectable_label(self.tool == Tool::Light, "Point lumineux").clicked() { self.select_tool(Tool::Light); }
-            if ui.selectable_label(self.tool == Tool::LinkLighting, "Lier I -> L").clicked() {
-                self.select_tool(Tool::LinkLighting);
-                self.view = View::Plan2D;
-                self.status = "Clique sur un interrupteur I, puis sur une lampe X.".into();
-            }
-            if ui.selectable_label(self.tool == Tool::Pan, "Deplacer la vue").clicked() { self.select_tool(Tool::Pan); }
-            ui.small("Selection : clic sur un element. Glisse un mur, ses poignees bleues ou une ouverture.");
-            ui.small("Deplacer une ouverture : elle reste sur son mur et ne peut pas chevaucher une autre.");
-            ui.small("Ctrl+Z : annuler | Ctrl+Y : retablir.");
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            if self.sidebar_tab == SidebarTab::Dessin {
+            ui.label("Outil actif");
+            ui.heading(match self.tool {
+                Tool::SelectWall => "Selection",
+                Tool::Wall => "Mur",
+                Tool::Door => "Porte",
+                Tool::Window => "Fenetre",
+                Tool::Passage => "Passage libre",
+                Tool::Stair => "Escalier",
+                Tool::Outlet => "Prise",
+                Tool::Switch => "Interrupteur",
+                Tool::Light => "Point lumineux",
+                Tool::LinkLighting => "Lier I → L",
+                Tool::Pan => "Deplacer la vue",
+            });
+            ui.small("Choisis un outil dans la barre Architecture / Electricite en haut.");
             ui.separator();
             if self.view == View::Plan2D && self.tool == Tool::Door {
                 ui.label("Largeur de la porte");
@@ -1710,13 +1794,27 @@ impl eframe::App for EasyDraft {
                 ui.small("Clique sur un mur pour inserer la fenetre.");
                 ui.separator();
             }
+            if self.view == View::Plan2D && self.tool == Tool::Passage {
+                ui.label("Largeur du passage libre");
+                ui.add(egui::Slider::new(&mut self.new_passage_width_cm, 40.0..=400.0)
+                    .step_by(5.0).suffix(" cm"));
+                ui.small("Sur un mur : ouvre le passage sans porte.");
+                ui.small("Dans un vide entre murs alignes : relie les 2 bouts sans mur visible.");
+                ui.small("Les pieces restent distinctes pour le calcul des surfaces.");
+                ui.separator();
+            }
             ui.label("Epaisseur des nouveaux murs");
             ui.add(egui::Slider::new(&mut self.new_wall_thickness_cm, 5.0..=60.0).text("cm").step_by(1.0));
             ui.separator();
-            egui::CollapsingHeader::new("Proprietes de la selection").default_open(true).show(ui, |ui| {
+            } // Dessin
+            if self.sidebar_tab == SidebarTab::Inspecteur {
+                ui.heading("Element selectionne");
                 self.selected_properties(ui);
-            });
-            ui.separator();
+                ui.separator();
+                ui.small("Clique sur un mur, une ouverture, une piece ou un symbole.");
+                ui.small("Ctrl+Z pour annuler, Ctrl+Y pour retablir.");
+            }
+            if self.sidebar_tab == SidebarTab::Affichage {
             ui.label("Calques visibles");
             ui.checkbox(&mut self.show_architecture, "Architecture (murs, portes, escaliers)");
             ui.checkbox(&mut self.show_rooms, "Pieces, surfaces et dimensions");
@@ -1735,6 +1833,8 @@ impl eframe::App for EasyDraft {
                 self.zoom = 1.0;
             }
             ui.separator();
+            } // Affichage
+            if self.sidebar_tab == SidebarTab::Fichiers {
             ui.label("Fichier JSON");
             ui.text_edit_singleline(&mut self.file_path);
             ui.separator();
@@ -1748,6 +1848,11 @@ impl eframe::App for EasyDraft {
                 self.export_unifilar_pdf();
             }
             ui.separator();
+            } // Fichiers
+            if self.sidebar_tab == SidebarTab::Dessin {
+            ui.separator();
+            egui::CollapsingHeader::new("Statistiques et exemples")
+                .default_open(false).show(ui, |ui| {
             ui.label(format!("Murs : {}", self.plan.walls.len()));
             ui.label(format!("Pieces fermees : {}", rooms::detect_rooms(&self.plan.walls).len()));
             if ui.button("Ouvrir l'exemple de 2 pieces").clicked() {
@@ -1762,12 +1867,19 @@ impl eframe::App for EasyDraft {
                 "Fenetres : {}",
                 self.plan.openings.iter().filter(|o| o.kind == OpeningKind::Window).count()
             ));
+            ui.label(format!(
+                "Passages : {}",
+                self.plan.openings.iter().filter(|o| o.kind == OpeningKind::Passage).count()
+            ));
             ui.label(format!("Escaliers : {}", self.plan.stairs.len()));
             ui.label(format!("Symboles : {}", self.plan.symbols.len()));
             ui.label(format!("Liaisons I -> L : {}", self.plan.lighting_connections.len()));
             ui.label(format!("Lampes non liees : {}", self.plan.unlinked_lights()));
             ui.label(format!("Interrupteurs non lies : {}", self.plan.unlinked_switches()));
             ui.separator();
+                }); // Statistiques et exemples
+            } // Résumé du dessin
+            if self.sidebar_tab == SidebarTab::Dossier {
             egui::CollapsingHeader::new("Identification du dossier RGIE")
                 .default_open(self.view == View::RgieReview)
                 .show(ui, |ui| {
@@ -1803,6 +1915,9 @@ impl eframe::App for EasyDraft {
                     ui.small("Ces champs servent au dossier, sans validation automatique RGIE.");
                 });
             ui.separator();
+            } // Dossier
+            if self.sidebar_tab == SidebarTab::Electricite {
+            if ui.button("Ajouter un exemple I → L").clicked() { self.add_lighting_demo(); }
             egui::CollapsingHeader::new("Tableau electrique - protections differentielles")
                 .default_open(self.view == View::Unifilar)
                 .show(ui, |ui| self.board_editor(ui));
@@ -1973,6 +2088,7 @@ impl eframe::App for EasyDraft {
                     ui.small("Variants choisis manuellement, selon la realite sur place.");
                 });
             ui.small("Symboles du tableau 2.23 pour les appareils couverts ; dossier RGIE incomplet.");
+            } // Electricite
             });
         });
 

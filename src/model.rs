@@ -57,6 +57,8 @@ impl Wall {
 pub enum OpeningKind {
     Door,
     Window,
+    /// Passage entre deux pieces sans vantail ni vitrage.
+    Passage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -488,11 +490,12 @@ impl Plan {
             return Err("Un mur doit mesurer au moins 5 cm");
         }
         if self.openings.iter().any(|opening| {
+            let margin = if opening.kind == OpeningKind::Passage { 0.0 } else { 0.049 };
             opening.wall_index == index
-                && (opening.start_m() < 0.049
-                    || opening.end_m() + 0.049 > length)
+                && (opening.start_m() < margin - 0.0001
+                    || opening.end_m() + margin > length + 0.0001)
         }) {
-            return Err("Une porte ou fenetre depasserait du mur");
+            return Err("Une ouverture depasserait du mur");
         }
         let _ = wall;
         self.walls[index] = Wall { start, end, thickness_m };
@@ -511,13 +514,14 @@ impl Plan {
         let wall = self.walls.get(opening.wall_index).ok_or("Mur de l'ouverture introuvable")?;
         let length = wall.length_m();
         const MARGIN: f32 = 0.05;
+        let edge_margin = if opening.kind == OpeningKind::Passage { 0.0 } else { MARGIN };
         if !center_m.is_finite() || !width_m.is_finite() || width_m <= 0.0 {
             return Err("Position ou largeur invalide");
         }
         let start = center_m - width_m / 2.0;
         let end = center_m + width_m / 2.0;
-        if start < MARGIN - 0.0001 || end > length - MARGIN + 0.0001 {
-            return Err("L'ouverture doit rester a l'interieur du mur (marge 5 cm)");
+        if start < edge_margin - 0.0001 || end > length - edge_margin + 0.0001 {
+            return Err("L'ouverture depasse du mur");
         }
         if self.openings.iter().enumerate().any(|(other_index, other)| {
             other_index != index
@@ -1096,6 +1100,75 @@ impl Plan {
         });
         Ok(())
     }
+
+    /// Cree un passage libre dans un espace entre deux extremites de murs alignees.
+    ///
+    /// L'axe de jonction est conserve comme limite virtuelle pour la detection des
+    /// pieces, tandis que son ouverture occupe toute la longueur : rien n'est
+    /// dessine dans le passage. Aucun lien n'est cree sans clic explicite.
+    pub fn bridge_gap_with_passage(&mut self, clicked_at: Point)
+        -> Result<f32, &'static str>
+    {
+        let mut candidate: Option<(f32, Point, Point, f32)> = None;
+        for (i, left_wall) in self.walls.iter().enumerate() {
+            if left_wall.length_m() < 0.05 { continue; }
+            let left_ends = [
+                (left_wall.start, left_wall.end),
+                (left_wall.end, left_wall.start),
+            ];
+            for right_wall in self.walls.iter().skip(i + 1) {
+                if right_wall.length_m() < 0.05 { continue; }
+                let right_ends = [
+                    (right_wall.start, right_wall.end),
+                    (right_wall.end, right_wall.start),
+                ];
+                for &(a, a_inside) in &left_ends {
+                    for &(b, b_inside) in &right_ends {
+                        let gap = a.distance_to(b);
+                        if !(0.35..=4.0).contains(&gap) { continue; }
+                        let ux = (b.x - a.x) / gap;
+                        let uy = (b.y - a.y) / gap;
+                        // Les deux troncons doivent pointer vers la meme lacune.
+                        let ax = (a.x - a_inside.x) / left_wall.length_m();
+                        let ay = (a.y - a_inside.y) / left_wall.length_m();
+                        let bx = (b.x - b_inside.x) / right_wall.length_m();
+                        let by = (b.y - b_inside.y) / right_wall.length_m();
+                        if ax * ux + ay * uy < 0.995 || bx * ux + by * uy > -0.995 {
+                            continue;
+                        }
+                        let from_x = clicked_at.x - a.x;
+                        let from_y = clicked_at.y - a.y;
+                        let along = from_x * ux + from_y * uy;
+                        let perpendicular = (from_x * uy - from_y * ux).abs();
+                        if along < 0.0 || along > gap || perpendicular > 0.25 {
+                            continue;
+                        }
+                        let score = perpendicular + gap * 0.005;
+                        let thickness = ((left_wall.thickness_m + right_wall.thickness_m) / 2.0)
+                            .clamp(0.05, 0.60);
+                        if candidate.as_ref().is_none_or(|current| score < current.0) {
+                            candidate = Some((score, a, b, thickness));
+                        }
+                    }
+                }
+            }
+        }
+        let Some((_, start, end, thickness_m)) = candidate else {
+            return Err("Aucun espace entre deux murs alignes trouve : clique sur le passage");
+        };
+        let gap = start.distance_to(end);
+        let wall_index = self.walls.len();
+        self.walls.push(Wall { start, end, thickness_m });
+        self.openings.push(Opening {
+            wall_index,
+            center_m: gap / 2.0,
+            width_m: gap,
+            kind: OpeningKind::Passage,
+            hinge_right: false,
+            swing_flipped: false,
+        });
+        Ok(gap)
+    }
 }
 
 #[cfg(test)]
@@ -1212,6 +1285,54 @@ mod tests {
     fn old_plan_json_has_no_openings() {
         let old = r#"{"walls":[],"symbols":[]}"#;
         let plan: Plan = serde_json::from_str(old).unwrap();
+        assert!(plan.openings.is_empty());
+    }
+
+    #[test]
+    fn free_passage_on_wall_remains_room_boundary() {
+        let mut plan = Plan::default();
+        plan.walls = vec![
+            Wall { start: Point{x:0.0,y:0.0}, end:Point{x:6.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:6.0,y:0.0}, end:Point{x:6.0,y:4.0}, thickness_m:0.15 },
+            Wall { start: Point{x:6.0,y:4.0}, end:Point{x:0.0,y:4.0}, thickness_m:0.15 },
+            Wall { start: Point{x:0.0,y:4.0}, end:Point{x:0.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:3.0,y:0.0}, end:Point{x:3.0,y:4.0}, thickness_m:0.15 },
+        ];
+        plan.add_opening(4, Point{x:3.0,y:2.0}, 1.2, OpeningKind::Passage, false, false, 0.05).unwrap();
+        assert_eq!(crate::rooms::detect_rooms(&plan.walls).len(), 2);
+        let loaded: Plan = serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
+        assert_eq!(loaded.openings[0].kind, OpeningKind::Passage);
+    }
+
+    #[test]
+    fn passage_between_separate_wall_ends_restores_two_rooms() {
+        let mut plan = Plan::default();
+        plan.walls = vec![
+            Wall { start: Point{x:0.0,y:0.0}, end:Point{x:6.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:6.0,y:0.0}, end:Point{x:6.0,y:4.0}, thickness_m:0.15 },
+            Wall { start: Point{x:6.0,y:4.0}, end:Point{x:0.0,y:4.0}, thickness_m:0.15 },
+            Wall { start: Point{x:0.0,y:4.0}, end:Point{x:0.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:3.0,y:0.0}, end:Point{x:3.0,y:1.0}, thickness_m:0.15 },
+            Wall { start: Point{x:3.0,y:2.5}, end:Point{x:3.0,y:4.0}, thickness_m:0.15 },
+        ];
+        assert_eq!(crate::rooms::detect_rooms(&plan.walls).len(), 1);
+        let width = plan.bridge_gap_with_passage(Point{x:3.0,y:1.8}).unwrap();
+        assert!((width - 1.5).abs() < 0.001);
+        assert_eq!(crate::rooms::detect_rooms(&plan.walls).len(), 2);
+        assert_eq!(plan.openings[0].kind, OpeningKind::Passage);
+        assert!(plan.update_wall(6, Point{x:3.0,y:1.0}, Point{x:3.0,y:2.5}, 0.15).is_ok());
+        let restored: Plan = serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
+        assert_eq!(crate::rooms::detect_rooms(&restored.walls).len(), 2);
+    }
+
+    #[test]
+    fn does_not_bridge_open_space_without_click_near_gap() {
+        let mut plan = Plan::default();
+        plan.walls = vec![
+            Wall { start: Point{x:0.0,y:0.0}, end:Point{x:1.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:2.0,y:0.0}, end:Point{x:3.0,y:0.0}, thickness_m:0.15 },
+        ];
+        assert!(plan.bridge_gap_with_passage(Point{x:10.0,y:10.0}).is_err());
         assert!(plan.openings.is_empty());
     }
 
@@ -1467,7 +1588,7 @@ mod tests {
         assert_eq!(p.lighting_groups_for_circuit(0).len(), 1);
         assert_eq!(p.lighting_groups_for_circuit(1).len(), 1);
         let data = serde_json::to_string(&p).unwrap();
-        let roundtrip: Plan = serde_json::from_str(&data).unwrap();
+        let mut roundtrip: Plan = serde_json::from_str(&data).unwrap();
         assert_eq!(roundtrip.circuit_count(), 2);
         assert_eq!(roundtrip.lighting_point_ref(lamp).as_deref(), Some("B1"));
         assert!(roundtrip.connect_switch_to_light_in_circuit(sw, 1, 1).is_err());
