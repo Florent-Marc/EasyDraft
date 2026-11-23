@@ -366,7 +366,7 @@ pub struct RoomLabel {
 }
 
 /// Image d'un fond de plan, conservee par chemin externe au JSON.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BackgroundPlan {
     pub path: String,
     /// Largeur reelle de l'image importee, en metres.
