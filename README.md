@@ -18,6 +18,42 @@ cargo test
 
 Les sources principales sont `src/model.rs`, `src/main.rs`, `src/unifilar.rs` et `src/pdf_export.rs`.
 
+## Selection a la souris et fichiers Windows
+
+Le mode **Mur** est un outil de pose unique : un clic pour le point de depart,
+un second pour la fin. Le mur est immediatement selectionne et EasyDraft revient
+automatiquement en mode **Selection** pour le deplacer ou modifier ses proprietes.
+
+En mode **Selection** :
+
+- **Clic** sur un mur, une porte/fenetre/passage, un escalier ou un symbole
+  electrique pour le selectionner.
+- **Glisser** directement un symbole electrique ou un escalier pour le deplacer ;
+  **glisser** un mur entier ou ses poignees pour deplacer ou redimensionner le mur.
+  Une ouverture glissee suit uniquement son mur.
+- **Dessiner un rectangle** depuis une zone vide pour selectionner plusieurs
+  objets : de **gauche a droite**, seuls les elements entierement contenus
+  sont pris ; de **droite a gauche**, les murs qui traversent le rectangle
+  sont egalement captures.
+- **Glisser un objet du groupe selectionne** pour deplacer tous les elements
+  du groupe. Les portes, fenetres et passages restent attaches a leurs murs.
+  **Supprimer la selection** supprime le groupe. **Ctrl+Z** annule un
+  deplacement complet en une seule fois.
+
+Les **fenetres natives d'ouverture et de sauvegarde** sont disponibles via
+le menu **Fichier**. La premiere utilisation de **Enregistrer** ouvre une
+fenetre pour choisir le fichier JSON ; les sauvegardes suivantes reprennent
+cet emplacement. **Enregistrer sous...** demande toujours un nouveau fichier.
+**Ouvrir...** permet de choisir le JSON a charger. Dans **Exporter**,
+**Plan en PDF...** et **Schema unifilaire en PDF...** demandent le dossier
+de sortie et le nom du PDF. Les annulations des fenetres ne remplacent pas
+le projet courant.
+
+Les boites de dialogue sont fournies par `rfd` (natives sous Windows).
+Les tests automatises verifient egalement l'ecriture/relecture du JSON
+et la production d'un PDF. Un programme de bureau necessite toujours un
+essai manuel des fenetres de fichier sur le poste cible.
+
 ## Interface de CAO et passages libres
 
 EasyDraft affiche désormais une **barre d'outils par métier** en haut de la fenêtre
