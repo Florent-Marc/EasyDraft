@@ -325,10 +325,44 @@ struct ActiveDrag {
     changed: bool,
 }
 
+const DEFAULT_SHEET_NAME: &str = "Rez-de-chaussée";
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct PlanSheet {
+    name: String,
+    plan: Plan,
+}
+
+/// La première feuille conserve le format des anciens fichiers EasyDraft.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Project {
+    #[serde(flatten)]
+    first_plan: Plan,
+    #[serde(default = "default_sheet_name")]
+    first_sheet_name: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    additional_sheets: Vec<PlanSheet>,
+    #[serde(default)]
+    active_sheet: usize,
+}
+
+fn default_sheet_name() -> String {
+    DEFAULT_SHEET_NAME.into()
+}
+
+enum HistoryEntry {
+    Plan { sheet: usize, plan: Plan },
+    Project(Project),
+}
+
 struct EasyDraft {
     plan: Plan,
-    undo: Vec<Plan>,
-    redo: Vec<Plan>,
+    // Le dessin de la feuille active est déplacé dans `plan` pour l'éditeur.
+    sheets: Vec<PlanSheet>,
+    active_sheet: usize,
+    sheet_name_input: String,
+    undo: Vec<HistoryEntry>,
+    redo: Vec<HistoryEntry>,
     tool: Tool,
     view: View,
     sidebar_tab: SidebarTab,
@@ -381,6 +415,9 @@ impl Default for EasyDraft {
     fn default() -> Self {
         Self {
             plan: Plan::default(),
+            sheets: vec![PlanSheet { name: default_sheet_name(), plan: Plan::default() }],
+            active_sheet: 0,
+            sheet_name_input: String::new(),
             undo: Vec::new(),
             redo: Vec::new(),
             tool: Tool::Wall,
@@ -569,11 +606,141 @@ fn draw_stair(painter: &Painter, stair: &Stair, origin: Pos2, ppm: f32) {
 }
 
 impl EasyDraft {
-    fn snapshot(&mut self) {
-        self.undo.push(self.plan.clone());
+    fn project(&self) -> Project {
+        let mut sheets = self.sheets.clone();
+        sheets[self.active_sheet].plan = self.plan.clone();
+        let first = sheets.remove(0);
+        Project {
+            first_plan: first.plan,
+            first_sheet_name: first.name,
+            additional_sheets: sheets,
+            active_sheet: self.active_sheet,
+        }
+    }
+
+    fn set_project(&mut self, project: Project) {
+        self.sheets = vec![PlanSheet { name: project.first_sheet_name, plan: project.first_plan }];
+        self.sheets.extend(project.additional_sheets);
+        self.active_sheet = project.active_sheet.min(self.sheets.len() - 1);
+        self.plan = std::mem::take(&mut self.sheets[self.active_sheet].plan);
+        self.sheet_name_input.clear();
+        self.reset_sheet_editor();
+    }
+
+    fn replace_project(&mut self, project: Project) {
+        self.cancel_drag();
+        self.record_history(HistoryEntry::Project(self.project()));
+        self.set_project(project);
+    }
+
+    fn replace_with_single_plan(&mut self, plan: Plan) {
+        self.replace_project(Project {
+            first_plan: plan,
+            first_sheet_name: default_sheet_name(),
+            additional_sheets: Vec::new(),
+            active_sheet: 0,
+        });
+    }
+
+    fn reset_sheet_editor(&mut self) {
+        self.reset_pending();
+        self.clear_selection();
+        self.active_circuit_index = 0;
+        self.circuit_visibility = CircuitVisibility::All;
+    }
+
+    fn switch_sheet(&mut self, index: usize) {
+        if index != self.active_sheet {
+            self.cancel_drag();
+            self.sheets[self.active_sheet].plan = std::mem::take(&mut self.plan);
+            self.active_sheet = index;
+            self.plan = std::mem::take(&mut self.sheets[index].plan);
+            self.reset_sheet_editor();
+        }
+    }
+
+    fn add_sheet(&mut self, name: String) {
+        self.cancel_drag();
+        self.record_history(HistoryEntry::Project(self.project()));
+        let mut plan = Plan::default();
+        plan.installation_info = self.plan.installation_info.clone();
+        self.sheets.push(PlanSheet { name, plan });
+        self.switch_sheet(self.sheets.len() - 1);
+        self.view = View::Plan2D;
+        self.pan = Vec2::ZERO;
+        self.zoom = 1.0;
+    }
+
+    fn sheet_controls(&mut self, ui: &mut egui::Ui) {
+        ui.label("Feuille");
+        let mut index = self.active_sheet;
+        egui::ComboBox::from_id_salt("active_plan_sheet")
+            .selected_text(&self.sheets[index].name)
+            .show_ui(ui, |ui| {
+                for (sheet_index, sheet) in self.sheets.iter().enumerate() {
+                    ui.selectable_value(&mut index, sheet_index, &sheet.name);
+                }
+            });
+        self.switch_sheet(index);
+
+        ui.menu_button("Gérer les feuilles", |ui| {
+            ui.label("Ajouter un niveau");
+            for name in [DEFAULT_SHEET_NAME, "1er étage", "2e étage", "3e étage", "Grenier", "Cave"] {
+                if ui.add_enabled(
+                    !self.sheets.iter().any(|sheet| sheet.name == name),
+                    egui::Button::new(name),
+                ).clicked() {
+                    self.add_sheet(name.into());
+                    ui.close();
+                }
+            }
+            ui.separator();
+            ui.add(egui::TextEdit::singleline(&mut self.sheet_name_input)
+                .hint_text("Nom, ex. Annexe")
+                .char_limit(60));
+            let name = self.sheet_name_input.trim().to_owned();
+            let available = !name.is_empty() && !self.sheets.iter().any(|sheet| sheet.name == name);
+            if ui.add_enabled(available, egui::Button::new("Ajouter une partie")).clicked() {
+                self.add_sheet(name.clone());
+                self.sheet_name_input.clear();
+                ui.close();
+            }
+            if ui.add_enabled(available, egui::Button::new("Renommer la feuille active")).clicked() {
+                self.cancel_drag();
+                self.record_history(HistoryEntry::Project(self.project()));
+                self.sheets[self.active_sheet].name = name;
+                self.sheet_name_input.clear();
+                ui.close();
+            }
+        });
+    }
+
+    fn record_history(&mut self, entry: HistoryEntry) {
+        self.undo.push(entry);
         self.redo.clear();
         if self.undo.len() > 100 {
             self.undo.remove(0);
+        }
+    }
+
+    fn snapshot(&mut self) {
+        self.record_history(HistoryEntry::Plan { sheet: self.active_sheet, plan: self.plan.clone() });
+    }
+
+    fn restore_history(&mut self, entry: HistoryEntry) -> HistoryEntry {
+        match entry {
+            HistoryEntry::Plan { sheet, plan } => {
+                self.switch_sheet(sheet);
+                let previous = std::mem::replace(&mut self.plan, plan);
+                self.reset_pending();
+                self.clear_selection();
+                HistoryEntry::Plan { sheet, plan: previous }
+            }
+            HistoryEntry::Project(project) => {
+                let previous = self.project();
+                self.set_project(project);
+                HistoryEntry::Project(previous)
+            }
         }
     }
 
@@ -604,20 +771,18 @@ impl EasyDraft {
 
     fn undo(&mut self) {
         self.cancel_drag();
-        if let Some(plan) = self.undo.pop() {
-            self.redo.push(std::mem::replace(&mut self.plan, plan));
-            self.reset_pending();
-            self.clear_selection();
+        if let Some(entry) = self.undo.pop() {
+            let previous = self.restore_history(entry);
+            self.redo.push(previous);
             self.status = "Derniere modification annulee".into();
         }
     }
 
     fn redo(&mut self) {
         self.cancel_drag();
-        if let Some(plan) = self.redo.pop() {
-            self.undo.push(std::mem::replace(&mut self.plan, plan));
-            self.reset_pending();
-            self.clear_selection();
+        if let Some(entry) = self.redo.pop() {
+            let previous = self.restore_history(entry);
+            self.undo.push(previous);
             self.status = "Modification retablie".into();
         }
     }
@@ -702,7 +867,7 @@ impl EasyDraft {
     }
 
     fn save_current(&mut self) {
-        let result = serde_json::to_string_pretty(&self.plan)
+        let result = serde_json::to_string_pretty(&self.project())
             .map_err(|e| e.to_string())
             .and_then(|data| std::fs::write(&self.file_path, data).map_err(|e| e.to_string()));
         self.status = match result {
@@ -729,7 +894,7 @@ impl EasyDraft {
             &self.file_path, "Enregistrer le plan EasyDraft", "Plan EasyDraft (JSON)", "json"
         ).save_file() {
             let path = path.with_extension("json");
-            let result = serde_json::to_string_pretty(&self.plan)
+            let result = serde_json::to_string_pretty(&self.project())
                 .map_err(|e| e.to_string())
                 .and_then(|data| std::fs::write(&path, data).map_err(|e| e.to_string()));
             match result {
@@ -750,15 +915,10 @@ impl EasyDraft {
         ).pick_file() {
             let result = std::fs::read_to_string(&path)
                 .map_err(|e| e.to_string())
-                .and_then(|text| serde_json::from_str::<Plan>(&text).map_err(|e| e.to_string()));
+                .and_then(|text| serde_json::from_str::<Project>(&text).map_err(|e| e.to_string()));
             match result {
-                Ok(plan) => {
-                    self.cancel_drag();
-                    self.snapshot();
-                    self.plan = plan;
-                    self.reset_pending();
-                    self.clear_selection();
-                    self.active_circuit_index = 0;
+                Ok(project) => {
+                    self.replace_project(project);
                     self.file_path = path.to_string_lossy().into_owned();
                     self.file_path_assigned = true;
                     self.status = format!("Plan ouvert : {}", self.file_path);
@@ -774,11 +934,7 @@ impl EasyDraft {
             include_str!("../examples/tableau-deux-ddr-trois-circuits.json")
         ) {
             Ok(plan) => {
-                self.snapshot();
-                self.plan = plan;
-                self.reset_pending();
-                self.clear_selection();
-                self.active_circuit_index = 0;
+                self.replace_with_single_plan(plan);
                 self.view = View::Unifilar;
                 self.show_electrical = true;
                 self.status = "Exemple de tableau charge : D1 vers A/B, D2 vers C (caracteristiques a renseigner)".into();
@@ -793,11 +949,7 @@ impl EasyDraft {
             include_str!("../examples/unifilaire-deux-circuits.json")
         ) {
             Ok(plan) => {
-                self.snapshot();
-                self.plan = plan;
-                self.reset_pending();
-                self.clear_selection();
-                self.active_circuit_index = 0;
+                self.replace_with_single_plan(plan);
                 self.view = View::Unifilar;
                 self.show_electrical = true;
                 self.status = "Exemple charge : circuits A et B, trois lampes, deux interrupteurs".into();
@@ -813,11 +965,7 @@ impl EasyDraft {
         );
         match result {
             Ok(plan) => {
-                self.snapshot();
-                self.plan = plan;
-                self.reset_pending();
-                self.clear_selection();
-                self.active_circuit_index = 0;
+                self.replace_with_single_plan(plan);
                 self.view = View::Plan2D;
                 self.show_architecture = true;
                 self.show_rooms = true;
@@ -1475,9 +1623,10 @@ impl EasyDraft {
     fn finish_drag(&mut self) {
         if let Some(session) = self.drag.take() {
             if session.changed {
-                self.undo.push(session.original);
-                if self.undo.len() > 100 { self.undo.remove(0); }
-                self.redo.clear();
+                self.record_history(HistoryEntry::Plan {
+                    sheet: self.active_sheet,
+                    plan: session.original,
+                });
                 self.status = if matches!(session.target, DragTarget::Joint) {
                     "Points de murs deplaces (Ctrl+Z pour annuler ; Joindre pour les lier)".into()
                 } else {
@@ -2026,8 +2175,12 @@ impl EasyDraft {
     }
 
     fn export_pdf(&mut self) {
-        self.status = match pdf_export::export_pdf(&self.pdf_path, &self.plan, self.show_dimensions) {
-            Ok(()) => format!("PDF exporte : {}", self.pdf_path),
+        let sheets = self.sheets.iter().enumerate().map(|(index, sheet)| {
+            let plan = if index == self.active_sheet { &self.plan } else { &sheet.plan };
+            (sheet.name.as_str(), plan)
+        });
+        self.status = match pdf_export::export_plan_sheets(&self.pdf_path, sheets, self.show_dimensions) {
+            Ok(()) => format!("PDF exporté ({} feuille(s)) : {}", self.sheets.len(), self.pdf_path),
             Err(error) => error,
         };
     }
@@ -2673,7 +2826,6 @@ impl EasyDraft {
 
 impl eframe::App for EasyDraft {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.refresh_underlay_texture(ctx);
         if !ctx.wants_keyboard_input() {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
                 self.undo();
@@ -2697,7 +2849,7 @@ impl eframe::App for EasyDraft {
         egui::TopBottomPanel::top("workspace_top")
             .show(ctx, |ui| {
                 ui.add_space(5.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     ui.heading(egui::RichText::new("EasyDraft").color(Color32::from_rgb(28, 88, 186)));
                     ui.separator();
                     ui.small("PLAN TYPE");
@@ -2715,16 +2867,13 @@ impl eframe::App for EasyDraft {
                         self.sidebar_tab = SidebarTab::Dossier;
                     }
                     ui.separator();
+                    self.sheet_controls(ui);
+                    ui.separator();
                     ui.menu_button("Fichier", |ui| {
                         if ui.button("Nouveau plan").clicked() {
-                            self.cancel_drag();
-                            self.snapshot();
-                            self.plan = Plan::default();
+                            self.replace_with_single_plan(Plan::default());
                             self.file_path_assigned = false;
                             self.file_path = "mon-plan.json".into();
-                            self.reset_pending();
-                            self.clear_selection();
-                            self.active_circuit_index = 0;
                             self.view = View::Plan2D;
                             self.sidebar_tab = SidebarTab::Affichage;
                             self.status = "Nouveau plan".into();
@@ -2747,10 +2896,10 @@ impl eframe::App for EasyDraft {
                         }
                     });
                     ui.menu_button("Exporter", |ui| {
-                        if ui.button("Plan de situation en PDF...").clicked() {
+                        if ui.button("Plan de situation en PDF (toutes les feuilles)…").clicked() {
                             self.export_pdf_dialog(); ui.close();
                         }
-                        if ui.button("Schema unifilaire en PDF...").clicked() {
+                        if ui.button("Schéma unifilaire en PDF (feuille active)…").clicked() {
                             self.export_unifilar_pdf_dialog(); ui.close();
                         }
                     });
@@ -3141,11 +3290,11 @@ impl eframe::App for EasyDraft {
                 if ui.button("Enregistrer sous...").clicked() { self.save_as(); }
             });
             ui.separator();
-            ui.label("Fichier PDF du plan");
+            ui.label("PDF du plan de situation · toutes les feuilles");
             ui.text_edit_singleline(&mut self.pdf_path);
             if ui.button("Exporter le plan PDF...").clicked() { self.export_pdf_dialog(); }
             ui.separator();
-            ui.label("Fichier PDF unifilaire");
+            ui.label("PDF unifilaire · feuille active");
             ui.text_edit_singleline(&mut self.unifilar_pdf_path);
             if ui.button("Exporter l'unifilaire PDF...").clicked() {
                 self.export_unifilar_pdf_dialog();
@@ -3399,6 +3548,7 @@ impl eframe::App for EasyDraft {
             ui.label(&self.status);
         });
 
+        self.refresh_underlay_texture(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.view {
                 View::Plan2D => self.canvas(ui),
@@ -3996,6 +4146,56 @@ mod plan_editor_tests {
         assert!(pdf_data.len() > 200);
         let _ = std::fs::remove_file(json_path);
         let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
+    fn legacy_project_and_new_sheets_round_trip_and_export_together() {
+        let legacy = include_str!("../examples/maison-deux-pieces.json");
+        let project: Project = serde_json::from_str(legacy).unwrap();
+        let mut app = EasyDraft::default();
+        app.set_project(project);
+        let old_wall_count = app.plan.walls.len();
+        assert!(old_wall_count > 1);
+        assert_eq!(app.sheets[0].name, "Rez-de-chaussée");
+
+        app.add_sheet("1er étage".into());
+        assert!(app.plan.walls.is_empty());
+        app.snapshot();
+        app.plan.walls.push(Wall {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 2.0, y: 0.0 },
+            thickness_m: 0.15,
+        });
+        app.switch_sheet(0);
+        assert_eq!(app.plan.walls.len(), old_wall_count);
+        app.undo();
+        assert_eq!(app.active_sheet, 1);
+        assert!(app.plan.walls.is_empty());
+        app.redo();
+        assert_eq!(app.plan.walls.len(), 1);
+        app.add_sheet("Annexe".into());
+
+        let json = serde_json::to_string(&app.project()).unwrap();
+        let mut reopened = EasyDraft::default();
+        reopened.set_project(serde_json::from_str(&json).unwrap());
+        assert_eq!(reopened.active_sheet, 2);
+        assert!(reopened.plan.walls.is_empty());
+        assert_eq!(reopened.sheets[0].plan.walls.len(), old_wall_count);
+        assert_eq!(reopened.sheets[1].plan.walls.len(), 1);
+
+        let file = std::env::temp_dir().join(format!("easydraft-sheets-{}.pdf", std::process::id()));
+        reopened.pdf_path = file.to_string_lossy().into_owned();
+        reopened.export_pdf();
+        let pdf = std::fs::read(&file).unwrap();
+        let _ = std::fs::remove_file(file);
+        let pdf = String::from_utf8_lossy(&pdf);
+        assert!(pdf.contains("/Count 3"));
+        let ground_floor = pdf.find(r"(EasyDraft - Rez-de-chauss\351e)").unwrap();
+        let first_floor = pdf.find(r"(EasyDraft - 1er \351tage)").unwrap();
+        let annexe = pdf.find("(EasyDraft - Annexe)").unwrap();
+        assert!(ground_floor < first_floor && first_floor < annexe);
+        assert!(pdf[first_floor..annexe].contains("1 murs"));
+        assert!(pdf[annexe..].contains("0 murs"));
     }
 
     #[test]

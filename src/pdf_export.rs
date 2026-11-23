@@ -102,7 +102,25 @@ impl Canvas {
     }
 
     fn text_pt(&mut self, x: f32, y: f32, size: f32, text: &str, color: Rgb) {
-        let safe = text.replace('\\', "\\\\").replace('(', "\\(").replace(')', "\\)");
+        let mut safe = String::new();
+        for character in text.chars() {
+            match character {
+                '\\' | '(' | ')' => {
+                    safe.push('\\');
+                    safe.push(character);
+                }
+                ' '..='~' => safe.push(character),
+                '\u{a0}'..='\u{ff}' => {
+                    let _ = write!(safe, "\\{:03o}", character as u32);
+                }
+                'Œ' => safe.push_str("\\214"),
+                'œ' => safe.push_str("\\234"),
+                '’' => safe.push_str("\\222"),
+                '–' => safe.push_str("\\226"),
+                _ if character.is_whitespace() => safe.push(' '),
+                _ => safe.push('?'),
+            }
+        }
         let _ = writeln!(
             self.commands,
             "BT /F1 {:.2} Tf {:.3} {:.3} {:.3} rg {:.3} {:.3} Td ({}) Tj ET",
@@ -359,63 +377,30 @@ fn pdf_background(bg: &BackgroundPlan) -> Result<PdfBackgroundImage, String> {
     Ok(PdfBackgroundImage { jpeg, width, height })
 }
 
-/// Conserve la version sans image pour les exports et tests existants.
-fn build_pdf(stream: &str) -> Vec<u8> {
-    build_pdf_with_background(stream, None)
+#[cfg(test)]
+pub(crate) fn export_pdf(path: &str, plan: &Plan, show_dimensions: bool) -> Result<(), String> {
+    export_plan_sheets(path, [("Plan 2D", plan)], show_dimensions)
 }
 
-fn build_pdf_with_background(stream: &str, image: Option<&PdfBackgroundImage>) -> Vec<u8> {
-    let resources = if image.is_some() {
-        "/Resources << /Font << /F1 5 0 R >> /XObject << /Bg 6 0 R >> >>"
-    } else {
-        "/Resources << /Font << /F1 5 0 R >> >>"
-    };
-    let objects: [String; 5] = [
-        "<< /Type /Catalog /Pages 2 0 R >>".into(),
-        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(),
-        format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.0} {:.0}] {} /Contents 4 0 R >>",
-            PAGE_W, PAGE_H, resources,
-        ),
-        format!("<< /Length {} >>\nstream\n{}endstream", stream.len(), stream),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into(),
-    ];
-    let mut pdf_objects: Vec<Vec<u8>> = objects.iter()
-        .map(|object| object.as_bytes().to_vec()).collect();
-    if let Some(background) = image {
-        let mut object = format!(
-            "<< /Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {} >>\nstream\n",
-            background.width, background.height, background.jpeg.len(),
-        ).into_bytes();
-        object.extend_from_slice(&background.jpeg);
-        object.extend_from_slice(b"\nendstream");
-        pdf_objects.push(object);
-    }
-    let mut bytes = b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n".to_vec();
-    let mut offsets = vec![0];
-    for (i, object) in pdf_objects.iter().enumerate() {
-        offsets.push(bytes.len());
-        bytes.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
-        bytes.extend_from_slice(object);
-        bytes.extend_from_slice(b"\nendobj\n");
-    }
-    let xref_offset = bytes.len();
-    bytes.extend_from_slice(format!("xref\n0 {}\n", offsets.len()).as_bytes());
-    bytes.extend_from_slice(b"0000000000 65535 f \n");
-    for offset in offsets.iter().skip(1) {
-        bytes.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
-    }
-    bytes.extend_from_slice(
-        format!(
-            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
-            offsets.len(), xref_offset,
-        ).as_bytes(),
-    );
-    bytes
+/// Exporte une page A4 paysage par feuille, ajustée au dessin de la feuille.
+pub fn export_plan_sheets<'a>(
+    path: &str,
+    sheets: impl IntoIterator<Item = (&'a str, &'a Plan)>,
+    show_dimensions: bool,
+) -> Result<(), String> {
+    let pages = sheets.into_iter().map(|(name, plan)| {
+        render_plan_page(name, plan, show_dimensions)
+            .map_err(|error| format!("{name} : {error}"))
+    }).collect::<Result<Vec<_>, _>>()?;
+    let bytes = build_pdf_document(pages.iter().map(|(stream, image)| {
+        (stream.as_str(), image.as_ref())
+    }));
+    std::fs::write(path, bytes).map_err(|err| format!("Export PDF impossible : {err}"))
 }
 
-/// Exporte en une page A4 paysage, mise a l'echelle pour tenir sur la page.
-pub fn export_pdf(path: &str, plan: &Plan, show_dimensions: bool) -> Result<(), String> {
+fn render_plan_page(
+    name: &str, plan: &Plan, show_dimensions: bool,
+) -> Result<(String, Option<PdfBackgroundImage>), String> {
     let image = plan.background.as_ref().map(pdf_background).transpose()?;
     let mut pdf = Canvas::new(plan);
     // Dessiner le fond de plan raster AVANT les symboles et la geometrie
@@ -466,7 +451,12 @@ pub fn export_pdf(path: &str, plan: &Plan, show_dimensions: bool) -> Result<(), 
     pdf.symbols(plan);
 
     // Le texte du titre est ajoute en coordonnees de page, sans transformation du plan.
-    pdf.text_pt(MARGIN, PAGE_H - 34.0, 18.0, "EasyDraft - Plan 2D", DARK);
+    let mut title: String = name.chars().take(60).collect();
+    if name.chars().count() > 60 {
+        title.push_str("...");
+    }
+    let title_size = if title.chars().count() > 38 { 11.0 } else { 16.0 };
+    pdf.text_pt(MARGIN, PAGE_H - 34.0, title_size, &format!("EasyDraft - {title}"), DARK);
     pdf.text_pt(
         MARGIN, PAGE_H - 53.0, 9.0,
         &format!(
@@ -489,8 +479,7 @@ pub fn export_pdf(path: &str, plan: &Plan, show_dimensions: bool) -> Result<(), 
         ),
         DIM,
     );
-    let bytes = build_pdf_with_background(&pdf.commands, image.as_ref());
-    std::fs::write(path, bytes).map_err(|err| format!("Export PDF impossible : {err}"))
+    Ok((pdf.commands, image))
 }
 
 
@@ -888,29 +877,53 @@ fn raw_pdf_circle(out: &mut String, x: f32, y: f32, r: f32, rgb: Rgb) {
 }
 
 fn build_pdf_pages(pages: &[String]) -> Vec<u8> {
-    let font_id = 3 + pages.len() * 2;
-    let page_refs = (0..pages.len())
-        .map(|index| format!("{} 0 R", 3 + index * 2))
-        .collect::<Vec<_>>().join(" ");
+    build_pdf_document(pages.iter().map(|stream| (stream.as_str(), None)))
+}
+
+fn build_pdf_document<'a>(
+    pages: impl IntoIterator<Item = (&'a str, Option<&'a PdfBackgroundImage>)>,
+) -> Vec<u8> {
     let mut objects = vec![
-        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
-        format!("<< /Type /Pages /Kids [{}] /Count {} >>", page_refs, pages.len()),
+        b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+        Vec::new(), // Arbre des pages, renseigné une fois les pages numérotées.
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>".to_vec(),
     ];
-    for (index, stream) in pages.iter().enumerate() {
-        let content_id = 4 + index * 2;
+    let mut page_refs = Vec::new();
+    for (stream, image) in pages {
+        let page_id = objects.len() + 1;
+        let content_id = page_id + 1;
+        let resources = if image.is_some() {
+            format!("/Font << /F1 3 0 R >> /XObject << /Bg {} 0 R >>", page_id + 2)
+        } else {
+            "/Font << /F1 3 0 R >>".into()
+        };
+        page_refs.push(format!("{page_id} 0 R"));
         objects.push(format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.0} {:.0}] /Resources << /Font << /F1 {} 0 R >> >> /Contents {} 0 R >>",
-            PAGE_W, PAGE_H, font_id, content_id
-        ));
-        objects.push(format!("<< /Length {} >>\nstream\n{}endstream", stream.len(), stream));
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.0} {:.0}] /Resources << {} >> /Contents {} 0 R >>",
+            PAGE_W, PAGE_H, resources, content_id
+        ).into_bytes());
+        objects.push(format!("<< /Length {} >>\nstream\n{}endstream", stream.len(), stream).into_bytes());
+        if let Some(background) = image {
+            let mut object = format!(
+                "<< /Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {} >>\nstream\n",
+                background.width, background.height, background.jpeg.len(),
+            ).into_bytes();
+            object.extend_from_slice(&background.jpeg);
+            object.extend_from_slice(b"\nendstream");
+            objects.push(object);
+        }
     }
-    objects.push("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned());
+    objects[1] = format!(
+        "<< /Type /Pages /Kids [{}] /Count {} >>", page_refs.join(" "), page_refs.len(),
+    ).into_bytes();
 
     let mut bytes = b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n".to_vec();
     let mut offsets = vec![0usize];
     for (index, obj) in objects.iter().enumerate() {
         offsets.push(bytes.len());
-        bytes.extend_from_slice(format!("{} 0 obj\n{}\nendobj\n", index+1, obj).as_bytes());
+        bytes.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+        bytes.extend_from_slice(obj);
+        bytes.extend_from_slice(b"\nendobj\n");
     }
     let xref = bytes.len();
     bytes.extend_from_slice(format!("xref\n0 {}\n", offsets.len()).as_bytes());
@@ -1086,10 +1099,13 @@ mod tests {
             end: Point { x: 3.0, y: 0.0 },
             thickness_m: 0.15,
         });
-        export_pdf(output.to_str().unwrap(), &plan, true).unwrap();
+        let other = Plan::default();
+        export_plan_sheets(output.to_str().unwrap(), [("Cave", &plan), ("Grenier", &other)], true)
+            .unwrap();
         let pdf = std::fs::read(&output).unwrap();
-        assert!(pdf.windows(15).any(|piece| piece == b"/Subtype /Image"));
-        assert!(pdf.windows(6).any(|piece| piece == b"/Bg Do"));
+        assert_eq!(pdf.windows(15).filter(|piece| *piece == b"/Subtype /Image").count(), 1);
+        assert_eq!(pdf.windows(6).filter(|piece| *piece == b"/Bg Do").count(), 1);
+        assert!(pdf.windows(b"/Count 2".len()).any(|piece| piece == b"/Count 2"));
         assert!(pdf.ends_with(b"%%EOF\n"));
         let _ = std::fs::remove_file(&output);
         let _ = std::fs::remove_file(&picture);
@@ -1112,7 +1128,7 @@ mod tests {
         let mut canvas = Canvas::new(&plan);
         canvas.wall(0, &plan.walls[0], &[], true);
         canvas.stair(&plan.stairs[0]);
-        let pdf = build_pdf(&canvas.commands);
+        let pdf = build_pdf_pages(&[canvas.commands]);
         assert!(pdf.starts_with(b"%PDF-1.4"));
         assert!(pdf.ends_with(b"%%EOF\n"));
         assert!(pdf.windows(b"/MediaBox".len()).any(|w| w == b"/MediaBox"));
