@@ -43,6 +43,7 @@ enum Tool {
     SelectWall,
     Door,
     Window,
+    Passage,
     Stair,
     Outlet,
     Switch,
@@ -87,6 +88,7 @@ struct EasyDraft {
     new_wall_thickness_cm: f32,
     new_door_width_cm: f32,
     new_window_width_cm: f32,
+    new_passage_width_cm: f32,
     new_stair_width_cm: f32,
     new_stair_steps: u16,
     door_hinge_right: bool,
@@ -127,6 +129,7 @@ impl Default for EasyDraft {
             new_wall_thickness_cm: DEFAULT_WALL_THICKNESS_M * 100.0,
             new_door_width_cm: 90.0,
             new_window_width_cm: 120.0,
+            new_passage_width_cm: 110.0,
             new_stair_width_cm: 100.0,
             new_stair_steps: 12,
             door_hinge_right: false,
@@ -227,6 +230,9 @@ fn draw_opening(
                 let shift = normal * (width_px * offset);
                 painter.line_segment([left + shift, right + shift], glass);
             }
+        }
+        OpeningKind::Passage => {
+            // L'ouverture reste vide : elle definit toutefois une limite entre pieces.
         }
         OpeningKind::Door => {
             let hinge = if opening.hinge_right { right } else { left };
@@ -581,7 +587,8 @@ impl EasyDraft {
                     if let Some(wall) = updated.walls.get(opening.wall_index) {
                         let along = wall.projected_distance_m(cursor) - wall.projected_distance_m(from);
                         let center = ((opening.center_m + along) / self.snap_m).round() * self.snap_m;
-                        let min_center = opening.width_m / 2.0 + 0.05;
+                        let margin = if opening.kind == OpeningKind::Passage { 0.0 } else { 0.05 };
+                        let min_center = opening.width_m / 2.0 + margin;
                         let max_center = wall.length_m() - min_center;
                         if min_center <= max_center {
                             updated.move_opening(index, center.clamp(min_center, max_center))
@@ -813,6 +820,7 @@ impl EasyDraft {
                 ui.heading(match opening.kind {
                     OpeningKind::Door => "Porte",
                     OpeningKind::Window => "Fenetre",
+                    OpeningKind::Passage => "Passage libre",
                 });
                 ui.small("Glisse le symbole sur le mur pour le repositionner.");
                 let mut center = opening.center_m;
@@ -827,6 +835,7 @@ impl EasyDraft {
                 let limits = match opening.kind {
                     OpeningKind::Door => 50.0..=200.0,
                     OpeningKind::Window => 40.0..=400.0,
+                    OpeningKind::Passage => 40.0..=400.0,
                 };
                 changed |= ui.add(egui::DragValue::new(&mut width_cm)
                     .range(limits).speed(1.0).suffix(" cm")).changed();
@@ -1187,17 +1196,17 @@ impl EasyDraft {
                     self.status = "Clique le deuxieme point pour definir la montee".into();
                 }
             }
-            Tool::Door | Tool::Window => {
+            Tool::Door | Tool::Window | Tool::Passage => {
                 if let Some(wall_index) = self.find_wall(position, ppm) {
-                    let kind = if self.tool == Tool::Door {
-                        OpeningKind::Door
-                    } else {
-                        OpeningKind::Window
+                    let kind = match self.tool {
+                        Tool::Door => OpeningKind::Door,
+                        Tool::Window => OpeningKind::Window,
+                        _ => OpeningKind::Passage,
                     };
-                    let width_m = if self.tool == Tool::Door {
-                        self.new_door_width_cm / 100.0
-                    } else {
-                        self.new_window_width_cm / 100.0
+                    let width_m = match self.tool {
+                        Tool::Door => self.new_door_width_cm / 100.0,
+                        Tool::Window => self.new_window_width_cm / 100.0,
+                        _ => self.new_passage_width_cm / 100.0,
                     };
                     // On valide avant de creer une entree dans l'historique d'annulation.
                     let mut updated = self.plan.clone();
@@ -1216,9 +1225,25 @@ impl EasyDraft {
                             self.status = match kind {
                                 OpeningKind::Door => format!("Porte de {:.0} cm ajoutee", width_m * 100.0),
                                 OpeningKind::Window => format!("Fenetre de {:.0} cm ajoutee", width_m * 100.0),
+                                OpeningKind::Passage => format!("Passage libre de {:.0} cm ajoute : pieces conservees", width_m * 100.0),
                             };
                         }
                         Err(err) => self.status = err.into(),
+                    }
+                } else if self.tool == Tool::Passage {
+                    // Les murs ont deja ete separes pour dessiner un passage : referme
+                    // la limite topologique, mais conserve graphiquement le vide.
+                    let mut updated = self.plan.clone();
+                    match updated.bridge_gap_with_passage(position) {
+                        Ok(width) => {
+                            self.snapshot();
+                            self.plan = updated;
+                            self.status = format!(
+                                "Passage de {:.2} m relie : separation des pieces retablie",
+                                width
+                            );
+                        }
+                        Err(error) => self.status = error.into(),
                     }
                 } else {
                     self.status = "Clique sur un mur pour y placer l'ouverture".into();
@@ -1669,6 +1694,9 @@ impl eframe::App for EasyDraft {
             if ui.selectable_label(self.tool == Tool::Window, "Fenetre").clicked() {
                 self.select_tool(Tool::Window);
             }
+            if ui.selectable_label(self.tool == Tool::Passage, "Passage libre").clicked() {
+                self.select_tool(Tool::Passage);
+            }
             if ui.selectable_label(self.tool == Tool::Stair, "Escalier").clicked() {
                 self.select_tool(Tool::Stair);
             }
@@ -1708,6 +1736,15 @@ impl eframe::App for EasyDraft {
                 ui.add(egui::Slider::new(&mut self.new_window_width_cm, 40.0..=400.0)
                     .step_by(5.0).suffix(" cm"));
                 ui.small("Clique sur un mur pour inserer la fenetre.");
+                ui.separator();
+            }
+            if self.view == View::Plan2D && self.tool == Tool::Passage {
+                ui.label("Largeur du passage libre");
+                ui.add(egui::Slider::new(&mut self.new_passage_width_cm, 40.0..=400.0)
+                    .step_by(5.0).suffix(" cm"));
+                ui.small("Sur un mur : ouvre le passage sans porte.");
+                ui.small("Dans un vide entre murs alignes : relie les 2 bouts sans mur visible.");
+                ui.small("Les pieces restent distinctes pour le calcul des surfaces.");
                 ui.separator();
             }
             ui.label("Epaisseur des nouveaux murs");
@@ -1761,6 +1798,10 @@ impl eframe::App for EasyDraft {
             ui.label(format!(
                 "Fenetres : {}",
                 self.plan.openings.iter().filter(|o| o.kind == OpeningKind::Window).count()
+            ));
+            ui.label(format!(
+                "Passages : {}",
+                self.plan.openings.iter().filter(|o| o.kind == OpeningKind::Passage).count()
             ));
             ui.label(format!("Escaliers : {}", self.plan.stairs.len()));
             ui.label(format!("Symboles : {}", self.plan.symbols.len()));
