@@ -292,6 +292,20 @@ Les mouvements à la souris sont actuellement disponibles pour les **murs, porte
 
 EasyDraft détecte maintenant les **espaces fermés** formés par les murs. Il prend en compte les intersections et les jonctions en T pour séparer plusieurs pièces partageant une cloison.
 
+**Correction des petits décalages de dessin :** deux murs paraissent parfois
+raccordés à l'écran alors que leurs axes sont séparés de quelques millimètres.
+La détection des pièces relie désormais virtuellement les extrémités de cloisons
+qui arrivent presque perpendiculairement à un autre mur, si l'écart est
+**au maximum de 2 cm**. Ces très courts liens ne sont ni visibles ni ajoutés
+au fichier JSON : les dimensions et les objets existants restent inchangés.
+
+Une **véritable ouverture** de plusieurs dizaines de centimètres n'est jamais
+fermée par cette tolérance. Pour faire compter deux pièces reliées par un
+passage libre, créez une ouverture « Passage libre » sur un mur continu ou
+reliez le vide avec l'outil dédié. Si les murs sont plus éloignés que 2 cm,
+raccordez explicitement leurs extrémités avec l'outil **Sélection**.
+
+
 - **Surface intérieure estimée en m²** calculée à partir des faces intérieures des murs (épaisseurs comprises dans le calcul).
 - **Dimensions intérieures** pour une pièce rectangulaire, ou encombrement selon X/Y pour une forme non rectangulaire.
 - **Nom personnalisable** : sélectionner l'outil « Sélectionner un élément », puis cliquer **à l'intérieur d'une pièce**. Le panneau « Propriétés de la sélection » permet de saisir son nom (Salon, Cuisine, Chambre...).
