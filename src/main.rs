@@ -238,7 +238,7 @@ impl SelectionSet {
             DragTarget::Opening(i) => self.openings.contains(&i),
             DragTarget::Stair(i) => self.stairs.contains(&i),
             DragTarget::Symbol(i) => self.symbols.contains(&i),
-            DragTarget::Group => false,
+            DragTarget::Group | DragTarget::Joint => false,
         }
     }
 
@@ -1214,6 +1214,12 @@ impl EasyDraft {
         let mut updated = drag.original.clone();
 
         let outcome = match target {
+            DragTarget::Joint => {
+                // Tous les sommets de la selection convergent vers une seule
+                // coordonnee EXACTE, aimantee aux murs non selectionnes.
+                let destination = self.snap_joint_destination(cursor, ppm);
+                weld_wall_handles(&mut updated, &self.selected_handles, destination)
+            }
             DragTarget::Opening(index) => {
                 if let Some(opening) = updated.openings.get(index) {
                     if let Some(wall) = updated.walls.get(opening.wall_index) {
@@ -1284,6 +1290,12 @@ impl EasyDraft {
         match outcome {
             Ok(()) => {
                 let moved = match target {
+                    DragTarget::Joint => self.selected_handles.iter().any(|&handle| {
+                        match (handle.position(&drag.original), handle.position(&updated)) {
+                            (Some(before), Some(after)) => before.distance_to(after) > 0.0001,
+                            _ => false,
+                        }
+                    }),
                     DragTarget::Symbol(index) => {
                         let old = drag.original.symbols[index].position;
                         let now = updated.symbols[index].position;
@@ -1337,7 +1349,11 @@ impl EasyDraft {
                 self.undo.push(session.original);
                 if self.undo.len() > 100 { self.undo.remove(0); }
                 self.redo.clear();
-                self.status = "Deplacement termine : derniere position valide conservee (Ctrl+Z pour annuler)".into();
+                self.status = if matches!(session.target, DragTarget::Joint) {
+                    "Sommets raccordes au meme point (Ctrl+Z pour annuler)".into()
+                } else {
+                    "Deplacement termine : derniere position valide conservee (Ctrl+Z pour annuler)".into()
+                };
             }
         }
     }
