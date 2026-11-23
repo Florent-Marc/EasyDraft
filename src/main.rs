@@ -3693,6 +3693,51 @@ mod plan_editor_tests {
     }
 
     #[test]
+    fn passage_tool_fixes_an_existing_gap_even_when_click_is_near_a_wall() {
+        let mut app = EasyDraft::default();
+        app.tool = Tool::Passage;
+        // L'enveloppe est fermee, mais sa cloison a un passage deja dessine
+        // dans le vide. Auparavant un clic pres du bord touchait un mur
+        // voisin et ne reparait pas la detection des pieces.
+        app.plan.walls = vec![
+            Wall { start: Point{x:0.0,y:0.0}, end: Point{x:6.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:6.0,y:0.0}, end: Point{x:6.0,y:4.0}, thickness_m:0.15 },
+            Wall { start: Point{x:6.0,y:4.0}, end: Point{x:0.0,y:4.0}, thickness_m:0.15 },
+            Wall { start: Point{x:0.0,y:4.0}, end: Point{x:0.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:3.0,y:0.0}, end: Point{x:3.0,y:1.5}, thickness_m:0.15 },
+            Wall { start: Point{x:3.0,y:2.5}, end: Point{x:3.0,y:4.0}, thickness_m:0.15 },
+        ];
+        assert_eq!(rooms::detect_rooms(&app.plan.walls).len(), 1);
+        let click = Point { x: 3.0, y: 1.58 };
+        assert!(app.find_wall(click, 80.0).is_some());
+        app.place(click, 80.0);
+        assert_eq!(rooms::detect_rooms(&app.plan.walls).len(), 2);
+        assert_eq!(app.plan.openings.len(), 1);
+        assert_eq!(app.plan.openings[0].kind, OpeningKind::Passage);
+        assert_eq!(app.undo.len(), 1);
+        app.undo();
+        assert_eq!(rooms::detect_rooms(&app.plan.walls).len(), 1);
+    }
+
+    #[test]
+    fn passage_tool_closes_t_gap_and_keeps_the_opening_visible() {
+        let mut app = EasyDraft::default();
+        app.tool = Tool::Passage;
+        app.plan.walls = vec![
+            Wall { start: Point{x:0.0,y:0.0}, end: Point{x:6.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:6.0,y:0.0}, end: Point{x:6.0,y:4.0}, thickness_m:0.15 },
+            Wall { start: Point{x:6.0,y:4.0}, end: Point{x:0.0,y:4.0}, thickness_m:0.15 },
+            Wall { start: Point{x:0.0,y:4.0}, end: Point{x:0.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:3.0,y:0.0}, end: Point{x:3.0,y:3.0}, thickness_m:0.15 },
+        ];
+        assert_eq!(rooms::detect_rooms(&app.plan.walls).len(), 1);
+        app.place(Point { x: 3.0, y: 3.6 }, 80.0);
+        assert_eq!(rooms::detect_rooms(&app.plan.walls).len(), 2);
+        assert_eq!(app.plan.openings.len(), 1);
+        assert_eq!(app.plan.openings[0].kind, OpeningKind::Passage);
+    }
+
+    #[test]
     fn wall_auto_switches_to_selection_after_second_click() {
         let mut app = EasyDraft::default();
         assert_eq!(app.tool, Tool::Wall);
