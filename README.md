@@ -2,6 +2,31 @@
 
 **EasyDraft** est un prototype en **Rust + egui/eframe** pour dessiner des plans de maison en 2D et construire des schémas électriques de travail.
 
+## Nouvelle interface CAO - espace de travail en trois colonnes
+
+La fenetre est organisee comme un outil de dessin technique :
+
+- **En haut** : bascule **Schema unifilaire / Plan de situation / Dossier RGIE**, menus Fichier, Edition et Export, puis commandes rapides de l'espace courant.
+- **A gauche** : bibliotheque de composants **recherchable** et organisee par categories (dessin, construction, electricite). Choisir un outil l'active reellement sur le canvas.
+- **Au centre** : feuille de travail ; le plan est dessinable a la souris, le schema unifilaire affiche une vue d'ensemble des departements par differentiel.
+- **A droite** : **Parametres** contextuels (selection, outil courant, calques, circuits, dossier et export). Les formulaires electriques lourds sont separes du dessin.
+
+### Plan de situation avec fond de plan image
+
+1. Ouvrir **Plan de situation**, puis **Parametres > Plan > Importer une image...**.
+2. Choisir un **PNG, JPG, JPEG ou BMP** (la lecture directe d'un PDF comme fond n'est pas encore prise en charge).
+3. Ajuster **Largeur reelle de l'image**, **Opacite**, **Position X/Y** et la rotation par pas de 90 degres.
+4. Superposer les murs, les prises, les interrupteurs et les points lumineux. Les calques, la grille, les cotes et les filtres de circuits peuvent etre affiches ou masques.
+5. Exporter le plan en PDF : **le fond raster est inclus sous les objets vectoriels** et est precompose selon son opacite.
+
+La sauvegarde JSON garde le **chemin vers le fichier image externe**, pas les pixels : si le JSON est ouvert sur un autre ordinateur ou si l'image est deplacee, il faut remettre l'image a son ancien emplacement ou la reimporter. Le PDF exporte **contient** l'image, lui, et reste portable.
+
+### Schema unifilaire
+
+La vue d'ensemble est maintenant une **feuille technique** avec un rail de depart par dispositif differentiel, chaque circuit et ses charges calculees a partir des donnees du plan. Les circuits **sans differentiel attribue** sont representes explicitement **sans liaison a l'amont**. Les vues detaillees du tableau et les feuilles individuelles par circuit sont accessibles sous des sections repliables.
+
+> La disposition graphique n'est pas une simulation physique de conducteurs, ni une preuve de conformite RGIE. Les protections et leurs valeurs doivent etre declarees d'apres l'installation reelle.
+
 ## Installation
 
 Installez [Rust](https://rustup.rs/), puis :

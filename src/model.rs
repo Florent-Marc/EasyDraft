@@ -365,8 +365,25 @@ pub struct RoomLabel {
     pub name: String,
 }
 
+/// Image d'un fond de plan, conservee par chemin externe au JSON.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BackgroundPlan {
+    pub path: String,
+    /// Largeur reelle de l'image importee, en metres.
+    pub width_m: f32,
+    /// Coin superieur gauche dans le repere du plan.
+    pub origin: Point,
+    /// Alpha compris entre 0 et 1.
+    pub opacity: f32,
+    /// Nombre de rotations de 90 degres dans le sens horaire.
+    pub rotation_quarters: u8,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Plan {
+    /// Image sous-jacente au plan de situation, facultative et sans effet sur les murs.
+    #[serde(default)]
+    pub background: Option<BackgroundPlan>,
     pub walls: Vec<Wall>,
     pub symbols: Vec<ElectricalSymbol>,
     #[serde(default)]
@@ -1285,6 +1302,24 @@ mod tests {
         assert_eq!(restored.openings[0].center_m, 2.0);
         let undo: Plan = serde_json::from_str(&old_json).unwrap();
         assert_eq!(undo.walls[0].start.y, 0.0);
+    }
+
+    #[test]
+    fn background_settings_round_trip_and_old_json_compatibility() {
+        let legacy: Plan = serde_json::from_str(r#"{"walls":[],"symbols":[]}"#).unwrap();
+        assert!(legacy.background.is_none());
+        let mut plan = Plan::default();
+        plan.background = Some(BackgroundPlan {
+            path: "etage.png".into(),
+            width_m: 15.0,
+            origin: Point { x: -7.5, y: -5.0 },
+            opacity: 0.45,
+            rotation_quarters: 1,
+        });
+        let copy: Plan = serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
+        let bg = copy.background.unwrap();
+        assert_eq!(bg.path, "etage.png");
+        assert_eq!(bg.rotation_quarters, 1);
     }
 
     #[test]

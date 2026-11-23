@@ -10,3 +10,5 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Dialogues natifs Windows / macOS ; portail XDG sous Linux.
 rfd = "=0.15.4"
+# Decode les fonds de plan PNG/JPG/BMP en textures egui.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp"] }

@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 
-use crate::model::{ElectricalKind, Opening, OpeningKind, Plan, Point, Stair, Wall};
+use crate::model::{BackgroundPlan, ElectricalKind, Opening, OpeningKind, Plan, Point, Stair, Wall};
 use crate::rgie_symbols::{self, Primitive};
 
 const PAGE_W: f32 = 842.0; // A4 paysage en points PDF
@@ -54,6 +54,21 @@ impl Canvas {
         }
         for symbol in &plan.symbols {
             include(symbol.position, 0.25);
+        }
+        if let Some(bg) = plan.background.as_ref() {
+            if let Ok((mut width_px, mut height_px)) = image::image_dimensions(&bg.path) {
+                if bg.rotation_quarters % 2 == 1 {
+                    std::mem::swap(&mut width_px, &mut height_px);
+                }
+                if width_px > 0 && bg.width_m.is_finite() && bg.width_m > 0.0 {
+                    let height_m = bg.width_m * height_px as f32 / width_px as f32;
+                    include(bg.origin, 0.0);
+                    include(Point {
+                        x: bg.origin.x + bg.width_m,
+                        y: bg.origin.y + height_m,
+                    }, 0.0);
+                }
+            }
         }
         if !min_x.is_finite() {
             min_x = -1.0;
@@ -312,24 +327,77 @@ fn ascii_pdf_text(input: &str) -> String {
     }).collect()
 }
 
+/// JPEG embarque dans le PDF, avec l'opacite precomposee sur du blanc
+/// (pas de transparence PDF ambiguë).
+struct PdfBackgroundImage {
+    jpeg: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
+fn pdf_background(bg: &BackgroundPlan) -> Result<PdfBackgroundImage, String> {
+    let image = image::open(&bg.path)
+        .map_err(|error| format!("Fond de plan introuvable ou illisible : {error}"))?;
+    let rgb = image.to_rgb8();
+    let mut rgb = match bg.rotation_quarters % 4 {
+        1 => image::imageops::rotate90(&rgb),
+        2 => image::imageops::rotate180(&rgb),
+        3 => image::imageops::rotate270(&rgb),
+        _ => rgb,
+    };
+    let opacity = bg.opacity.clamp(0.0, 1.0);
+    for px in rgb.pixels_mut() {
+        for channel in &mut px.0 {
+            *channel = (*channel as f32 * opacity + 255.0 * (1.0 - opacity)).round() as u8;
+        }
+    }
+    let (width, height) = rgb.dimensions();
+    let mut jpeg = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
+        .encode(rgb.as_raw(), width, height, image::ExtendedColorType::Rgb8)
+        .map_err(|error| format!("Encodage du fond de plan PDF impossible : {error}"))?;
+    Ok(PdfBackgroundImage { jpeg, width, height })
+}
+
+/// Conserve la version sans image pour les exports et tests existants.
 fn build_pdf(stream: &str) -> Vec<u8> {
-    let content = format!("<< /Length {} >>\nstream\n{}endstream", stream.len(), stream);
-    let objects = [
-        "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
-        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+    build_pdf_with_background(stream, None)
+}
+
+fn build_pdf_with_background(stream: &str, image: Option<&PdfBackgroundImage>) -> Vec<u8> {
+    let resources = if image.is_some() {
+        "/Resources << /Font << /F1 5 0 R >> /XObject << /Bg 6 0 R >> >>"
+    } else {
+        "/Resources << /Font << /F1 5 0 R >> >>"
+    };
+    let objects: [String; 5] = [
+        "<< /Type /Catalog /Pages 2 0 R >>".into(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(),
         format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.0} {:.0}] \
-             /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
-            PAGE_W, PAGE_H
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {:.0} {:.0}] {} /Contents 4 0 R >>",
+            PAGE_W, PAGE_H, resources,
         ),
-        content,
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+        format!("<< /Length {} >>\nstream\n{}endstream", stream.len(), stream),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into(),
     ];
+    let mut pdf_objects: Vec<Vec<u8>> = objects.iter()
+        .map(|object| object.as_bytes().to_vec()).collect();
+    if let Some(background) = image {
+        let mut object = format!(
+            "<< /Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {} >>\nstream\n",
+            background.width, background.height, background.jpeg.len(),
+        ).into_bytes();
+        object.extend_from_slice(&background.jpeg);
+        object.extend_from_slice(b"\nendstream");
+        pdf_objects.push(object);
+    }
     let mut bytes = b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n".to_vec();
     let mut offsets = vec![0];
-    for (i, object) in objects.iter().enumerate() {
+    for (i, object) in pdf_objects.iter().enumerate() {
         offsets.push(bytes.len());
-        bytes.extend_from_slice(format!("{} 0 obj\n{}\nendobj\n", i + 1, object).as_bytes());
+        bytes.extend_from_slice(format!("{} 0 obj\n", i + 1).as_bytes());
+        bytes.extend_from_slice(object);
+        bytes.extend_from_slice(b"\nendobj\n");
     }
     let xref_offset = bytes.len();
     bytes.extend_from_slice(format!("xref\n0 {}\n", offsets.len()).as_bytes());
@@ -340,7 +408,7 @@ fn build_pdf(stream: &str) -> Vec<u8> {
     bytes.extend_from_slice(
         format!(
             "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
-            offsets.len(), xref_offset
+            offsets.len(), xref_offset,
         ).as_bytes(),
     );
     bytes
@@ -348,7 +416,19 @@ fn build_pdf(stream: &str) -> Vec<u8> {
 
 /// Exporte en une page A4 paysage, mise a l'echelle pour tenir sur la page.
 pub fn export_pdf(path: &str, plan: &Plan, show_dimensions: bool) -> Result<(), String> {
+    let image = plan.background.as_ref().map(pdf_background).transpose()?;
     let mut pdf = Canvas::new(plan);
+    // Dessiner le fond de plan raster AVANT les symboles et la geometrie
+    // vectorielle ; l'opacity est precomposee dans le JPEG embarque.
+    if let (Some(bg), Some(raster)) = (plan.background.as_ref(), image.as_ref()) {
+        let (x, top_y) = pdf.xy(bg.origin);
+        let w = bg.width_m * pdf.scale;
+        let h = w * raster.height as f32 / raster.width.max(1) as f32;
+        let _ = writeln!(pdf.commands,
+            "q {:.3} 0 0 {:.3} {:.3} {:.3} cm /Bg Do Q",
+            w, h, x, top_y - h
+        );
+    }
     let _ = writeln!(pdf.commands, "0 J 0 j"); // extremites nettes et angles miter
     for (index, wall) in plan.walls.iter().enumerate() {
         pdf.wall(index, wall, &plan.openings, show_dimensions);
@@ -409,7 +489,7 @@ pub fn export_pdf(path: &str, plan: &Plan, show_dimensions: bool) -> Result<(), 
         ),
         DIM,
     );
-    let bytes = build_pdf(&pdf.commands);
+    let bytes = build_pdf_with_background(&pdf.commands, image.as_ref());
     std::fs::write(path, bytes).map_err(|err| format!("Export PDF impossible : {err}"))
 }
 
@@ -984,6 +1064,35 @@ mod tests {
         plan.set_circuit_differential(1, Some(d)).unwrap();
         let connected = board_pdf_pages(&plan).join("\n");
         assert!(!connected.contains("DDR NON ATTRIBUE"));
+    }
+
+    #[test]
+    fn export_plan_embeds_background_image_with_vector_walls() {
+        let filename = format!("easydraft-bg-test-{}", std::process::id());
+        let picture = std::env::temp_dir().join(format!("{filename}.png"));
+        let output = std::env::temp_dir().join(format!("{filename}.pdf"));
+        image::RgbImage::from_pixel(80, 50, image::Rgb([80, 140, 190]))
+            .save(&picture).unwrap();
+        let mut plan = Plan::default();
+        plan.background = Some(BackgroundPlan {
+            path: picture.to_string_lossy().into_owned(),
+            width_m: 10.0,
+            origin: Point { x: -5.0, y: -3.125 },
+            opacity: 0.4,
+            rotation_quarters: 1,
+        });
+        plan.walls.push(Wall {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 3.0, y: 0.0 },
+            thickness_m: 0.15,
+        });
+        export_pdf(output.to_str().unwrap(), &plan, true).unwrap();
+        let pdf = std::fs::read(&output).unwrap();
+        assert!(pdf.windows(15).any(|piece| piece == b"/Subtype /Image"));
+        assert!(pdf.windows(6).any(|piece| piece == b"/Bg Do"));
+        assert!(pdf.ends_with(b"%%EOF\n"));
+        let _ = std::fs::remove_file(&output);
+        let _ = std::fs::remove_file(&picture);
     }
 
     #[test]
