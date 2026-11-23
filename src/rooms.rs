@@ -467,6 +467,82 @@ mod tests {
         assert!(plan.lighting_connection_is_valid(&plan.lighting_connections[0]));
     }
 
+    /// Donnees de test entierement synthetiques : le fichier utilisateur
+    /// fourni pour diagnostiquer les ecarts n'est pas stocke dans le depot.
+    #[test]
+    fn synthetic_plan_six_detected_rooms_becomes_eight_after_micro_joins() {
+        // Plan 12 x 8 avec 5 pieces en bas et 3 en haut.
+        // Deux cloisons en haut s'arretent respectivement a 10 et 8 mm
+        // d'une cloison horizontale. Auparavant seulement 6 faces etaient
+        // reconnues, maintenant 8 ; aucune coordonnee du plan ne change.
+        let walls = vec![
+            wall(0.0,0.0,12.0,0.0,0.15),
+            wall(12.0,0.0,12.0,8.0,0.15),
+            wall(12.0,8.0,0.0,8.0,0.15),
+            wall(0.0,8.0,0.0,0.0,0.15),
+            wall(0.0,4.0,12.0,4.0,0.15),
+            wall(3.0,0.0,3.0,3.990,0.15),
+            wall(6.0,0.0,6.0,3.992,0.15),
+            wall(2.0,4.0,2.0,8.0,0.15),
+            wall(4.0,4.0,4.0,8.0,0.15),
+            wall(6.0,4.0,6.0,8.0,0.15),
+            wall(8.0,4.0,8.0,8.0,0.15),
+        ];
+        let before: Vec<(Point, Point)> = walls.iter()
+            .map(|w| (w.start, w.end)).collect();
+        assert_eq!(detect_rooms_strict(&walls).len(), 6);
+        assert_eq!(detect_rooms(&walls).len(), 8);
+        assert_eq!(walls.iter().map(|w| (w.start, w.end)).collect::<Vec<_>>(), before);
+        let mut plan = crate::model::Plan::default();
+        plan.walls = walls;
+        // Un passage libre reste physiquement ouvert, mais son mur central
+        // fournit la frontiere fonctionnelle entre deux pieces.
+        plan.add_opening(
+            5, Point { x: 3.0, y: 2.0 }, 1.0,
+            crate::model::OpeningKind::Passage, false, false, 0.05,
+        ).unwrap();
+        assert_eq!(detect_rooms(&plan.walls).len(), 8);
+        let json = serde_json::to_string(&plan).unwrap();
+        let restored: crate::model::Plan = serde_json::from_str(&json).unwrap();
+        assert_eq!(detect_rooms(&restored.walls).len(), 8);
+    }
+
+    #[test]
+    fn actual_doorway_gap_is_not_automatically_closed() {
+        let mut walls = square();
+        // Un mur exterieur fini 30 cm avant son voisin :
+        // un vrai passage non modelise, et non une faute de precision.
+        walls[0].end = Point { x: 3.7, y: 0.0 };
+        assert!(detect_rooms(&walls).is_empty());
+        assert!(tiny_room_junctions(&walls).is_empty());
+    }
+
+    #[test]
+    fn close_parallel_walls_remain_distinct_and_do_not_merge() {
+        let walls = vec![
+            wall(0.0,0.0,3.0,0.0,0.15),
+            wall(0.0,0.015,3.0,0.015,0.15),
+        ];
+        assert_eq!(tiny_room_junctions(&walls).len(), 0);
+        assert!(detect_rooms(&walls).is_empty());
+    }
+
+    #[test]
+    fn near_miss_on_a_slightly_sloped_wall_is_a_valid_t_junction() {
+        let walls = vec![
+            wall(0.0,0.0,6.0,0.0,0.15),
+            wall(6.0,0.0,6.0,4.0,0.15),
+            wall(6.0,4.0,0.0,4.0,0.15),
+            wall(0.0,4.0,0.0,0.0,0.15),
+            // En haut une cloison verticale rejoint le mur horizontal.
+            wall(3.0,0.0,3.01,3.992,0.15),
+        ];
+        // Du fait de son epaisseur de trait, la fente de 8 mm est invisible
+        // a l'ecran, mais son extremite n'appartient pas strictement au mur.
+        assert_eq!(detect_rooms_strict(&walls).len(), 1);
+        assert_eq!(detect_rooms(&walls).len(), 2);
+    }
+
     #[test]
     fn removing_a_wall_reopens_room() {
         let mut plan = crate::model::Plan::default();
