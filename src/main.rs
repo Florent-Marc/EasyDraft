@@ -6,6 +6,7 @@ mod rgie_review;
 mod rgie_symbols;
 
 use eframe::egui::{self, Align2, Color32, FontId, Painter, Pos2, Sense, Stroke, Vec2};
+use std::path::Path;
 use model::{
     ElectricalAppearance, ElectricalKind, ElectricalSymbol, Opening, OpeningKind, Plan, Point, Stair, Wall,
     DEFAULT_WALL_THICKNESS_M,
@@ -48,7 +49,7 @@ fn draw_logical_link(painter: &Painter, a: Pos2, b: Pos2) {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tool {
     Wall,
     SelectWall,
@@ -69,6 +70,150 @@ enum DragTarget {
     WallEnd(usize),
     WallBody(usize),
     Opening(usize),
+    Symbol(usize),
+    Stair(usize),
+    Group,
+}
+
+/// Selection de plusieurs elements, sans selectionner les surfaces de piece derivees.
+#[derive(Debug, Default, Clone)]
+struct SelectionSet {
+    walls: Vec<usize>,
+    openings: Vec<usize>,
+    stairs: Vec<usize>,
+    symbols: Vec<usize>,
+}
+
+impl SelectionSet {
+    fn len(&self) -> usize {
+        self.walls.len() + self.openings.len() + self.stairs.len() + self.symbols.len()
+    }
+
+    fn includes(&self, target: DragTarget) -> bool {
+        match target {
+            DragTarget::WallStart(i) | DragTarget::WallEnd(i) | DragTarget::WallBody(i) =>
+                self.walls.contains(&i),
+            DragTarget::Opening(i) => self.openings.contains(&i),
+            DragTarget::Stair(i) => self.stairs.contains(&i),
+            DragTarget::Symbol(i) => self.symbols.contains(&i),
+            DragTarget::Group => false,
+        }
+    }
+
+    fn from_marquee(plan: &Plan, area: Marquee) -> Self {
+        let mut selected = Self::default();
+        for (i, wall) in plan.walls.iter().enumerate() {
+            if area.selects_segment(wall.start, wall.end) {
+                selected.walls.push(i);
+            }
+        }
+        for (i, symbol) in plan.symbols.iter().enumerate() {
+            if area.contains(symbol.position) { selected.symbols.push(i); }
+        }
+        for (i, stair) in plan.stairs.iter().enumerate() {
+            if area.selects_segment(stair.start, stair.end) {
+                selected.stairs.push(i);
+            }
+        }
+        for (i, opening) in plan.openings.iter().enumerate() {
+            if let Some(wall) = plan.walls.get(opening.wall_index) {
+                let length = wall.length_m();
+                if length > 0.001 {
+                    let t = opening.center_m / length;
+                    let center = Point {
+                        x: wall.start.x + (wall.end.x - wall.start.x) * t,
+                        y: wall.start.y + (wall.end.y - wall.start.y) * t,
+                    };
+                    if area.contains(center) { selected.openings.push(i); }
+                }
+            }
+        }
+        selected
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Marquee {
+    start: Point,
+    current: Point,
+}
+
+impl Marquee {
+    fn bounds(self) -> (f32, f32, f32, f32) {
+        (self.start.x.min(self.current.x), self.start.x.max(self.current.x),
+         self.start.y.min(self.current.y), self.start.y.max(self.current.y))
+    }
+
+    fn contains(self, p: Point) -> bool {
+        let (x0,x1,y0,y1) = self.bounds();
+        p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1
+    }
+
+    /// Fenetre de gauche a droite : contient l'objet entier.
+    /// De droite a gauche : capture aussi les segments qui traversent la fenetre.
+    fn selects_segment(self, a: Point, b: Point) -> bool {
+        if self.start.x <= self.current.x {
+            return self.contains(a) && self.contains(b);
+        }
+        if self.contains(a) || self.contains(b) { return true; }
+        let (x0,x1,y0,y1) = self.bounds();
+        let (dx,dy) = (b.x-a.x,b.y-a.y);
+        let mut lo = 0.0_f32;
+        let mut hi = 1.0_f32;
+        // Intersection d'un segment et d'un rectangle (Liang-Barsky).
+        for (p,q) in [(-dx, a.x-x0), (dx,x1-a.x), (-dy,a.y-y0), (dy,y1-a.y)] {
+            if p.abs() < 1e-7 {
+                if q < 0.0 { return false; }
+            } else {
+                let t = q/p;
+                if p < 0.0 { lo = lo.max(t); }
+                else { hi = hi.min(t); }
+                if lo > hi { return false; }
+            }
+        }
+        true
+    }
+}
+
+/// Deplacement atomique de la selection : les ouvertures restent attachees aux murs.
+fn translate_selection(plan: &mut Plan, selection: &SelectionSet, shift: Point)
+    -> Result<(), &'static str>
+{
+    for &index in &selection.walls {
+        let wall = plan.walls.get(index).cloned().ok_or("Mur selectionne introuvable")?;
+        plan.update_wall(
+            index,
+            Point { x: wall.start.x + shift.x, y: wall.start.y + shift.y },
+            Point { x: wall.end.x + shift.x, y: wall.end.y + shift.y },
+            wall.thickness_m,
+        )?;
+    }
+    for &index in &selection.symbols {
+        let symbol = plan.symbols.get_mut(index).ok_or("Symbole introuvable")?;
+        symbol.position.x += shift.x;
+        symbol.position.y += shift.y;
+    }
+    for &index in &selection.stairs {
+        let stair = plan.stairs.get_mut(index).ok_or("Escalier introuvable")?;
+        stair.start.x += shift.x;
+        stair.start.y += shift.y;
+        stair.end.x += shift.x;
+        stair.end.y += shift.y;
+    }
+    for &index in &selection.openings {
+        let opening = plan.openings.get(index).ok_or("Ouverture introuvable")?.clone();
+        if selection.walls.contains(&opening.wall_index) { continue; }
+        let wall = plan.walls.get(opening.wall_index).ok_or("Mur introuvable")?;
+        let length = wall.length_m();
+        if length < 0.001 { return Err("Mur porteur trop court"); }
+        let along = (shift.x * (wall.end.x-wall.start.x)
+            + shift.y * (wall.end.y-wall.start.y)) / length;
+        let edge = if opening.kind == OpeningKind::Passage {0.0} else {0.05};
+        let limit = opening.width_m/2.0 + edge;
+        if length < 2.0*limit { return Err("Ouverture trop large pour son mur"); }
+        plan.move_opening(index, (opening.center_m + along).clamp(limit,length-limit))?;
+    }
+    Ok(())
 }
 
 struct ActiveDrag {
@@ -97,6 +242,8 @@ struct EasyDraft {
     selected_room: Option<Point>,
     selected_opening: Option<usize>,
     drag: Option<ActiveDrag>,
+    marquee: Option<Marquee>,
+    selection: SelectionSet,
     new_wall_thickness_cm: f32,
     new_door_width_cm: f32,
     new_window_width_cm: f32,
@@ -115,6 +262,8 @@ struct EasyDraft {
     pan: Vec2,
     grid: bool,
     file_path: String,
+    /// Nouveau projet : pas encore de chemin sauvegarde.
+    file_path_assigned: bool,
     pdf_path: String,
     unifilar_pdf_path: String,
     status: String,
@@ -139,6 +288,8 @@ impl Default for EasyDraft {
             selected_room: None,
             selected_opening: None,
             drag: None,
+            marquee: None,
+            selection: SelectionSet::default(),
             new_wall_thickness_cm: DEFAULT_WALL_THICKNESS_M * 100.0,
             new_door_width_cm: 90.0,
             new_window_width_cm: 120.0,
@@ -157,6 +308,7 @@ impl Default for EasyDraft {
             pan: Vec2::ZERO,
             grid: true,
             file_path: "mon-plan.json".into(),
+            file_path_assigned: false,
             pdf_path: "plan-easydraft.pdf".into(),
             unifilar_pdf_path: "unifilaire-easydraft.pdf".into(),
             status: "Clique une fois pour commencer un mur, puis une seconde fois pour le terminer.".into(),
@@ -314,9 +466,11 @@ impl EasyDraft {
         if let Some(session) = self.drag.take() {
             self.plan = session.original;
         }
+        self.marquee = None;
     }
 
     fn clear_selection(&mut self) {
+        self.selection = SelectionSet::default();
         self.selected_wall = None;
         self.selected_symbol = None;
         self.selected_stair = None;
@@ -350,31 +504,84 @@ impl EasyDraft {
         }
     }
 
-    fn save(&mut self) {
+    fn file_picker(current: &str, title: &str, label: &str, extension: &'static str) -> rfd::FileDialog {
+        let path = Path::new(current);
+        let suggested_name = path.file_name().and_then(|name| name.to_str())
+            .unwrap_or("easydraft");
+        let mut picker = rfd::FileDialog::new()
+            .set_title(title)
+            .add_filter(label, &[extension])
+            .set_file_name(suggested_name);
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            picker = picker.set_directory(parent);
+        }
+        picker
+    }
+
+    fn save_current(&mut self) {
         let result = serde_json::to_string_pretty(&self.plan)
             .map_err(|e| e.to_string())
             .and_then(|data| std::fs::write(&self.file_path, data).map_err(|e| e.to_string()));
         self.status = match result {
-            Ok(()) => format!("Enregistre : {}", self.file_path),
-            Err(e) => format!("Erreur : {e}"),
+            Ok(()) => {
+                self.file_path_assigned = true;
+                format!("Plan enregistre : {}", self.file_path)
+            }
+            Err(e) => format!("Erreur d'enregistrement : {e}"),
         };
     }
 
-    fn load(&mut self) {
-        let result = std::fs::read_to_string(&self.file_path)
-            .map_err(|e| e.to_string())
-            .and_then(|s| serde_json::from_str::<Plan>(&s).map_err(|e| e.to_string()));
-        match result {
-            Ok(plan) => {
-                self.snapshot();
-                self.plan = plan;
-                self.cancel_drag();
-                self.reset_pending();
-                self.clear_selection();
-                self.active_circuit_index = 0;
-                self.status = format!("Ouvert : {}", self.file_path);
+    /// Premiere sauvegarde : choisir un fichier. Ensuite, enregistrer directement.
+    fn save(&mut self) {
+        if self.file_path_assigned {
+            self.save_current();
+        } else {
+            self.save_as();
+        }
+    }
+
+    /// Demande toujours une destination. Annuler le dialogue ne modifie rien.
+    fn save_as(&mut self) {
+        if let Some(path) = Self::file_picker(
+            &self.file_path, "Enregistrer le plan EasyDraft", "Plan EasyDraft (JSON)", "json"
+        ).save_file() {
+            let path = path.with_extension("json");
+            let result = serde_json::to_string_pretty(&self.plan)
+                .map_err(|e| e.to_string())
+                .and_then(|data| std::fs::write(&path, data).map_err(|e| e.to_string()));
+            match result {
+                Ok(()) => {
+                    self.file_path = path.to_string_lossy().into_owned();
+                    self.file_path_assigned = true;
+                    self.status = format!("Plan enregistre : {}", self.file_path);
+                }
+                Err(error) => self.status = format!("Erreur d'enregistrement : {error}"),
             }
-            Err(e) => self.status = format!("Erreur : {e}"),
+        }
+    }
+
+    /// Navigateur natif d'ouverture d'un fichier JSON.
+    fn open_dialog(&mut self) {
+        if let Some(path) = Self::file_picker(
+            &self.file_path, "Ouvrir un plan EasyDraft", "Plan EasyDraft (JSON)", "json"
+        ).pick_file() {
+            let result = std::fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|text| serde_json::from_str::<Plan>(&text).map_err(|e| e.to_string()));
+            match result {
+                Ok(plan) => {
+                    self.cancel_drag();
+                    self.snapshot();
+                    self.plan = plan;
+                    self.reset_pending();
+                    self.clear_selection();
+                    self.active_circuit_index = 0;
+                    self.file_path = path.to_string_lossy().into_owned();
+                    self.file_path_assigned = true;
+                    self.status = format!("Plan ouvert : {}", self.file_path);
+                }
+                Err(error) => self.status = format!("Erreur d'ouverture : {error}"),
+            }
         }
     }
 
@@ -527,7 +734,15 @@ impl EasyDraft {
 
     /// Selectionne d'abord une ouverture, puis une poignee de mur, puis le corps du mur.
     fn drag_target_at(&self, point: Point, ppm: f32) -> Option<DragTarget> {
+        if self.show_electrical {
+            if let Some(index) = self.find_symbol_any(point, ppm) {
+                return Some(DragTarget::Symbol(index));
+            }
+        }
         if !self.show_architecture { return None; }
+        if let Some(index) = self.find_stair(point, ppm) {
+            return Some(DragTarget::Stair(index));
+        }
         if let Some(index) = self.find_opening(point, ppm) {
             return Some(DragTarget::Opening(index));
         }
@@ -563,28 +778,78 @@ impl EasyDraft {
     }
 
     fn begin_drag(&mut self, point: Point, ppm: f32) {
-        let Some(target) = self.drag_target_at(point, ppm) else { return; };
-        self.clear_selection();
-        match target {
-            DragTarget::Opening(index) => {
-                self.selected_opening = Some(index);
-                self.status = "Glisse la porte ou la fenetre le long du mur".into();
+        let Some(hit) = self.drag_target_at(point, ppm) else {
+            self.clear_selection();
+            self.marquee = Some(Marquee { start: point, current: point });
+            self.sidebar_tab = SidebarTab::Inspecteur;
+            self.status = "Selection rectangulaire : encadre les elements".into();
+            return;
+        };
+        let target = if self.selection.len() > 1 && self.selection.includes(hit) {
+            DragTarget::Group
+        } else {
+            hit
+        };
+        if !matches!(target, DragTarget::Group) {
+            self.clear_selection();
+            match target {
+                DragTarget::Opening(index) => {
+                    self.selected_opening = Some(index);
+                    self.status = "Glisse l'ouverture le long de son mur".into();
+                }
+                DragTarget::WallStart(index) | DragTarget::WallEnd(index) => {
+                    self.selected_wall = Some(index);
+                    self.status = "Deplace la poignee du mur".into();
+                }
+                DragTarget::WallBody(index) => {
+                    self.selected_wall = Some(index);
+                    self.status = "Deplace le mur avec ses ouvertures".into();
+                }
+                DragTarget::Symbol(index) => {
+                    self.selected_symbol = Some(index);
+                    self.status = "Deplace le symbole electrique".into();
+                }
+                DragTarget::Stair(index) => {
+                    self.selected_stair = Some(index);
+                    self.status = "Deplace l'escalier".into();
+                }
+                DragTarget::Group => unreachable!(),
             }
-            DragTarget::WallStart(index) | DragTarget::WallEnd(index) => {
-                self.selected_wall = Some(index);
-                self.status = "Deplace la poignee du mur (accrochage disponible)".into();
-            }
-            DragTarget::WallBody(index) => {
-                self.selected_wall = Some(index);
-                self.status = "Deplace le mur entier avec ses ouvertures".into();
-            }
+        } else {
+            self.status = format!("Deplacement de {} elements", self.selection.len());
         }
+        self.sidebar_tab = SidebarTab::Inspecteur;
         self.drag = Some(ActiveDrag {
             target,
             from: point,
             original: self.plan.clone(),
             changed: false,
         });
+    }
+
+    fn update_marquee(&mut self, point: Point) {
+        if let Some(marquee) = self.marquee.as_mut() {
+            marquee.current = point;
+        }
+    }
+
+    fn finish_marquee(&mut self) {
+        let Some(marquee) = self.marquee.take() else { return; };
+        self.clear_selection();
+        self.selection = SelectionSet::from_marquee(&self.plan, marquee);
+        let count = self.selection.len();
+        if count == 1 {
+            self.selected_wall = self.selection.walls.first().copied();
+            self.selected_opening = self.selection.openings.first().copied();
+            self.selected_symbol = self.selection.symbols.first().copied();
+            self.selected_stair = self.selection.stairs.first().copied();
+        }
+        self.sidebar_tab = SidebarTab::Inspecteur;
+        self.status = if count == 0 {
+            "Aucun element dans le rectangle".into()
+        } else {
+            format!("{count} element(s) selectionne(s) : glisse l'un d'eux pour deplacer le groupe")
+        };
     }
 
     fn update_drag(&mut self, cursor: Point, ppm: f32) {
@@ -610,6 +875,23 @@ impl EasyDraft {
                         }
                     } else { Err("Mur introuvable") }
                 } else { Err("Ouverture introuvable") }
+            }
+            DragTarget::Symbol(_) | DragTarget::Stair(_) | DragTarget::Group => {
+                let shift = Point {
+                    x: (delta.x / self.snap_m).round() * self.snap_m,
+                    y: (delta.y / self.snap_m).round() * self.snap_m,
+                };
+                let selected = match target {
+                    DragTarget::Symbol(i) => SelectionSet {
+                        symbols: vec![i], ..SelectionSet::default()
+                    },
+                    DragTarget::Stair(i) => SelectionSet {
+                        stairs: vec![i], ..SelectionSet::default()
+                    },
+                    DragTarget::Group => self.selection.clone(),
+                    _ => unreachable!(),
+                };
+                translate_selection(&mut updated, &selected, shift)
             }
             DragTarget::WallBody(index) => {
                 if let Some(wall) = updated.walls.get(index).cloned() {
@@ -648,6 +930,28 @@ impl EasyDraft {
         match outcome {
             Ok(()) => {
                 let moved = match target {
+                    DragTarget::Symbol(index) => {
+                        let old = drag.original.symbols[index].position;
+                        let now = updated.symbols[index].position;
+                        old.distance_to(now) > 0.0001
+                    }
+                    DragTarget::Stair(index) => {
+                        let old = &drag.original.stairs[index];
+                        let now = &updated.stairs[index];
+                        old.start.distance_to(now.start) > 0.0001
+                    }
+                    DragTarget::Group => {
+                        delta.x.abs() + delta.y.abs() > 0.0001
+                            && self.selection.len() > 1
+                            && (self.selection.walls.iter().any(|&i|
+                                drag.original.walls[i].start.distance_to(updated.walls[i].start) > 0.0001)
+                            || self.selection.symbols.iter().any(|&i|
+                                drag.original.symbols[i].position.distance_to(updated.symbols[i].position) > 0.0001)
+                            || self.selection.stairs.iter().any(|&i|
+                                drag.original.stairs[i].start.distance_to(updated.stairs[i].start) > 0.0001)
+                            || self.selection.openings.iter().any(|&i|
+                                (drag.original.openings[i].center_m - updated.openings[i].center_m).abs() > 0.0001))
+                    }
                     DragTarget::Opening(index) => {
                         let old = &drag.original.openings[index];
                         let now = &updated.openings[index];
@@ -723,6 +1027,35 @@ impl EasyDraft {
 
     fn delete_selected(&mut self) {
         self.cancel_drag();
+        if self.selection.len() > 1 {
+            let mut updated = self.plan.clone();
+            // Supprimer par indices decroissants pour eviter le decalage des tableaux.
+            let mut openings = self.selection.openings.clone();
+            openings.sort_unstable_by(|a,b| b.cmp(a));
+            let mut walls = self.selection.walls.clone();
+            walls.sort_unstable_by(|a,b| b.cmp(a));
+            let mut symbols = self.selection.symbols.clone();
+            symbols.sort_unstable_by(|a,b| b.cmp(a));
+            let mut stairs = self.selection.stairs.clone();
+            stairs.sort_unstable_by(|a,b| b.cmp(a));
+            let result = (|| -> Result<(), &'static str> {
+                for index in openings { updated.remove_opening(index)?; }
+                for index in walls { updated.remove_wall(index)?; }
+                for index in symbols { updated.remove_symbol(index)?; }
+                for index in stairs { updated.remove_stair(index)?; }
+                Ok(())
+            })();
+            match result {
+                Ok(()) => {
+                    self.snapshot();
+                    self.plan = updated;
+                    self.clear_selection();
+                    self.status = "Groupe supprime (Ctrl+Z pour annuler)".into();
+                }
+                Err(error) => self.status = format!("Suppression impossible : {error}"),
+            }
+            return;
+        }
         let mut updated = self.plan.clone();
         let outcome = if let Some(index) = self.selected_opening {
             updated.remove_opening(index)
@@ -1157,6 +1490,24 @@ impl EasyDraft {
         }
     }
 
+    fn export_unifilar_pdf_dialog(&mut self) {
+        if let Some(path) = Self::file_picker(
+            &self.unifilar_pdf_path, "Exporter le schema unifilaire", "Document PDF", "pdf"
+        ).save_file() {
+            self.unifilar_pdf_path = path.with_extension("pdf").to_string_lossy().into_owned();
+            self.export_unifilar_pdf();
+        }
+    }
+
+    fn export_pdf_dialog(&mut self) {
+        if let Some(path) = Self::file_picker(
+            &self.pdf_path, "Exporter le plan en PDF", "Document PDF", "pdf"
+        ).save_file() {
+            self.pdf_path = path.with_extension("pdf").to_string_lossy().into_owned();
+            self.export_pdf();
+        }
+    }
+
     fn export_unifilar_pdf(&mut self) {
         self.status = match pdf_export::export_unifilar_pdf(&self.unifilar_pdf_path, &self.plan) {
             Ok(()) => format!("PDF unifilaire exporte : {}", self.unifilar_pdf_path),
@@ -1183,7 +1534,13 @@ impl EasyDraft {
                             end: position,
                             thickness_m: self.new_wall_thickness_cm / 100.0,
                         });
-                        self.status = format!("Mur de {distance:.2} m ajoute");
+                        self.clear_selection();
+                        self.selected_wall = Some(self.plan.walls.len() - 1);
+                        self.tool = Tool::SelectWall;
+                        self.sidebar_tab = SidebarTab::Inspecteur;
+                        self.status = format!(
+                            "Mur de {distance:.2} m ajoute. Mode Selection actif : deplace ou modifie le mur."
+                        );
                     }
                 } else {
                     self.pending_wall = Some(position);
@@ -1379,15 +1736,23 @@ impl EasyDraft {
             }
             if response.dragged_by(egui::PointerButton::Primary) {
                 if let Some(cursor) = response.interact_pointer_pos() {
-                    self.update_drag(to_world(cursor), ppm);
+                    if self.marquee.is_some() {
+                        self.update_marquee(to_world(cursor));
+                    } else {
+                        self.update_drag(to_world(cursor), ppm);
+                    }
                 }
             }
             if response.drag_stopped_by(egui::PointerButton::Primary) {
-                // Appliquer egalement la position de la souris au moment du relachement.
                 if let Some(cursor) = response.interact_pointer_pos() {
-                    self.update_drag(to_world(cursor), ppm);
+                    if self.marquee.is_some() {
+                        self.update_marquee(to_world(cursor));
+                    } else {
+                        self.update_drag(to_world(cursor), ppm);
+                    }
                 }
-                self.finish_drag();
+                if self.marquee.is_some() { self.finish_marquee(); }
+                else { self.finish_drag(); }
             }
         }
 
@@ -1473,11 +1838,12 @@ impl EasyDraft {
                             a + direction * (cursor_m * ppm),
                             a + direction * (from_m * ppm),
                             width_px,
-                            self.selected_wall == Some(index),
+                            self.selected_wall == Some(index) || self.selection.walls.contains(&index),
                         );
                     }
                     draw_opening(&painter, a, direction, width_px, ppm, opening);
-                    if self.selected_opening == Some(opening_index) {
+                    if self.selected_opening == Some(opening_index)
+                        || self.selection.openings.contains(&opening_index) {
                         let handle = a + direction * (opening.center_m * ppm);
                         painter.circle_filled(handle, 5.0, Color32::from_rgb(242, 178, 73));
                         painter.circle_stroke(
@@ -1493,14 +1859,14 @@ impl EasyDraft {
                         a + direction * (cursor_m * ppm),
                         b,
                         width_px,
-                        self.selected_wall == Some(index),
+                        self.selected_wall == Some(index) || self.selection.walls.contains(&index),
                     );
                 }
             }
             if self.show_dimensions {
                 draw_dimension(&painter, a, b, width_px, wall.length_m());
             }
-            if self.selected_wall == Some(index) {
+            if self.selected_wall == Some(index) || self.selection.walls.contains(&index) {
                 for endpoint in [a, b] {
                     painter.circle_filled(endpoint, 6.0, Color32::WHITE);
                     painter.circle_stroke(
@@ -1513,7 +1879,8 @@ impl EasyDraft {
 
         for (index, stair) in self.plan.stairs.iter().enumerate() {
             draw_stair(&painter, stair, origin, ppm);
-            if self.selected_stair == Some(index) && stair.is_valid() {
+            if (self.selected_stair == Some(index) || self.selection.stairs.contains(&index))
+                && stair.is_valid() {
                 let corners = stair.corners().map(to_screen);
                 for j in 0..4 {
                     painter.line_segment(
@@ -1574,7 +1941,7 @@ impl EasyDraft {
             if self.pending_switch == Some(index) {
                 painter.circle_stroke(pos, 17.0, Stroke::new(2.0_f32, Color32::from_rgb(233, 139, 40)));
             }
-            if self.selected_symbol == Some(index) {
+            if self.selected_symbol == Some(index) || self.selection.symbols.contains(&index) {
                 painter.circle_stroke(pos, 24.0, Stroke::new(3.0_f32, Color32::from_rgb(40, 135, 230)));
             }
         }
@@ -1618,6 +1985,22 @@ impl EasyDraft {
                 FontId::proportional(13.0),
                 Color32::DARK_GRAY,
             );
+        }
+
+        if let Some(marquee) = self.marquee {
+            let from = to_screen(marquee.start);
+            let to = to_screen(marquee.current);
+            let bounds = egui::Rect::from_two_pos(from, to).intersect(rect);
+            painter.rect_filled(bounds, 0.0, Color32::from_rgba_unmultiplied(36, 130, 225, 32));
+            let stroke = Stroke::new(1.5_f32, Color32::from_rgb(35, 115, 215));
+            for (a, b) in [
+                (bounds.left_top(), bounds.right_top()),
+                (bounds.right_top(), bounds.right_bottom()),
+                (bounds.right_bottom(), bounds.left_bottom()),
+                (bounds.left_bottom(), bounds.left_top()),
+            ] {
+                painter.line_segment([a, b], stroke);
+            }
         }
 
         painter.text(
@@ -1676,6 +2059,8 @@ impl eframe::App for EasyDraft {
                         self.cancel_drag();
                         self.snapshot();
                         self.plan = Plan::default();
+                        self.file_path_assigned = false;
+                        self.file_path = "mon-plan.json".into();
                         self.reset_pending();
                         self.clear_selection();
                         self.active_circuit_index = 0;
@@ -1683,8 +2068,9 @@ impl eframe::App for EasyDraft {
                         self.sidebar_tab = SidebarTab::Dessin;
                         self.status = "Nouveau plan".into();
                     }
-                    if ui.button("Ouvrir le JSON").clicked() { self.load(); }
-                    if ui.button("Enregistrer le JSON").clicked() { self.save(); }
+                    if ui.button("Ouvrir...").clicked() { self.open_dialog(); }
+                    if ui.button("Enregistrer").clicked() { self.save(); }
+                    if ui.button("Enregistrer sous...").clicked() { self.save_as(); }
                     if ui.button("Chemins des fichiers...").clicked() {
                         self.sidebar_tab = SidebarTab::Fichiers;
                     }
@@ -1697,8 +2083,8 @@ impl eframe::App for EasyDraft {
                     }
                 });
                 ui.menu_button("Exporter", |ui| {
-                    if ui.button("Plan en PDF").clicked() { self.export_pdf(); }
-                    if ui.button("Schema unifilaire en PDF").clicked() { self.export_unifilar_pdf(); }
+                    if ui.button("Plan en PDF...").clicked() { self.export_pdf_dialog(); }
+                    if ui.button("Schema unifilaire en PDF...").clicked() { self.export_unifilar_pdf_dialog(); }
                 });
                 if ui.button("Enregistrer").clicked() { self.save(); }
             });
@@ -1809,10 +2195,21 @@ impl eframe::App for EasyDraft {
             } // Dessin
             if self.sidebar_tab == SidebarTab::Inspecteur {
                 ui.heading("Element selectionne");
-                self.selected_properties(ui);
+                if self.selection.len() <= 1 { self.selected_properties(ui); }
                 ui.separator();
-                ui.small("Clique sur un mur, une ouverture, une piece ou un symbole.");
-                ui.small("Ctrl+Z pour annuler, Ctrl+Y pour retablir.");
+                ui.small("Clic : selectionner un objet. Glisser depuis le vide : rectangle multi-selection.");
+                ui.small("Rectangle gauche → droite : elements entiers ; droite → gauche : elements traverses.");
+                ui.small("Glisser un element selectionne : deplacer l'ensemble. Ctrl+Z : annuler.");
+                if self.selection.len() > 1 {
+                    ui.separator();
+                    ui.strong(format!("{} elements selectionnes", self.selection.len()));
+                    ui.label(format!(
+                        "{} mur(s), {} ouverture(s), {} symbole(s), {} escalier(s)",
+                        self.selection.walls.len(), self.selection.openings.len(),
+                        self.selection.symbols.len(), self.selection.stairs.len()
+                    ));
+                    if ui.button("Supprimer le groupe").clicked() { self.delete_selected(); }
+                }
             }
             if self.sidebar_tab == SidebarTab::Affichage {
             ui.label("Calques visibles");
@@ -1836,16 +2233,22 @@ impl eframe::App for EasyDraft {
             } // Affichage
             if self.sidebar_tab == SidebarTab::Fichiers {
             ui.label("Fichier JSON");
-            ui.text_edit_singleline(&mut self.file_path);
+            if ui.text_edit_singleline(&mut self.file_path).changed() {
+                self.file_path_assigned = false;
+            }
+            ui.horizontal(|ui| {
+                if ui.button("Ouvrir...").clicked() { self.open_dialog(); }
+                if ui.button("Enregistrer sous...").clicked() { self.save_as(); }
+            });
             ui.separator();
             ui.label("Fichier PDF du plan");
             ui.text_edit_singleline(&mut self.pdf_path);
-            if ui.button("Exporter le plan PDF").clicked() { self.export_pdf(); }
+            if ui.button("Exporter le plan PDF...").clicked() { self.export_pdf_dialog(); }
             ui.separator();
             ui.label("Fichier PDF unifilaire");
             ui.text_edit_singleline(&mut self.unifilar_pdf_path);
-            if ui.button("Exporter l'unifilaire PDF").clicked() {
-                self.export_unifilar_pdf();
+            if ui.button("Exporter l'unifilaire PDF...").clicked() {
+                self.export_unifilar_pdf_dialog();
             }
             ui.separator();
             } // Fichiers
@@ -2291,6 +2694,126 @@ mod plan_editor_tests {
         app.finish_drag();
         assert_eq!(app.plan.walls[0].start.x, 0.0);
         assert!((app.plan.walls[0].end.x - 5.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn wall_auto_switches_to_selection_after_second_click() {
+        let mut app = EasyDraft::default();
+        assert_eq!(app.tool, Tool::Wall);
+        app.place(Point { x: 0.0, y: 0.0 }, 80.0);
+        assert_eq!(app.tool, Tool::Wall);
+        app.place(Point { x: 4.0, y: 0.0 }, 80.0);
+        assert_eq!(app.plan.walls.len(), 1);
+        assert_eq!(app.tool, Tool::SelectWall);
+        assert_eq!(app.selected_wall, Some(0));
+        assert!(app.pending_wall.is_none());
+    }
+
+    #[test]
+    fn window_selection_and_crossing_selection_work_differently() {
+        let mut plan = Plan::default();
+        plan.walls.push(Wall {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 4.0, y: 0.0 },
+            thickness_m: 0.15,
+        });
+        plan.symbols.push(ElectricalSymbol {
+            position: Point { x: 1.0, y: 0.6 },
+            kind: ElectricalKind::Outlet,
+        });
+        let window = Marquee {
+            start: Point { x: 0.5, y: -0.5 },
+            current: Point { x: 2.0, y: 1.0 },
+        };
+        let selected = SelectionSet::from_marquee(&plan, window);
+        assert_eq!(selected.walls.len(), 0);
+        assert_eq!(selected.symbols, vec![0]);
+        let crossing = Marquee { start: window.current, current: window.start };
+        let selected = SelectionSet::from_marquee(&plan, crossing);
+        assert_eq!(selected.walls, vec![0]);
+        assert_eq!(selected.symbols, vec![0]);
+    }
+
+    #[test]
+    fn group_drag_moves_wall_and_symbol_preserving_its_opening_and_undo() {
+        let mut app = EasyDraft::default();
+        app.tool = Tool::SelectWall;
+        app.plan.walls.push(Wall {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 4.0, y: 0.0 },
+            thickness_m: 0.15,
+        });
+        app.plan.add_opening(0, Point { x: 1.0, y: 0.0 }, 0.9,
+            OpeningKind::Door, false, false, 0.05).unwrap();
+        app.plan.symbols.push(ElectricalSymbol {
+            position: Point { x: 2.0, y: 1.0 },
+            kind: ElectricalKind::Light,
+        });
+        // Un rectangle autour des deux objets sans toucher la porte.
+        app.selection = SelectionSet {
+            walls: vec![0], symbols: vec![0], ..SelectionSet::default()
+        };
+        app.begin_drag(Point { x: 3.0, y: 0.0 }, 80.0);
+        assert!(matches!(app.drag.as_ref().map(|d| d.target), Some(DragTarget::Group)));
+        app.update_drag(Point { x: 3.0, y: 1.2 }, 80.0);
+        app.finish_drag();
+        assert!((app.plan.walls[0].start.y - 1.2).abs() < 0.001);
+        assert!((app.plan.symbols[0].position.y - 2.2).abs() < 0.001);
+        assert_eq!(app.plan.openings[0].center_m, 1.0);
+        assert_eq!(app.undo.len(), 1);
+        app.undo();
+        assert_eq!(app.plan.walls[0].start.y, 0.0);
+        assert_eq!(app.plan.symbols[0].position.y, 1.0);
+    }
+
+    #[test]
+    fn symbol_and_stair_can_be_dragged_without_a_group() {
+        let mut app = EasyDraft::default();
+        app.tool = Tool::SelectWall;
+        app.plan.symbols.push(ElectricalSymbol {
+            position: Point { x: 2.0, y: 2.0 }, kind: ElectricalKind::Outlet
+        });
+        app.plan.stairs.push(Stair {
+            start: Point { x: 5.0, y: 0.0 },
+            end: Point { x: 5.0, y: 3.0 },
+            width_m: 1.0,
+            steps: 12,
+        });
+        app.begin_drag(Point { x: 2.0, y: 2.0 }, 80.0);
+        assert!(matches!(app.drag.as_ref().map(|d| d.target), Some(DragTarget::Symbol(0))));
+        app.update_drag(Point { x: 2.5, y: 2.0 }, 80.0);
+        app.finish_drag();
+        assert!((app.plan.symbols[0].position.x - 2.5).abs() < 0.001);
+        app.begin_drag(Point { x: 5.0, y: 1.5 }, 80.0);
+        assert!(matches!(app.drag.as_ref().map(|d| d.target), Some(DragTarget::Stair(0))));
+        app.update_drag(Point { x: 6.0, y: 1.5 }, 80.0);
+        app.finish_drag();
+        assert!((app.plan.stairs[0].start.x - 6.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn save_current_writes_valid_json_and_pdf_export_creates_file() {
+        let mut app = EasyDraft::default();
+        app.plan.walls.push(Wall {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 4.0, y: 0.0 },
+            thickness_m: 0.15,
+        });
+        let filename = format!("easydraft-file-test-{}", std::process::id());
+        let json_path = std::env::temp_dir().join(format!("{filename}.json"));
+        let pdf_path = std::env::temp_dir().join(format!("{filename}.pdf"));
+        app.file_path = json_path.to_string_lossy().into_owned();
+        app.file_path_assigned = true;
+        app.save();
+        assert!(app.status.starts_with("Plan enregistre"));
+        let restored: Plan = serde_json::from_slice(&std::fs::read(&json_path).unwrap()).unwrap();
+        assert_eq!(restored.walls.len(), 1);
+        pdf_export::export_pdf(pdf_path.to_str().unwrap(), &restored, true).unwrap();
+        let pdf_data = std::fs::read(&pdf_path).unwrap();
+        assert!(pdf_data.starts_with(b"%PDF-"));
+        assert!(pdf_data.len() > 200);
+        let _ = std::fs::remove_file(json_path);
+        let _ = std::fs::remove_file(pdf_path);
     }
 
     #[test]

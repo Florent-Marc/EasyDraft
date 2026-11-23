@@ -14,3 +14,11 @@ jobs:
         run: cargo check --all-targets
       - name: Tests
         run: cargo test --all-targets
+
+  check-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check Windows desktop build
+        run: cargo check --all-targets
