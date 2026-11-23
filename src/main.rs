@@ -1753,36 +1753,21 @@ impl eframe::App for EasyDraft {
             ui.separator();
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             if self.sidebar_tab == SidebarTab::Dessin {
-            ui.heading("Outils");
-            ui.separator();
-            if ui.selectable_label(self.tool == Tool::Wall, "Mur").clicked() { self.select_tool(Tool::Wall); }
-            if ui.selectable_label(self.tool == Tool::SelectWall, "Selectionner un element").clicked() {
-                self.select_tool(Tool::SelectWall);
-            }
-            if ui.selectable_label(self.tool == Tool::Door, "Porte").clicked() {
-                self.select_tool(Tool::Door);
-            }
-            if ui.selectable_label(self.tool == Tool::Window, "Fenetre").clicked() {
-                self.select_tool(Tool::Window);
-            }
-            if ui.selectable_label(self.tool == Tool::Passage, "Passage libre").clicked() {
-                self.select_tool(Tool::Passage);
-            }
-            if ui.selectable_label(self.tool == Tool::Stair, "Escalier").clicked() {
-                self.select_tool(Tool::Stair);
-            }
-            if ui.selectable_label(self.tool == Tool::Outlet, "Prise").clicked() { self.select_tool(Tool::Outlet); }
-            if ui.selectable_label(self.tool == Tool::Switch, "Interrupteur").clicked() { self.select_tool(Tool::Switch); }
-            if ui.selectable_label(self.tool == Tool::Light, "Point lumineux").clicked() { self.select_tool(Tool::Light); }
-            if ui.selectable_label(self.tool == Tool::LinkLighting, "Lier I -> L").clicked() {
-                self.select_tool(Tool::LinkLighting);
-                self.view = View::Plan2D;
-                self.status = "Clique sur un interrupteur I, puis sur une lampe X.".into();
-            }
-            if ui.selectable_label(self.tool == Tool::Pan, "Deplacer la vue").clicked() { self.select_tool(Tool::Pan); }
-            ui.small("Selection : clic sur un element. Glisse un mur, ses poignees bleues ou une ouverture.");
-            ui.small("Deplacer une ouverture : elle reste sur son mur et ne peut pas chevaucher une autre.");
-            ui.small("Ctrl+Z : annuler | Ctrl+Y : retablir.");
+            ui.label("Outil actif");
+            ui.heading(match self.tool {
+                Tool::SelectWall => "Selection",
+                Tool::Wall => "Mur",
+                Tool::Door => "Porte",
+                Tool::Window => "Fenetre",
+                Tool::Passage => "Passage libre",
+                Tool::Stair => "Escalier",
+                Tool::Outlet => "Prise",
+                Tool::Switch => "Interrupteur",
+                Tool::Light => "Point lumineux",
+                Tool::LinkLighting => "Lier I → L",
+                Tool::Pan => "Deplacer la vue",
+            });
+            ui.small("Choisis un outil dans la barre Architecture / Electricite en haut.");
             ui.separator();
             if self.view == View::Plan2D && self.tool == Tool::Door {
                 ui.label("Largeur de la porte");
@@ -1865,6 +1850,9 @@ impl eframe::App for EasyDraft {
             ui.separator();
             } // Fichiers
             if self.sidebar_tab == SidebarTab::Dessin {
+            ui.separator();
+            egui::CollapsingHeader::new("Statistiques et exemples")
+                .default_open(false).show(ui, |ui| {
             ui.label(format!("Murs : {}", self.plan.walls.len()));
             ui.label(format!("Pieces fermees : {}", rooms::detect_rooms(&self.plan.walls).len()));
             if ui.button("Ouvrir l'exemple de 2 pieces").clicked() {
@@ -1889,6 +1877,7 @@ impl eframe::App for EasyDraft {
             ui.label(format!("Lampes non liees : {}", self.plan.unlinked_lights()));
             ui.label(format!("Interrupteurs non lies : {}", self.plan.unlinked_switches()));
             ui.separator();
+                }); // Statistiques et exemples
             } // Résumé du dessin
             if self.sidebar_tab == SidebarTab::Dossier {
             egui::CollapsingHeader::new("Identification du dossier RGIE")
