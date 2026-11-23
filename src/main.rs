@@ -1978,6 +1978,28 @@ impl EasyDraft {
                 }
             }
             Tool::Door | Tool::Window | Tool::Passage => {
+                let previous_rooms = crate::rooms::detect_rooms(&self.plan.walls).len();
+                // Les passages peuvent relier deux troncons ou une cloison a
+                // un mur en T. Tester d'abord ce raccord VIRTUEL : sinon
+                // l'outil trouvait souvent le bout du mur voisin et y posait
+                // une ouverture qui ne fermait aucune piece.
+                let gap_candidate = if self.tool == Tool::Passage {
+                    let mut preview = self.plan.clone();
+                    preview.bridge_gap_with_passage(position).ok().map(|width| {
+                        let room_count = crate::rooms::detect_rooms(&preview.walls).len();
+                        (preview, width, room_count)
+                    })
+                } else { None };
+                if gap_candidate.as_ref().is_some_and(|(_, _, count)| *count > previous_rooms) {
+                    let (updated, width, rooms) = gap_candidate.unwrap();
+                    self.snapshot();
+                    self.plan = updated;
+                    self.status = format!(
+                        "Passage libre de {:.2} m : {} pieces reconnues (separation invisible)",
+                        width, rooms
+                    );
+                    return;
+                }
                 if let Some(wall_index) = self.find_wall(position, ppm) {
                     let kind = match self.tool {
                         Tool::Door => OpeningKind::Door,
@@ -2006,25 +2028,34 @@ impl EasyDraft {
                             self.status = match kind {
                                 OpeningKind::Door => format!("Porte de {:.0} cm ajoutee", width_m * 100.0),
                                 OpeningKind::Window => format!("Fenetre de {:.0} cm ajoutee", width_m * 100.0),
-                                OpeningKind::Passage => format!("Passage libre de {:.0} cm ajoute : pieces conservees", width_m * 100.0),
+                                OpeningKind::Passage => {
+                                    let room_count = crate::rooms::detect_rooms(&self.plan.walls).len();
+                                    if room_count == 0 {
+                                        format!(
+                                            "Passage libre ajoute ({:.0} cm), mais aucun contour ferme : raccorde les murs autour de la piece",
+                                            width_m * 100.0
+                                        )
+                                    } else {
+                                        format!(
+                                            "Passage libre ajoute ({:.0} cm) : {} piece(s) conservee(s)",
+                                            width_m * 100.0, room_count
+                                        )
+                                    }
+                                }
                             };
                         }
                         Err(err) => self.status = err.into(),
                     }
                 } else if self.tool == Tool::Passage {
-                    // Les murs ont deja ete separes pour dessiner un passage : referme
-                    // la limite topologique, mais conserve graphiquement le vide.
-                    let mut updated = self.plan.clone();
-                    match updated.bridge_gap_with_passage(position) {
-                        Ok(width) => {
-                            self.snapshot();
-                            self.plan = updated;
-                            self.status = format!(
-                                "Passage de {:.2} m relie : separation des pieces retablie",
-                                width
-                            );
-                        }
-                        Err(error) => self.status = error.into(),
+                    if let Some((updated, width, rooms)) = gap_candidate {
+                        self.snapshot();
+                        self.plan = updated;
+                        self.status = format!(
+                            "Passage libre de {:.2} m ajoute. {} piece(s) reconnue(s) ; verifie les autres jonctions si besoin.",
+                            width, rooms
+                        );
+                    } else {
+                        self.status = "Clique dans un passage entre deux murs alignes, ou entre une cloison et un mur perpendiculaire".into();
                     }
                 } else {
                     self.status = "Clique sur un mur pour y placer l'ouverture".into();
