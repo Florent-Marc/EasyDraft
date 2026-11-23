@@ -384,8 +384,7 @@ fn build_pdf_with_background(stream: &str, image: Option<&PdfBackgroundImage>) -
         .map(|object| object.as_bytes().to_vec()).collect();
     if let Some(background) = image {
         let mut object = format!(
-            "<< /Type /XObject /Subtype /Image /Width {} /Height {} \\
-             /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {} >>\nstream\n",
+            "<< /Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length {} >>\nstream\n",
             background.width, background.height, background.jpeg.len(),
         ).into_bytes();
         object.extend_from_slice(&background.jpeg);
