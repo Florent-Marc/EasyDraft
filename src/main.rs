@@ -1159,6 +1159,35 @@ impl EasyDraft {
         });
     }
 
+    fn weld_selected_to_first(&mut self) {
+        let Some(first) = self.selected_handles.first().copied() else { return; };
+        if self.selected_handles.len() < 2 {
+            self.status = "Selectionne au moins deux sommets (Maj + clic)".into();
+            return;
+        }
+        let Some(target) = first.position(&self.plan) else {
+            self.status = "Premier sommet introuvable".into();
+            return;
+        };
+        let mut updated = self.plan.clone();
+        match weld_wall_handles(&mut updated, &self.selected_handles, target) {
+            Ok(()) => {
+                let moved = self.selected_handles.iter().any(|&h|
+                    h.position(&self.plan).is_some_and(|p| p.distance_to(target) > 0.0001)
+                );
+                if moved {
+                    self.snapshot();
+                    self.plan = updated;
+                }
+                self.status = format!(
+                    "{} extremites raccordees exactement en X {:.2} / Y {:.2} m",
+                    self.selected_handles.len(), target.x, target.y
+                );
+            }
+            Err(error) => self.status = format!("Raccordement refuse : {error}"),
+        }
+    }
+
     fn update_marquee(&mut self, point: Point) {
         if let Some(marquee) = self.marquee.as_mut() {
             marquee.current = point;
@@ -2133,6 +2162,7 @@ impl EasyDraft {
 
         if self.tool == Tool::SelectWall {
             if response.drag_started_by(egui::PointerButton::Primary) {
+                self.marquee_handles = ui.ctx().input(|i| i.modifiers.shift);
                 let initial = ui.ctx().input(|i| i.pointer.press_origin());
                 if let Some(pos) = initial.or(response.interact_pointer_pos()) {
                     self.begin_drag(to_world(pos), ppm);
@@ -2164,6 +2194,12 @@ impl EasyDraft {
         if response.clicked_by(egui::PointerButton::Primary) {
             if let Some(pos) = response.interact_pointer_pos() {
                 let world = to_world(pos);
+                if self.tool == Tool::SelectWall
+                    && ui.ctx().input(|i| i.modifiers.shift)
+                    && self.toggle_wall_handles(world, ppm)
+                {
+                    // Maj + clic : ne pas reinitialiser les autres sommets.
+                } else {
                 let point = match self.tool {
                     Tool::SelectWall | Tool::Door | Tool::Window | Tool::Passage | Tool::LinkLighting => world,
                     Tool::Wall => {
@@ -2178,6 +2214,7 @@ impl EasyDraft {
                     _ => world.snapped(self.snap_m),
                 };
                 self.place(point, ppm);
+                }
             }
         }
 
@@ -2279,6 +2316,12 @@ impl EasyDraft {
             if self.show_dimensions {
                 draw_dimension(&painter, a, b, width_px, wall.length_m());
             }
+            if self.tool == Tool::SelectWall {
+                // Les sommets doivent etre visibles meme avant leur selection.
+                for endpoint in [a, b] {
+                    painter.circle_filled(endpoint, 3.0, Color32::from_rgb(94, 151, 210));
+                }
+            }
             if self.selected_wall == Some(index) || self.selection.walls.contains(&index) {
                 for endpoint in [a, b] {
                     painter.circle_filled(endpoint, 6.0, Color32::WHITE);
@@ -2287,6 +2330,34 @@ impl EasyDraft {
                         Stroke::new(2.5_f32, Color32::from_rgb(40, 135, 230)),
                     );
                 }
+            }
+        }
+
+        // Une poignee ambre represente un ou plusieurs sommets selectionnes
+        // exactement au meme point, en particulier les jonctions des murs.
+        let mut drawn_nodes: Vec<Point> = Vec::new();
+        for handle in &self.selected_handles {
+            let Some(point) = handle.position(&self.plan) else { continue };
+            if drawn_nodes.iter().any(|&previous| previous.distance_to(point) < 0.0001) {
+                continue;
+            }
+            drawn_nodes.push(point);
+            let pos = to_screen(point);
+            painter.circle_filled(pos, 7.0, Color32::from_rgb(250, 187, 62));
+            painter.circle_stroke(
+                pos, 9.0,
+                Stroke::new(2.0_f32, Color32::from_rgb(166, 98, 9))
+            );
+            let linked = self.selected_handles.iter()
+                .filter(|h| h.position(&self.plan)
+                    .is_some_and(|p| p.distance_to(point) < 0.0001))
+                .count();
+            if linked > 1 {
+                painter.text(
+                    pos + Vec2::new(12.0, -12.0), Align2::LEFT_CENTER,
+                    format!("{linked} pts"), FontId::proportional(12.0),
+                    Color32::from_rgb(125, 78, 7),
+                );
             }
         }
 
@@ -2642,6 +2713,9 @@ impl eframe::App for EasyDraft {
                         }
                         ui.separator();
                         ui.small("Clic gauche : selectionner ou encadrer.");
+                        ui.small("Maj + clic sur un sommet : selectionner plusieurs extremites.");
+                        ui.small("Maj + rectangle : choisir plusieurs sommets de murs.");
+                        ui.small("Glisser un sommet ambre : raccorder les points a une meme position.");
                         ui.small("Clic droit + glisser : deplacer la vue, sans changer d'outil.");
                         ui.small("Mur : repere vert = horizontal / vertical ; Maj verrouille l'axe.");
                         ui.small("Un mur termine revient automatiquement a Selection.");
@@ -2790,7 +2864,23 @@ impl eframe::App for EasyDraft {
             } // Dessin
             if self.sidebar_tab == SidebarTab::Inspecteur {
                 ui.heading("Element selectionne");
-                if self.selection.len() <= 1 { self.selected_properties(ui); }
+                if !self.selected_handles.is_empty() {
+                    ui.strong(format!("{} sommet(s) de mur", self.selected_handles.len()));
+                    ui.small("Maj + clic sur les extremites pour ajouter ou retirer des points.");
+                    ui.small("Maj + dessiner un rectangle vide pour selectionner plusieurs sommets.");
+                    ui.small("Glisse un sommet ambre : tous les points selectionnes seront raccordes au meme endroit.");
+                    ui.small("Le nouvel emplacement s'accroche a la grille et aux autres extremites de murs.");
+                    if self.selected_handles.len() >= 2
+                        && ui.button("Raccorder au premier point").clicked()
+                    {
+                        self.weld_selected_to_first();
+                    }
+                    if ui.button("Effacer la selection des points").clicked() {
+                        self.clear_selection();
+                    }
+                } else if self.selection.len() <= 1 {
+                    self.selected_properties(ui);
+                }
                 ui.separator();
                 ui.small("Clic : selectionner un objet. Glisser depuis le vide : rectangle multi-selection.");
                 ui.small("Rectangle gauche → droite : elements entiers ; droite → gauche : elements traverses.");
