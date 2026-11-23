@@ -442,6 +442,7 @@ struct EasyDraft {
     undo: Vec<HistoryEntry>,
     redo: Vec<HistoryEntry>,
     tool: Tool,
+    placement_appearance: ElectricalAppearance,
     view: View,
     sidebar_tab: SidebarTab,
     palette_search: String,
@@ -481,6 +482,7 @@ impl Default for EasyDraft {
             undo: Vec::new(),
             redo: Vec::new(),
             tool: Tool::SelectWall,
+            placement_appearance: ElectricalAppearance::General,
             view: View::Plan2D,
             sidebar_tab: SidebarTab::Affichage,
             palette_search: String::new(),
@@ -675,6 +677,29 @@ fn electrical_number<T: egui::emath::Numeric>(
         }));
         ui.add(egui::DragValue::new(value).range(range).suffix(suffix));
     });
+}
+
+fn symbol_name(kind: ElectricalKind, appearance: ElectricalAppearance) -> &'static str {
+    if appearance != ElectricalAppearance::General {
+        return appearance.label();
+    }
+    match kind {
+        ElectricalKind::Outlet => "Prise de courant",
+        ElectricalKind::Switch => "Interrupteur",
+        ElectricalKind::Light => "Point lumineux",
+    }
+}
+
+fn symbol_button(
+    ui: &mut egui::Ui, kind: ElectricalKind, appearance: ElectricalAppearance, selected: bool,
+) -> egui::Response {
+    let name = symbol_name(kind, appearance);
+    let response = ui.add_sized([41.0, 36.0], egui::Button::new("").selected(selected));
+    let color = ui.style().interact(&response).fg_stroke.color;
+    rgie_symbols::draw_egui(ui.painter(), response.rect.center() - Vec2::new(0.0, 3.0),
+        &rgie_symbols::device_primitives(kind, appearance), color, 0.65);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, name));
+    response.on_hover_text(name)
 }
 
 impl EasyDraft {
@@ -1112,9 +1137,41 @@ impl EasyDraft {
         }
     }
 
+    fn electrical_palette(&mut self, ui: &mut egui::Ui) {
+        let query = self.palette_search.trim().to_lowercase();
+        ui.horizontal_wrapped(|ui| {
+            for (tool, kind) in [
+                (Tool::Outlet, ElectricalKind::Outlet),
+                (Tool::Switch, ElectricalKind::Switch),
+                (Tool::Light, ElectricalKind::Light),
+            ] {
+                for &appearance in ElectricalAppearance::choices(kind) {
+                    let name = symbol_name(kind, appearance);
+                    if !name.to_lowercase().contains(&query) { continue; }
+                    if symbol_button(ui, kind, appearance,
+                        self.tool == tool && self.placement_appearance == appearance).clicked()
+                    {
+                        self.select_tool(tool);
+                        self.placement_appearance = appearance;
+                        self.sidebar_tab = SidebarTab::Electricite;
+                        self.status = format!("Clique sur le plan pour placer : {name}");
+                    }
+                }
+            }
+        });
+    }
+
+    fn select_circuit_properties(&mut self, index: usize) {
+        self.settings.active_circuit_index = index;
+        self.pending_switch = None;
+        self.sidebar_tab = SidebarTab::Electricite;
+        self.reveal_circuit = Some(index);
+    }
+
     fn select_tool(&mut self, tool: Tool) {
         self.cancel_drag();
         self.tool = tool;
+        self.placement_appearance = ElectricalAppearance::General;
         self.reset_pending();
         if matches!(tool, Tool::Outlet | Tool::Switch | Tool::Light | Tool::LinkLighting) {
             self.settings.show_electrical = true;
@@ -2073,15 +2130,14 @@ impl EasyDraft {
                 ui.heading(kind);
                 let current_style = self.plan.symbol_appearance(index);
                 let mut selected_style = current_style;
-                egui::ComboBox::from_label("Symbole (RGIE tableau 2.23)")
-                    .selected_text(current_style.label())
-                    .show_ui(ui, |ui| {
-                        for &option in ElectricalAppearance::choices(symbol.kind) {
-                            ui.selectable_value(
-                                &mut selected_style, option, option.label()
-                            );
+                ui.label("Symbole");
+                ui.horizontal_wrapped(|ui| {
+                    for &option in ElectricalAppearance::choices(symbol.kind) {
+                        if symbol_button(ui, symbol.kind, option, option == current_style).clicked() {
+                            selected_style = option;
                         }
-                    });
+                    }
+                });
                 if selected_style != current_style {
                     let mut updated = self.plan.clone();
                     match updated.set_symbol_appearance(index, selected_style) {
@@ -2537,6 +2593,9 @@ impl EasyDraft {
                 self.snapshot();
                 let new_index = self.plan.symbols.len();
                 self.plan.symbols.push(ElectricalSymbol { position, kind });
+                if self.placement_appearance != ElectricalAppearance::General {
+                    let _ = self.plan.set_symbol_appearance(new_index, self.placement_appearance);
+                }
                 if kind == ElectricalKind::Outlet {
                     match self.plan.assign_outlet_to_circuit(new_index, self.settings.active_circuit_index) {
                         Ok(()) => self.status = "Prise ajoutee au circuit actif".into(),
@@ -3157,7 +3216,7 @@ impl eframe::App for EasyDraft {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false]).show(ui, |ui| {
                     if self.view == View::Plan2D {
-                        let families: [(&str, &[(Tool, &str)]); 3] = [
+                        let families: [(&str, &[(Tool, &str)]); 2] = [
                             ("OUTILS DE DESSIN", &[
                                 (Tool::SelectWall, "Selection / cadre"),
                                 (Tool::Wall, "Mur droit"),
@@ -3167,12 +3226,6 @@ impl eframe::App for EasyDraft {
                                 (Tool::Window, "Fenetre"),
                                 (Tool::Passage, "Passage libre"),
                                 (Tool::Stair, "Escalier"),
-                            ]),
-                            ("ELECTRICITE", &[
-                                (Tool::Outlet, "Prise de courant"),
-                                (Tool::Switch, "Interrupteur"),
-                                (Tool::Light, "Point lumineux"),
-                                (Tool::LinkLighting, "Lier interrupteur / lampe"),
                             ]),
                         ];
                         for (family, items) in families {
@@ -3188,6 +3241,15 @@ impl eframe::App for EasyDraft {
                                 };
                             }
                             ui.add_space(4.0);
+                        }
+                        ui.strong("ÉLECTRICITÉ");
+                        self.electrical_palette(ui);
+                        let link_label = "Lier interrupteur / lampe";
+                        if link_label.to_lowercase().contains(&self.palette_search.trim().to_lowercase())
+                            && ui.button(link_label).clicked()
+                        {
+                            self.select_tool(Tool::LinkLighting);
+                            self.sidebar_tab = SidebarTab::Electricite;
                         }
                         ui.separator();
                         ui.small("Clic gauche : selectionner ou encadrer.");
@@ -3211,8 +3273,7 @@ impl eframe::App for EasyDraft {
                                 egui::Button::new(format!("Circuit {name}"))
                                     .selected(self.settings.active_circuit_index == i)
                             ).clicked() {
-                                self.settings.active_circuit_index = i;
-                                self.sidebar_tab = SidebarTab::Electricite;
+                                self.select_circuit_properties(i);
                             }
                         }
                         if ui.button("+ Ajouter un circuit").clicked() {
@@ -3277,6 +3338,9 @@ impl eframe::App for EasyDraft {
                         ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Affichage, "Plan");
                         ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Electricite, "Circuits");
                     } else if self.view == View::Unifilar {
+                        if self.selected_symbol.is_some() {
+                            ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Inspecteur, "Objet");
+                        }
                         ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Electricite, "Circuits");
                         ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Dossier, "Dossier");
                     } else {
@@ -3595,13 +3659,20 @@ impl eframe::App for EasyDraft {
             ui.small("Les prises et liaisons I -> L sont affectees au circuit actif.");
             ui.label(format!("Prises sans circuit : {}", self.plan.unassigned_outlets()));
             let reveal_circuit = self.reveal_circuit.take();
+            let active = self.settings.active_circuit_index;
+            let accordion_id = ui.id().with(("active_circuit_panel", self.active_sheet));
+            let changed = ui.data_mut(|data| {
+                let previous = data.get_temp::<usize>(accordion_id);
+                data.insert_temp(accordion_id, active);
+                previous != Some(active)
+            });
             for circuit_index in 0..self.plan.circuit_count() {
                 let Some(circuit_data) = self.plan.circuit(circuit_index).cloned() else { continue; };
                 let reveal = reveal_circuit == Some(circuit_index);
                 let section = egui::CollapsingHeader::new(format!(
                     "Circuit {} - protection / conducteurs", circuit_data.letter
                 )).id_salt(("circuit_properties", self.active_sheet, circuit_index))
-                    .open(reveal.then_some(true))
+                    .open((changed || reveal_circuit.is_some()).then_some(circuit_index == active))
                     .default_open(circuit_index == self.settings.active_circuit_index).show(ui, |ui| {
                     let mut circuit = circuit_data.clone();
                     ui.label("Repere du circuit (A, B, C...)");
@@ -3690,6 +3761,10 @@ impl eframe::App for EasyDraft {
                 if reveal {
                     section.header_response.scroll_to_me(Some(egui::Align::Min));
                 }
+                if section.header_response.clicked() && circuit_index != active {
+                    self.select_circuit_properties(circuit_index);
+                    ui.ctx().request_repaint();
+                }
             }
             ui.separator();
             if self.view == View::Unifilar {
@@ -3748,10 +3823,13 @@ impl eframe::App for EasyDraft {
                     if let Some(action) = unifilar::show(ui, &self.plan, self.settings.active_circuit_index) {
                         match action {
                             unifilar::Action::SelectCircuit(index) => {
-                                self.settings.active_circuit_index = index;
-                                self.pending_switch = None;
-                                self.sidebar_tab = SidebarTab::Electricite;
-                                self.reveal_circuit = Some(index);
+                                self.select_circuit_properties(index);
+                                ctx.request_repaint();
+                            }
+                            unifilar::Action::SelectSymbol(index) => {
+                                self.clear_selection();
+                                self.selected_symbol = Some(index);
+                                self.sidebar_tab = SidebarTab::Inspecteur;
                                 ctx.request_repaint();
                             }
                             unifilar::Action::RemoveConnection(index) => {
@@ -4271,6 +4349,19 @@ mod plan_editor_tests {
             assert_eq!(app.tool, Tool::SelectWall);
             assert_eq!(app.selected_symbol, Some(index));
         }
+    }
+
+    #[test]
+    fn electrical_palette_places_the_selected_variant() {
+        let mut app = EasyDraft::default();
+        app.select_tool(Tool::Outlet);
+        app.placement_appearance = ElectricalAppearance::OutletTriple;
+        app.place(Point { x: 1.0, y: 2.0 }, 80.0);
+        assert_eq!(app.plan.symbol_appearance(0), ElectricalAppearance::OutletTriple);
+        assert_eq!(app.plan.outlets_on_circuit(0), vec![0]);
+        assert_eq!(app.tool, Tool::SelectWall);
+        app.select_tool(Tool::Outlet);
+        assert_eq!(app.placement_appearance, ElectricalAppearance::General);
     }
 
     #[test]

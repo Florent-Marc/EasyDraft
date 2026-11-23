@@ -15,6 +15,7 @@ const WARNING: Color32 = Color32::from_rgb(177, 93, 21);
 /// Actions remontées au niveau de l'application, pour enregistrer une annulation.
 pub enum Action {
     SelectCircuit(usize),
+    SelectSymbol(usize),
     RemoveConnection(usize),
     MoveGroup { switch_index: usize, target_circuit: usize },
 }
@@ -252,10 +253,19 @@ impl CircuitBranches {
     }
 }
 
+fn symbol_hit(ui: &mut egui::Ui, index: usize, at: Pos2) -> bool {
+    let rect = egui::Rect::from_center_size(at, Vec2::splat(36.0));
+    let response = ui.interact(rect, ui.id().with(("unifilar_symbol", index)), egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .on_hover_text("Modifier le symbole");
+    response.clicked()
+}
+
 fn draw_circuit(
-    painter: &egui::Painter, plan: &Plan, branches: &CircuitBranches, foot: Pos2,
-) {
-    let Some(circuit) = plan.circuit(branches.index) else { return };
+    ui: &mut egui::Ui, painter: &egui::Painter, plan: &Plan, branches: &CircuitBranches, foot: Pos2,
+) -> Option<usize> {
+    let circuit = plan.circuit(branches.index)?;
+    let mut selected = None;
     let protection_y = foot.y - 40.0;
     let top = foot.y - 110.0 - branches.height();
     let x = foot.x;
@@ -294,7 +304,11 @@ fn draw_circuit(
         let radius = rgie_symbols::schematic_switch_radius(appearance) * 0.91;
         segment(painter, Pos2::new(x, y), Pos2::new(switch_x - radius, y), INK, 1.5);
         painter.circle_filled(Pos2::new(x, y), 2.8, INK);
-        switch_symbol(painter, Pos2::new(switch_x, y), appearance);
+        let position = Pos2::new(switch_x, y);
+        if symbol_hit(ui, *switch_index, position) {
+            selected = Some(*switch_index);
+        }
+        switch_symbol(painter, position, appearance);
         if let Some(number) = plan.symbol_number(*switch_index) {
             caption(painter, Pos2::new(switch_x, y + 25.0), &format!("I{number}"), size, MUTED);
         }
@@ -306,7 +320,11 @@ fn draw_circuit(
         for (index, lamp) in lamps.iter().enumerate() {
             let row_y = y + index as f32 * POINT_STEP;
             segment(painter, Pos2::new(split_x, row_y), Pos2::new(lamp_x, row_y), INK, 1.5);
-            light_symbol(painter, Pos2::new(lamp_x, row_y), plan.symbol_appearance(*lamp));
+            let position = Pos2::new(lamp_x, row_y);
+            if symbol_hit(ui, *lamp, position) {
+                selected = Some(*lamp);
+            }
+            light_symbol(painter, position, plan.symbol_appearance(*lamp));
             if let Some(reference) = plan.lighting_point_ref(*lamp) {
                 caption(painter, Pos2::new(lamp_x + 34.0, row_y), &reference, size, BLUE);
             }
@@ -315,6 +333,9 @@ fn draw_circuit(
     }
     for outlet in &branches.outlets {
         let point = Pos2::new(x + 65.0, y);
+        if symbol_hit(ui, *outlet, point) {
+            selected = Some(*outlet);
+        }
         segment(painter, Pos2::new(x, y), point + Vec2::new(-19.0 * 0.85, 0.0), INK, 1.5);
         painter.circle_filled(Pos2::new(x, y), 2.8, INK);
         rgie_symbols::draw_egui(painter, point,
@@ -329,6 +350,7 @@ fn draw_circuit(
         label_painter.text(Pos2::new(x + 16.0, top), Align2::LEFT_CENTER, "Circuit vide",
             FontId::proportional(11.0), MUTED);
     }
+    selected
 }
 
 /// Circuits côte à côte et rails distincts pour les DDR enregistrés.
@@ -382,7 +404,9 @@ fn show_schematic_sheet(ui: &mut egui::Ui, plan: &Plan, active: usize) -> Option
                 if hit.clicked() {
                     action = Some(Action::SelectCircuit(circuit.index));
                 }
-                draw_circuit(&group_painter, plan, circuit, foot);
+                if let Some(index) = draw_circuit(ui, &group_painter, plan, circuit, foot) {
+                    action = Some(Action::SelectSymbol(index));
+                }
                 if ddr.is_some() {
                     group_painter.circle_filled(foot, 3.0, INK);
                 }
@@ -587,24 +611,29 @@ mod tests {
         assert!(position("A1").y < ddr_1.y);
         assert!(position("C1").x > c.x);
 
-        let pos = b + Vec2::new(16.0, 8.0);
-        let mut action = None;
-        for pressed in [true, false] {
-            let mut input = input.clone();
-            input.events = vec![
-                egui::Event::PointerMoved(pos),
-                egui::Event::PointerButton {
-                    pos, button: egui::PointerButton::Primary, pressed,
-                    modifiers: egui::Modifiers::NONE,
-                },
-            ];
-            let _ = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    action = show(ui, &plan, 0);
+        let click = |pos| {
+            let mut action = None;
+            for pressed in [true, false] {
+                let mut input = input.clone();
+                input.events = vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos, button: egui::PointerButton::Primary, pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ];
+                let _ = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        action = show(ui, &plan, 0);
+                    });
                 });
-            });
-        }
-        assert!(matches!(action, Some(Action::SelectCircuit(1))));
+            }
+            action
+        };
+        assert!(matches!(click(b + Vec2::new(16.0, 8.0)), Some(Action::SelectCircuit(1))));
+        let light = plan.active_lighting_connections_for_circuit(0)[0].light_index;
+        let light_pos = Pos2::new(a.x + 136.0, a.y + 44.0);
+        assert!(matches!(click(light_pos), Some(Action::SelectSymbol(index)) if index == light));
     }
 
     #[test]

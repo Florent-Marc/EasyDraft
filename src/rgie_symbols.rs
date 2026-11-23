@@ -60,6 +60,10 @@ pub fn device_primitives(kind: ElectricalKind, appearance: ElectricalAppearance)
                     marks.push(line((-4.0, 12.8), (-9.0, 23.0)));
                     marks.push(line((-9.0, 23.0), (-16.0, 20.0)));
                 }
+                ElectricalAppearance::SwitchPull => {
+                    marks.push(line((0.0, 12.0), (0.0, 25.0)));
+                    marks.push(Primitive::Circle((0.0, 28.0), 3.0));
+                }
                 _ => {}
             }
             marks
@@ -71,6 +75,13 @@ pub fn device_primitives(kind: ElectricalKind, appearance: ElectricalAppearance)
                 line((0.0, -10.0), (0.0, 0.0)),
                 Primitive::Arc((0.0, 10.0), 10.0, std::f32::consts::PI, std::f32::consts::TAU),
             ];
+            if style == ElectricalAppearance::OutletTriple {
+                for y in [8.0, 16.0] {
+                    marks.push(Primitive::Arc((0.0, 10.0 + y), 10.0,
+                        std::f32::consts::PI, std::f32::consts::TAU));
+                }
+                marks.push(line((0.0, 0.0), (0.0, 16.0)));
+            }
             if matches!(style, ElectricalAppearance::OutletEarth |
                 ElectricalAppearance::OutletEarthChild) {
                 marks.push(line((-12.5, -0.3), (12.5, -0.3)));
@@ -111,6 +122,13 @@ pub fn schematic_device_primitives(
                 line((-4.0, 10.0), (0.0, 10.0)),
                 line((9.0, -9.0), (9.0, 9.0)),
             ];
+            if appearance == ElectricalAppearance::OutletTriple {
+                for x in [17.0, 24.0] {
+                    marks.push(Primitive::Arc((x - 10.0, 0.0), 10.0,
+                        -std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2));
+                }
+                marks.push(line((10.0, 0.0), (24.0, 0.0)));
+            }
             if matches!(appearance, ElectricalAppearance::OutletEarth | ElectricalAppearance::OutletEarthChild) {
                 marks.push(line((13.0, -8.0), (13.0, 8.0)));
             }

@@ -129,10 +129,12 @@ pub enum ElectricalAppearance {
     General,
     SwitchBipolar,
     SwitchTwoWay,
+    SwitchPull,
     PushButton,
     OutletEarth,
     OutletChild,
     OutletEarthChild,
+    OutletTriple,
     WallLight,
 }
 
@@ -140,9 +142,9 @@ impl ElectricalAppearance {
     pub fn valid_for(self, kind: ElectricalKind) -> bool {
         match self {
             Self::General => true,
-            Self::SwitchBipolar | Self::SwitchTwoWay | Self::PushButton =>
+            Self::SwitchBipolar | Self::SwitchTwoWay | Self::SwitchPull | Self::PushButton =>
                 kind == ElectricalKind::Switch,
-            Self::OutletEarth | Self::OutletChild | Self::OutletEarthChild =>
+            Self::OutletEarth | Self::OutletChild | Self::OutletEarthChild | Self::OutletTriple =>
                 kind == ElectricalKind::Outlet,
             Self::WallLight => kind == ElectricalKind::Light,
         }
@@ -154,9 +156,11 @@ impl ElectricalAppearance {
             Self::SwitchBipolar => "Interrupteur bipolaire",
             Self::SwitchTwoWay => "Interrupteur va-et-vient",
             Self::PushButton => "Bouton-poussoir",
+            Self::SwitchPull => "Interrupteur à tirette",
             Self::OutletEarth => "Prise avec contact de terre",
             Self::OutletChild => "Prise avec protection enfant",
             Self::OutletEarthChild => "Prise avec terre et protection enfant",
+            Self::OutletTriple => "Prise triple",
             Self::WallLight => "Point d'attente d'eclairage en applique",
         }
     }
@@ -164,10 +168,10 @@ impl ElectricalAppearance {
     pub fn choices(kind: ElectricalKind) -> &'static [Self] {
         match kind {
             ElectricalKind::Switch => &[
-                Self::General, Self::SwitchBipolar, Self::SwitchTwoWay, Self::PushButton
+                Self::General, Self::SwitchBipolar, Self::SwitchTwoWay, Self::SwitchPull, Self::PushButton
             ],
             ElectricalKind::Outlet => &[
-                Self::General, Self::OutletEarth, Self::OutletChild, Self::OutletEarthChild
+                Self::General, Self::OutletEarth, Self::OutletChild, Self::OutletEarthChild, Self::OutletTriple
             ],
             ElectricalKind::Light => &[Self::General, Self::WallLight],
         }
