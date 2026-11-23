@@ -328,9 +328,9 @@ Les calques sont des **options d'affichage du logiciel** ; l'export PDF actuel d
 
 ## Niveaux et parties du bâtiment
 
-Dans la barre du haut, ouvrez **Gérer les feuilles** pour ajouter un étage, un grenier ou une cave. Pour dessiner une annexe ou une autre partie du bâtiment, saisissez son nom et cliquez sur **Ajouter une partie**. Le sélecteur **Feuille** permet de reprendre le dessin d'un autre niveau. Les anciens plans s'ouvrent sur la feuille **Rez-de-chaussée**, que vous pouvez renommer.
+Dans la barre du haut, ouvrez **Gérer les feuilles** pour ajouter un étage, un grenier ou une cave. Pour dessiner une annexe ou une autre partie du bâtiment, cliquez sur **Ajouter une partie**, puis saisissez son nom dans la fenêtre. Le sélecteur **Feuille** permet de reprendre le dessin d'un autre niveau. Les anciens plans s'ouvrent sur la feuille **Rez-de-chaussée**, que vous pouvez renommer.
 
-L'enregistrement JSON conserve toutes les feuilles. Dans **Exporter → Plan de situation en PDF**, EasyDraft crée un seul PDF A4 paysage avec une page titrée par feuille, dans l'ordre de la liste. Le schéma unifilaire et le dossier RGIE concernent la feuille active.
+L'enregistrement JSON conserve toutes les feuilles et les réglages du projet, dont les calques visibles, la grille, les cotes, l'aimantation, le cadrage du dessin et les réglages des outils. Dans **Exporter → Plan de situation en PDF**, EasyDraft crée un seul PDF A4 paysage avec une page titrée par feuille, dans l'ordre de la liste. Le schéma unifilaire et le dossier RGIE concernent la feuille active.
 
 ## Dessin de la maison
 

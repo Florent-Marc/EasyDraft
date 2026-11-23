@@ -34,7 +34,8 @@ enum SidebarTab {
 }
 
 /// Filtre les appareils et les liaisons affiches sur le plan de situation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 enum CircuitVisibility {
     All,
     Active,
@@ -333,6 +334,78 @@ struct PlanSheet {
     plan: Plan,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct ProjectSettings {
+    show_underlay: bool,
+    show_dimensions: bool,
+    show_architecture: bool,
+    show_rooms: bool,
+    show_electrical: bool,
+    circuit_visibility: CircuitVisibility,
+    active_circuit_index: usize,
+    snap_endpoints: bool,
+    snap_m: f32,
+    zoom: f32,
+    pan: [f32; 2],
+    grid: bool,
+    new_wall_thickness_cm: f32,
+    new_door_width_cm: f32,
+    new_window_width_cm: f32,
+    new_passage_width_cm: f32,
+    new_stair_width_cm: f32,
+    new_stair_steps: u16,
+    door_hinge_right: bool,
+    door_swing_flipped: bool,
+}
+
+impl Default for ProjectSettings {
+    fn default() -> Self {
+        Self {
+            show_underlay: true,
+            show_dimensions: true,
+            show_architecture: true,
+            show_rooms: true,
+            show_electrical: true,
+            circuit_visibility: CircuitVisibility::All,
+            active_circuit_index: 0,
+            snap_endpoints: true,
+            snap_m: 0.05,
+            zoom: 1.0,
+            pan: [0.0; 2],
+            grid: true,
+            new_wall_thickness_cm: DEFAULT_WALL_THICKNESS_M * 100.0,
+            new_door_width_cm: 90.0,
+            new_window_width_cm: 120.0,
+            new_passage_width_cm: 110.0,
+            new_stair_width_cm: 100.0,
+            new_stair_steps: 12,
+            door_hinge_right: false,
+            door_swing_flipped: false,
+        }
+    }
+}
+
+impl ProjectSettings {
+    fn clamp(&mut self, circuit_count: usize) {
+        self.active_circuit_index = self.active_circuit_index.min(circuit_count - 1);
+        self.snap_m = self.snap_m.clamp(0.05, 0.5);
+        self.zoom = self.zoom.clamp(0.3, 4.0);
+        self.new_wall_thickness_cm = self.new_wall_thickness_cm.clamp(5.0, 60.0);
+        self.new_door_width_cm = self.new_door_width_cm.clamp(50.0, 200.0);
+        self.new_window_width_cm = self.new_window_width_cm.clamp(40.0, 400.0);
+        self.new_passage_width_cm = self.new_passage_width_cm.clamp(40.0, 400.0);
+        self.new_stair_width_cm = self.new_stair_width_cm.clamp(60.0, 250.0);
+        self.new_stair_steps = self.new_stair_steps.clamp(3, 30);
+    }
+}
+
+struct SheetNameDialog {
+    name: String,
+    rename: bool,
+    focus_input: bool,
+}
+
 /// La première feuille conserve le format des anciens fichiers EasyDraft.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Project {
@@ -344,6 +417,8 @@ struct Project {
     additional_sheets: Vec<PlanSheet>,
     #[serde(default)]
     active_sheet: usize,
+    #[serde(default)]
+    settings: ProjectSettings,
 }
 
 fn default_sheet_name() -> String {
@@ -352,7 +427,8 @@ fn default_sheet_name() -> String {
 
 enum HistoryEntry {
     Plan { sheet: usize, plan: Plan },
-    Project(Project),
+    Project { project: Project, restore_settings: bool },
+    SheetName { sheet: usize, name: String },
 }
 
 struct EasyDraft {
@@ -360,7 +436,8 @@ struct EasyDraft {
     // Le dessin de la feuille active est déplacé dans `plan` pour l'éditeur.
     sheets: Vec<PlanSheet>,
     active_sheet: usize,
-    sheet_name_input: String,
+    sheet_name_dialog: Option<SheetNameDialog>,
+    settings: ProjectSettings,
     undo: Vec<HistoryEntry>,
     redo: Vec<HistoryEntry>,
     tool: Tool,
@@ -370,9 +447,7 @@ struct EasyDraft {
     underlay_texture: Option<egui::TextureHandle>,
     underlay_loaded_key: Option<String>,
     underlay_dimensions: [usize; 2],
-    show_underlay: bool,
     pending_switch: Option<usize>,
-    active_circuit_index: usize,
     pending_wall: Option<Point>,
     pending_stair: Option<Point>,
     selected_wall: Option<usize>,
@@ -385,24 +460,6 @@ struct EasyDraft {
     selection: SelectionSet,
     selected_handles: Vec<WallHandle>,
     marquee_handles: bool,
-    new_wall_thickness_cm: f32,
-    new_door_width_cm: f32,
-    new_window_width_cm: f32,
-    new_passage_width_cm: f32,
-    new_stair_width_cm: f32,
-    new_stair_steps: u16,
-    door_hinge_right: bool,
-    door_swing_flipped: bool,
-    show_dimensions: bool,
-    show_architecture: bool,
-    show_rooms: bool,
-    show_electrical: bool,
-    circuit_visibility: CircuitVisibility,
-    snap_endpoints: bool,
-    snap_m: f32,
-    zoom: f32,
-    pan: Vec2,
-    grid: bool,
     file_path: String,
     /// Nouveau projet : pas encore de chemin sauvegarde.
     file_path_assigned: bool,
@@ -417,7 +474,8 @@ impl Default for EasyDraft {
             plan: Plan::default(),
             sheets: vec![PlanSheet { name: default_sheet_name(), plan: Plan::default() }],
             active_sheet: 0,
-            sheet_name_input: String::new(),
+            sheet_name_dialog: None,
+            settings: ProjectSettings::default(),
             undo: Vec::new(),
             redo: Vec::new(),
             tool: Tool::Wall,
@@ -427,9 +485,7 @@ impl Default for EasyDraft {
             underlay_texture: None,
             underlay_loaded_key: None,
             underlay_dimensions: [1, 1],
-            show_underlay: true,
             pending_switch: None,
-            active_circuit_index: 0,
             pending_wall: None,
             pending_stair: None,
             selected_wall: None,
@@ -442,24 +498,6 @@ impl Default for EasyDraft {
             selection: SelectionSet::default(),
             selected_handles: Vec::new(),
             marquee_handles: false,
-            new_wall_thickness_cm: DEFAULT_WALL_THICKNESS_M * 100.0,
-            new_door_width_cm: 90.0,
-            new_window_width_cm: 120.0,
-            new_passage_width_cm: 110.0,
-            new_stair_width_cm: 100.0,
-            new_stair_steps: 12,
-            door_hinge_right: false,
-            door_swing_flipped: false,
-            show_dimensions: true,
-            show_architecture: true,
-            show_rooms: true,
-            show_electrical: true,
-            circuit_visibility: CircuitVisibility::All,
-            snap_endpoints: true,
-            snap_m: 0.05,
-            zoom: 1.0,
-            pan: Vec2::ZERO,
-            grid: true,
             file_path: "mon-plan.json".into(),
             file_path_assigned: false,
             pdf_path: "plan-easydraft.pdf".into(),
@@ -615,6 +653,7 @@ impl EasyDraft {
             first_sheet_name: first.name,
             additional_sheets: sheets,
             active_sheet: self.active_sheet,
+            settings: self.settings,
         }
     }
 
@@ -623,13 +662,15 @@ impl EasyDraft {
         self.sheets.extend(project.additional_sheets);
         self.active_sheet = project.active_sheet.min(self.sheets.len() - 1);
         self.plan = std::mem::take(&mut self.sheets[self.active_sheet].plan);
-        self.sheet_name_input.clear();
+        self.sheet_name_dialog = None;
         self.reset_sheet_editor();
+        self.settings = project.settings;
+        self.settings.clamp(self.plan.circuit_count());
     }
 
     fn replace_project(&mut self, project: Project) {
         self.cancel_drag();
-        self.record_history(HistoryEntry::Project(self.project()));
+        self.record_history(HistoryEntry::Project { project: self.project(), restore_settings: true });
         self.set_project(project);
     }
 
@@ -639,14 +680,14 @@ impl EasyDraft {
             first_sheet_name: default_sheet_name(),
             additional_sheets: Vec::new(),
             active_sheet: 0,
+            settings: ProjectSettings::default(),
         });
     }
 
     fn reset_sheet_editor(&mut self) {
         self.reset_pending();
         self.clear_selection();
-        self.active_circuit_index = 0;
-        self.circuit_visibility = CircuitVisibility::All;
+        self.settings.active_circuit_index = 0;
     }
 
     fn switch_sheet(&mut self, index: usize) {
@@ -661,14 +702,14 @@ impl EasyDraft {
 
     fn add_sheet(&mut self, name: String) {
         self.cancel_drag();
-        self.record_history(HistoryEntry::Project(self.project()));
+        self.record_history(HistoryEntry::Project { project: self.project(), restore_settings: false });
         let mut plan = Plan::default();
         plan.installation_info = self.plan.installation_info.clone();
         self.sheets.push(PlanSheet { name, plan });
         self.switch_sheet(self.sheets.len() - 1);
         self.view = View::Plan2D;
-        self.pan = Vec2::ZERO;
-        self.zoom = 1.0;
+        self.settings.pan = [0.0; 2];
+        self.settings.zoom = 1.0;
     }
 
     fn sheet_controls(&mut self, ui: &mut egui::Ui) {
@@ -695,24 +736,75 @@ impl EasyDraft {
                 }
             }
             ui.separator();
-            ui.add(egui::TextEdit::singleline(&mut self.sheet_name_input)
-                .hint_text("Nom, ex. Annexe")
-                .char_limit(60));
-            let name = self.sheet_name_input.trim().to_owned();
-            let available = !name.is_empty() && !self.sheets.iter().any(|sheet| sheet.name == name);
-            if ui.add_enabled(available, egui::Button::new("Ajouter une partie")).clicked() {
-                self.add_sheet(name.clone());
-                self.sheet_name_input.clear();
+            if ui.button("Ajouter une partie…").clicked() {
+                self.open_sheet_name_dialog(false);
                 ui.close();
             }
-            if ui.add_enabled(available, egui::Button::new("Renommer la feuille active")).clicked() {
-                self.cancel_drag();
-                self.record_history(HistoryEntry::Project(self.project()));
-                self.sheets[self.active_sheet].name = name;
-                self.sheet_name_input.clear();
+            if ui.button("Renommer la feuille active…").clicked() {
+                self.open_sheet_name_dialog(true);
                 ui.close();
             }
         });
+    }
+
+    fn open_sheet_name_dialog(&mut self, rename: bool) {
+        self.sheet_name_dialog = Some(SheetNameDialog {
+            name: if rename { self.sheets[self.active_sheet].name.clone() } else { String::new() },
+            rename,
+            focus_input: true,
+        });
+    }
+
+    fn show_sheet_name_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.sheet_name_dialog.take() else { return };
+        let modal = egui::Modal::new(egui::Id::new("sheet_name_dialog")).show(ctx, |ui| {
+            ui.heading(if dialog.rename { "Renommer la feuille" } else { "Ajouter une partie" });
+            ui.label("Nom de la feuille");
+            let input = ui.add(egui::TextEdit::singleline(&mut dialog.name)
+                .hint_text("Ex. Annexe")
+                .desired_width(260.0)
+                .char_limit(60));
+            if std::mem::take(&mut dialog.focus_input) {
+                input.request_focus();
+            }
+
+            let name = dialog.name.trim();
+            let duplicate = self.sheets.iter().enumerate().any(|(index, sheet)| {
+                (!dialog.rename || index != self.active_sheet) && sheet.name == name
+            });
+            if duplicate {
+                ui.label("Une feuille porte déjà ce nom.");
+            }
+            let valid = !name.is_empty() && !duplicate;
+            ui.horizontal(|ui| {
+                let confirm = ui.add_enabled(valid, egui::Button::new(
+                    if dialog.rename { "Renommer" } else { "Ajouter" }
+                )).clicked();
+                let enter = input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let cancel = ui.button("Annuler").clicked();
+                (valid && (confirm || enter), cancel)
+            }).inner
+        });
+
+        let (confirmed, cancelled) = modal.inner;
+        if confirmed {
+            let name = dialog.name.trim().to_owned();
+            if dialog.rename {
+                self.rename_active_sheet(name);
+            } else {
+                self.add_sheet(name);
+            }
+        } else if !cancelled && !modal.should_close() {
+            self.sheet_name_dialog = Some(dialog);
+        }
+    }
+
+    fn rename_active_sheet(&mut self, name: String) {
+        let sheet = self.active_sheet;
+        if self.sheets[sheet].name != name {
+            let previous = std::mem::replace(&mut self.sheets[sheet].name, name);
+            self.record_history(HistoryEntry::SheetName { sheet, name: previous });
+        }
     }
 
     fn record_history(&mut self, entry: HistoryEntry) {
@@ -736,10 +828,17 @@ impl EasyDraft {
                 self.clear_selection();
                 HistoryEntry::Plan { sheet, plan: previous }
             }
-            HistoryEntry::Project(project) => {
+            HistoryEntry::Project { mut project, restore_settings } => {
                 let previous = self.project();
+                if !restore_settings {
+                    project.settings = self.settings;
+                }
                 self.set_project(project);
-                HistoryEntry::Project(previous)
+                HistoryEntry::Project { project: previous, restore_settings }
+            }
+            HistoryEntry::SheetName { sheet, name } => {
+                let previous = std::mem::replace(&mut self.sheets[sheet].name, name);
+                HistoryEntry::SheetName { sheet, name: previous }
             }
         }
     }
@@ -842,7 +941,7 @@ impl EasyDraft {
                     opacity: 0.46,
                     rotation_quarters: 0,
                 });
-                self.show_underlay = true;
+                self.settings.show_underlay = true;
                 self.underlay_loaded_key = None;
                 self.refresh_underlay_texture(ctx);
                 self.sidebar_tab = SidebarTab::Affichage;
@@ -936,7 +1035,7 @@ impl EasyDraft {
             Ok(plan) => {
                 self.replace_with_single_plan(plan);
                 self.view = View::Unifilar;
-                self.show_electrical = true;
+                self.settings.show_electrical = true;
                 self.status = "Exemple de tableau charge : D1 vers A/B, D2 vers C (caracteristiques a renseigner)".into();
             }
             Err(error) => self.status = format!("Exemple tableau invalide : {error}"),
@@ -951,7 +1050,7 @@ impl EasyDraft {
             Ok(plan) => {
                 self.replace_with_single_plan(plan);
                 self.view = View::Unifilar;
-                self.show_electrical = true;
+                self.settings.show_electrical = true;
                 self.status = "Exemple charge : circuits A et B, trois lampes, deux interrupteurs".into();
             }
             Err(error) => self.status = format!("Exemple invalide : {error}"),
@@ -967,11 +1066,11 @@ impl EasyDraft {
             Ok(plan) => {
                 self.replace_with_single_plan(plan);
                 self.view = View::Plan2D;
-                self.show_architecture = true;
-                self.show_rooms = true;
-                self.show_electrical = true;
-                self.pan = Vec2::ZERO;
-                self.zoom = 1.0;
+                self.settings.show_architecture = true;
+                self.settings.show_rooms = true;
+                self.settings.show_electrical = true;
+                self.settings.pan = [0.0; 2];
+                self.settings.zoom = 1.0;
                 self.status = "Exemple charge : Salon, Cuisine, porte et eclairage (Annuler pour revenir)".into();
             }
             Err(err) => self.status = format!("Exemple invalide : {err}"),
@@ -983,16 +1082,16 @@ impl EasyDraft {
         self.tool = tool;
         self.reset_pending();
         if matches!(tool, Tool::Outlet | Tool::Switch | Tool::Light | Tool::LinkLighting) {
-            self.show_electrical = true;
+            self.settings.show_electrical = true;
         }
         if matches!(tool, Tool::Wall | Tool::Door | Tool::Window | Tool::Passage | Tool::Stair) {
-            self.show_architecture = true;
+            self.settings.show_architecture = true;
         }
     }
 
     /// Priorite aux extremites des autres murs lorsqu'elles sont proches du pointeur.
     fn snap_point(&self, raw: Point, ppm: f32) -> Point {
-        if self.snap_endpoints {
+        if self.settings.snap_endpoints {
             if let Some(endpoint) = self.plan.walls.iter()
                 .flat_map(|wall| [wall.start, wall.end])
                 .filter(|endpoint| raw.distance_to(*endpoint) <= 13.0 / ppm)
@@ -1001,24 +1100,24 @@ impl EasyDraft {
                 return endpoint;
             }
         }
-        raw.snapped(self.snap_m)
+        raw.snapped(self.settings.snap_m)
     }
 
     fn symbol_visible_on_plan(&self, symbol_index: usize) -> bool {
-        if !self.show_electrical || self.circuit_visibility == CircuitVisibility::None {
+        if !self.settings.show_electrical || self.settings.circuit_visibility == CircuitVisibility::None {
             return false;
         }
-        if self.circuit_visibility == CircuitVisibility::All {
+        if self.settings.circuit_visibility == CircuitVisibility::All {
             return true;
         }
         let Some(symbol) = self.plan.symbols.get(symbol_index) else { return false; };
         match symbol.kind {
             ElectricalKind::Outlet => self.plan.outlet_assignments.iter().any(|assignment|
                 assignment.symbol_index == symbol_index
-                    && assignment.circuit_index == self.active_circuit_index
+                    && assignment.circuit_index == self.settings.active_circuit_index
             ),
             ElectricalKind::Switch | ElectricalKind::Light =>
-                self.plan.active_lighting_connections_for_circuit(self.active_circuit_index)
+                self.plan.active_lighting_connections_for_circuit(self.settings.active_circuit_index)
                     .iter().any(|link|
                         link.switch_index == symbol_index || link.light_index == symbol_index
                     ),
@@ -1086,7 +1185,7 @@ impl EasyDraft {
     }
 
     fn wall_handles_at(&self, point: Point, ppm: f32) -> Vec<WallHandle> {
-        if !self.show_architecture { return Vec::new(); }
+        if !self.settings.show_architecture { return Vec::new(); }
         let nearest = self.plan.walls.iter().enumerate()
             .flat_map(|(wall_index, wall)| [
                 (WallHandle { wall_index, is_start: true }, wall.start),
@@ -1164,7 +1263,7 @@ impl EasyDraft {
     }
 
     fn snap_joint_destination(&self, raw: Point, ppm: f32) -> Point {
-        if self.snap_endpoints {
+        if self.settings.snap_endpoints {
             if let Some(position) = self.plan.walls.iter().enumerate()
                 .flat_map(|(wall_index, wall)| [
                     (WallHandle { wall_index, is_start: true }, wall.start),
@@ -1178,17 +1277,17 @@ impl EasyDraft {
                 return position;
             }
         }
-        raw.snapped(self.snap_m)
+        raw.snapped(self.settings.snap_m)
     }
 
     /// Selectionne d'abord une ouverture, puis une poignee de mur, puis le corps du mur.
     fn drag_target_at(&self, point: Point, ppm: f32) -> Option<DragTarget> {
-        if self.show_electrical {
+        if self.settings.show_electrical {
             if let Some(index) = self.find_symbol_any(point, ppm) {
                 return Some(DragTarget::Symbol(index));
             }
         }
-        if !self.show_architecture { return None; }
+        if !self.settings.show_architecture { return None; }
         if let Some(index) = self.find_stair(point, ppm) {
             return Some(DragTarget::Stair(index));
         }
@@ -1213,7 +1312,7 @@ impl EasyDraft {
     }
 
     fn snap_other_endpoint(&self, raw: Point, moving_wall: usize, ppm: f32) -> Point {
-        if self.snap_endpoints {
+        if self.settings.snap_endpoints {
             if let Some(point) = self.plan.walls.iter().enumerate()
                 .filter(|(index, _)| *index != moving_wall)
                 .flat_map(|(_, wall)| [wall.start, wall.end])
@@ -1223,7 +1322,7 @@ impl EasyDraft {
                 return point;
             }
         }
-        raw.snapped(self.snap_m)
+        raw.snapped(self.settings.snap_m)
     }
 
     fn begin_drag(&mut self, point: Point, ppm: f32) {
@@ -1501,7 +1600,7 @@ impl EasyDraft {
                 if let Some(opening) = updated.openings.get(index) {
                     if let Some(wall) = updated.walls.get(opening.wall_index) {
                         let along = wall.projected_distance_m(cursor) - wall.projected_distance_m(from);
-                        let center = ((opening.center_m + along) / self.snap_m).round() * self.snap_m;
+                        let center = ((opening.center_m + along) / self.settings.snap_m).round() * self.settings.snap_m;
                         let margin = if opening.kind == OpeningKind::Passage { 0.0 } else { 0.05 };
                         let min_center = opening.width_m / 2.0 + margin;
                         let max_center = wall.length_m() - min_center;
@@ -1515,8 +1614,8 @@ impl EasyDraft {
             }
             DragTarget::Symbol(_) | DragTarget::Stair(_) | DragTarget::Group => {
                 let shift = Point {
-                    x: (delta.x / self.snap_m).round() * self.snap_m,
-                    y: (delta.y / self.snap_m).round() * self.snap_m,
+                    x: (delta.x / self.settings.snap_m).round() * self.settings.snap_m,
+                    y: (delta.y / self.settings.snap_m).round() * self.settings.snap_m,
                 };
                 let selected = match target {
                     DragTarget::Symbol(i) => SelectionSet {
@@ -1533,8 +1632,8 @@ impl EasyDraft {
             DragTarget::WallBody(index) => {
                 if let Some(wall) = updated.walls.get(index).cloned() {
                     let d = Point {
-                        x: (delta.x / self.snap_m).round() * self.snap_m,
-                        y: (delta.y / self.snap_m).round() * self.snap_m,
+                        x: (delta.x / self.settings.snap_m).round() * self.settings.snap_m,
+                        y: (delta.y / self.settings.snap_m).round() * self.settings.snap_m,
                     };
                     updated.update_wall(
                         index,
@@ -1650,14 +1749,14 @@ impl EasyDraft {
         }
         self.clear_selection();
         self.sidebar_tab = SidebarTab::Inspecteur;
-        if self.show_electrical {
+        if self.settings.show_electrical {
             self.selected_symbol = self.find_symbol_any(point, ppm);
             if self.selected_symbol.is_some() {
                 self.status = "Symbole electrique selectionne".into();
                 return;
             }
         }
-        if self.show_architecture {
+        if self.settings.show_architecture {
             self.selected_opening = self.find_opening(point, ppm);
             if self.selected_opening.is_some() {
                 self.status = "Porte ou fenetre selectionnee : glisse-la pour la deplacer".into();
@@ -1974,12 +2073,12 @@ impl EasyDraft {
                     ui.label(format!("Repere sur les documents : {ref_text}"));
                     ui.label(format!(
                         "Circuit actif : {}",
-                        self.plan.circuit(self.active_circuit_index)
+                        self.plan.circuit(self.settings.active_circuit_index)
                             .map(|c| c.letter.as_str()).unwrap_or("?")
                     ));
                     if ui.button("Affecter cette prise au circuit actif").clicked() {
                         let mut updated = self.plan.clone();
-                        match updated.assign_outlet_to_circuit(index, self.active_circuit_index) {
+                        match updated.assign_outlet_to_circuit(index, self.settings.active_circuit_index) {
                             Ok(()) => {
                                 self.snapshot();
                                 self.plan = updated;
@@ -2133,7 +2232,7 @@ impl EasyDraft {
 
     fn add_lighting_demo(&mut self) {
         let mut updated = self.plan.clone();
-        match updated.add_demo_lighting_in_circuit(self.active_circuit_index) {
+        match updated.add_demo_lighting_in_circuit(self.settings.active_circuit_index) {
             Ok(()) => {
                 self.snapshot();
                 self.plan = updated;
@@ -2141,7 +2240,7 @@ impl EasyDraft {
                 self.view = View::Plan2D;
                 self.status = format!(
                     "Exemple ajoute au circuit {}. Ouvre le schema unifilaire.",
-                    self.plan.circuit(self.active_circuit_index)
+                    self.plan.circuit(self.settings.active_circuit_index)
                         .map(|c| c.letter.as_str()).unwrap_or("?")
                 );
             }
@@ -2179,7 +2278,7 @@ impl EasyDraft {
             let plan = if index == self.active_sheet { &self.plan } else { &sheet.plan };
             (sheet.name.as_str(), plan)
         });
-        self.status = match pdf_export::export_plan_sheets(&self.pdf_path, sheets, self.show_dimensions) {
+        self.status = match pdf_export::export_plan_sheets(&self.pdf_path, sheets, self.settings.show_dimensions) {
             Ok(()) => format!("PDF exporté ({} feuille(s)) : {}", self.sheets.len(), self.pdf_path),
             Err(error) => error,
         };
@@ -2195,7 +2294,7 @@ impl EasyDraft {
                         self.plan.walls.push(Wall {
                             start,
                             end: position,
-                            thickness_m: self.new_wall_thickness_cm / 100.0,
+                            thickness_m: self.settings.new_wall_thickness_cm / 100.0,
                         });
                         self.clear_selection();
                         self.selected_wall = Some(self.plan.walls.len() - 1);
@@ -2215,8 +2314,8 @@ impl EasyDraft {
                     let stair = Stair {
                         start,
                         end: position,
-                        width_m: self.new_stair_width_cm / 100.0,
-                        steps: self.new_stair_steps,
+                        width_m: self.settings.new_stair_width_cm / 100.0,
+                        steps: self.settings.new_stair_steps,
                     };
                     if stair.is_valid() {
                         self.snapshot();
@@ -2260,9 +2359,9 @@ impl EasyDraft {
                         _ => OpeningKind::Passage,
                     };
                     let width_m = match self.tool {
-                        Tool::Door => self.new_door_width_cm / 100.0,
-                        Tool::Window => self.new_window_width_cm / 100.0,
-                        _ => self.new_passage_width_cm / 100.0,
+                        Tool::Door => self.settings.new_door_width_cm / 100.0,
+                        Tool::Window => self.settings.new_window_width_cm / 100.0,
+                        _ => self.settings.new_passage_width_cm / 100.0,
                     };
                     // On valide avant de creer une entree dans l'historique d'annulation.
                     let mut updated = self.plan.clone();
@@ -2271,9 +2370,9 @@ impl EasyDraft {
                         position,
                         width_m,
                         kind,
-                        self.door_hinge_right,
-                        self.door_swing_flipped,
-                        self.snap_m,
+                        self.settings.door_hinge_right,
+                        self.settings.door_swing_flipped,
+                        self.settings.snap_m,
                     ) {
                         Ok(()) => {
                             self.snapshot();
@@ -2319,7 +2418,7 @@ impl EasyDraft {
                     if let Some(light_index) = self.find_electrical_symbol(position, ppm, ElectricalKind::Light) {
                         let mut updated = self.plan.clone();
                         match updated.connect_switch_to_light_in_circuit(
-                            switch_index, light_index, self.active_circuit_index
+                            switch_index, light_index, self.settings.active_circuit_index
                         ) {
                             Ok(()) => {
                                 self.snapshot();
@@ -2327,7 +2426,7 @@ impl EasyDraft {
                                 self.pending_switch = None;
                                 self.status = format!(
                                     "Liaison ajoutee au circuit {} : visible dans l'unifilaire.",
-                                    self.plan.circuit(self.active_circuit_index)
+                                    self.plan.circuit(self.settings.active_circuit_index)
                                         .map(|c| c.letter.as_str()).unwrap_or("?")
                                 );
                             }
@@ -2340,7 +2439,7 @@ impl EasyDraft {
                     self.pending_switch = Some(index);
                     self.status = format!(
                         "Interrupteur selectionne pour le circuit {}. Clique sur la lampe.",
-                        self.plan.circuit(self.active_circuit_index)
+                        self.plan.circuit(self.settings.active_circuit_index)
                             .map(|c| c.letter.as_str()).unwrap_or("?")
                     );
                 } else {
@@ -2357,7 +2456,7 @@ impl EasyDraft {
                 let new_index = self.plan.symbols.len();
                 self.plan.symbols.push(ElectricalSymbol { position, kind });
                 if kind == ElectricalKind::Outlet {
-                    match self.plan.assign_outlet_to_circuit(new_index, self.active_circuit_index) {
+                    match self.plan.assign_outlet_to_circuit(new_index, self.settings.active_circuit_index) {
                         Ok(()) => self.status = "Prise ajoutee au circuit actif".into(),
                         Err(err) => self.status = err.into(),
                     }
@@ -2378,26 +2477,26 @@ impl EasyDraft {
         // Selection et pendant un trace : clic droit maintenu + glisser.
         // Ne touche ni aux objets selectionnes ni au plan en cours.
         if response.dragged_by(egui::PointerButton::Secondary) {
-            self.pan += response.drag_delta();
+            self.settings.pan = (Vec2::from(self.settings.pan) + response.drag_delta()).into();
         }
 
         if response.hovered() {
             let scroll = ui.ctx().input(|i| i.smooth_scroll_delta.y);
             if scroll.abs() > 0.1 {
                 if let Some(cursor) = response.hover_pos() {
-                    let old_zoom = self.zoom;
+                    let old_zoom = self.settings.zoom;
                     let new_zoom = (old_zoom * (scroll * 0.002).exp()).clamp(0.3, 4.0);
                     // Garder le point sous la souris fixe durant le zoom.
                     let center = rect.center();
-                    let old_origin = center + self.pan;
-                    self.pan = cursor - center - (cursor - old_origin) * (new_zoom / old_zoom);
-                    self.zoom = new_zoom;
+                    let old_origin = center + Vec2::from(self.settings.pan);
+                    self.settings.pan = (cursor - center - (cursor - old_origin) * (new_zoom / old_zoom)).into();
+                    self.settings.zoom = new_zoom;
                 }
             }
         }
 
-        let ppm = PIXELS_PER_METER * self.zoom;
-        let origin = rect.center() + self.pan;
+        let ppm = PIXELS_PER_METER * self.settings.zoom;
+        let origin = rect.center() + Vec2::from(self.settings.pan);
         let to_screen = |p: Point| -> Pos2 {
             Pos2::new(origin.x + p.x * ppm, origin.y + p.y * ppm)
         };
@@ -2406,7 +2505,7 @@ impl EasyDraft {
         };
 
         // Calque image sous les murs, cotes et symboles ; dimensions en metres.
-        if self.show_underlay {
+        if self.settings.show_underlay {
             if let (Some(bg), Some(texture)) = (
                 self.plan.background.as_ref(), self.underlay_texture.as_ref()
             ) {
@@ -2426,7 +2525,7 @@ impl EasyDraft {
             }
         }
 
-        if self.grid {
+        if self.settings.grid {
             let step = GRID_METERS * ppm;
             let left = ((rect.left() - origin.x) / step).floor() as i32;
             let right = ((rect.right() - origin.x) / step).ceil() as i32;
@@ -2495,15 +2594,15 @@ impl EasyDraft {
                             candidate
                         }
                     }
-                    _ => world.snapped(self.snap_m),
+                    _ => world.snapped(self.settings.snap_m),
                 };
                 self.place(point, ppm);
                 }
             }
         }
 
-        if self.show_architecture {
-        if self.show_rooms {
+        if self.settings.show_architecture {
+        if self.settings.show_rooms {
             let detected_rooms = rooms::detect_rooms(&self.plan.walls);
             for room in &detected_rooms {
                 let points: Vec<Pos2> = room.inner_polygon.iter().map(|&p| to_screen(p)).collect();
@@ -2597,7 +2696,7 @@ impl EasyDraft {
                     );
                 }
             }
-            if self.show_dimensions {
+            if self.settings.show_dimensions {
                 draw_dimension(&painter, a, b, width_px, wall.length_m());
             }
             if self.tool == Tool::SelectWall {
@@ -2660,10 +2759,10 @@ impl EasyDraft {
         }
         } // fin du calque architectural
 
-        if self.show_electrical && self.circuit_visibility != CircuitVisibility::None {
+        if self.settings.show_electrical && self.settings.circuit_visibility != CircuitVisibility::None {
         for link in &self.plan.lighting_connections {
-            if self.circuit_visibility == CircuitVisibility::Active
-                && link.circuit_index != self.active_circuit_index { continue; }
+            if self.settings.circuit_visibility == CircuitVisibility::Active
+                && link.circuit_index != self.settings.active_circuit_index { continue; }
             if !self.plan.lighting_connection_is_valid(link) { continue; }
             let a = to_screen(self.plan.symbols[link.switch_index].position);
             let b = to_screen(self.plan.symbols[link.light_index].position);
@@ -2718,14 +2817,14 @@ impl EasyDraft {
         }
         } // fin du calque electrique
 
-        if self.show_architecture {
+        if self.settings.show_architecture {
         if let Some(start) = self.pending_stair {
             if let Some(cursor) = response.hover_pos() {
-                let end = to_world(cursor).snapped(self.snap_m);
+                let end = to_world(cursor).snapped(self.settings.snap_m);
                 let preview = Stair {
                     start, end,
-                    width_m: self.new_stair_width_cm / 100.0,
-                    steps: self.new_stair_steps,
+                    width_m: self.settings.new_stair_width_cm / 100.0,
+                    steps: self.settings.new_stair_steps,
                 };
                 draw_stair(&painter, &preview, origin, ppm);
             }
@@ -2736,7 +2835,7 @@ impl EasyDraft {
                 let candidate = self.snap_point(to_world(cursor), ppm);
                 let shift = ui.ctx().input(|i| i.modifiers.shift);
                 let (end, orientation) = aligned_wall_end(start, candidate, shift);
-                let width_px = self.new_wall_thickness_cm / 100.0 * ppm;
+                let width_px = self.settings.new_wall_thickness_cm / 100.0 * ppm;
                 let (stroke, label_color) = if orientation.is_some() {
                     (
                         Stroke::new(width_px.max(1.0), Color32::from_rgb(27, 162, 106)),
@@ -2775,7 +2874,7 @@ impl EasyDraft {
                     FontId::proportional(13.0),
                     label_color,
                 );
-                if self.show_dimensions {
+                if self.settings.show_dimensions {
                     draw_dimension(&painter, to_screen(start), to_screen(end), width_px, start.distance_to(end));
                 }
             }
@@ -2815,8 +2914,8 @@ impl EasyDraft {
             Align2::LEFT_TOP,
             format!(
                 "Grille : 0,5 m | Pas : {:.0} cm | Zoom : {:.0} %",
-                self.snap_m * 100.0,
-                self.zoom * 100.0
+                self.settings.snap_m * 100.0,
+                self.settings.zoom * 100.0
             ),
             FontId::proportional(13.0),
             Color32::DARK_GRAY,
@@ -2826,7 +2925,7 @@ impl EasyDraft {
 
 impl eframe::App for EasyDraft {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if !ctx.wants_keyboard_input() {
+        if self.sheet_name_dialog.is_none() && !ctx.wants_keyboard_input() {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
                 self.undo();
             }
@@ -2932,14 +3031,14 @@ impl eframe::App for EasyDraft {
                         }
                         ui.small("Clic droit + glisser : naviguer");
                         if ui.button("Recentrer").clicked() {
-                            self.pan = Vec2::ZERO;
-                            self.zoom = 1.0;
+                            self.settings.pan = [0.0; 2];
+                            self.settings.zoom = 1.0;
                         }
                         ui.separator();
-                        ui.checkbox(&mut self.grid, "Grille");
-                        ui.checkbox(&mut self.show_dimensions, "Cotes");
+                        ui.checkbox(&mut self.settings.grid, "Grille");
+                        ui.checkbox(&mut self.settings.show_dimensions, "Cotes");
                         ui.separator();
-                        ui.small(format!("Zoom {:.0} %", self.zoom * 100.0));
+                        ui.small(format!("Zoom {:.0} %", self.settings.zoom * 100.0));
                         ui.separator();
                         ui.strong(format!(
                             "{} piece(s) detectee(s)",
@@ -3026,9 +3125,9 @@ impl eframe::App for EasyDraft {
                             if ui.add_sized(
                                 [ui.available_width(), 29.0],
                                 egui::Button::new(format!("Circuit {name}"))
-                                    .selected(self.active_circuit_index == i)
+                                    .selected(self.settings.active_circuit_index == i)
                             ).clicked() {
-                                self.active_circuit_index = i;
+                                self.settings.active_circuit_index = i;
                                 self.sidebar_tab = SidebarTab::Electricite;
                             }
                         }
@@ -3038,7 +3137,7 @@ impl eframe::App for EasyDraft {
                                 Ok(i) => {
                                     self.snapshot();
                                     self.plan = updated;
-                                    self.active_circuit_index = i;
+                                    self.settings.active_circuit_index = i;
                                     self.status = "Nouveau circuit ajoute".into();
                                 }
                                 Err(error) => self.status = error.into(),
@@ -3122,32 +3221,32 @@ impl eframe::App for EasyDraft {
             ui.separator();
             if self.view == View::Plan2D && self.tool == Tool::Door {
                 ui.label("Largeur de la porte");
-                ui.add(egui::Slider::new(&mut self.new_door_width_cm, 50.0..=200.0)
+                ui.add(egui::Slider::new(&mut self.settings.new_door_width_cm, 50.0..=200.0)
                     .step_by(5.0).suffix(" cm"));
-                ui.checkbox(&mut self.door_hinge_right, "Charniere a la fin du mur");
-                ui.checkbox(&mut self.door_swing_flipped, "Inverser le sens d'ouverture");
+                ui.checkbox(&mut self.settings.door_hinge_right, "Charniere a la fin du mur");
+                ui.checkbox(&mut self.settings.door_swing_flipped, "Inverser le sens d'ouverture");
                 ui.small("Clique sur un mur pour inserer la porte.");
                 ui.separator();
             }
             if self.view == View::Plan2D && self.tool == Tool::Stair {
                 ui.label("Largeur de l'escalier");
-                ui.add(egui::Slider::new(&mut self.new_stair_width_cm, 60.0..=250.0)
+                ui.add(egui::Slider::new(&mut self.settings.new_stair_width_cm, 60.0..=250.0)
                     .step_by(5.0).suffix(" cm"));
                 ui.label("Nombre de marches");
-                ui.add(egui::Slider::new(&mut self.new_stair_steps, 3..=30));
+                ui.add(egui::Slider::new(&mut self.settings.new_stair_steps, 3..=30));
                 ui.small("Deux clics : depart puis arrivee (sens de montee).");
                 ui.separator();
             }
             if self.view == View::Plan2D && self.tool == Tool::Window {
                 ui.label("Largeur de la fenetre");
-                ui.add(egui::Slider::new(&mut self.new_window_width_cm, 40.0..=400.0)
+                ui.add(egui::Slider::new(&mut self.settings.new_window_width_cm, 40.0..=400.0)
                     .step_by(5.0).suffix(" cm"));
                 ui.small("Clique sur un mur pour inserer la fenetre.");
                 ui.separator();
             }
             if self.view == View::Plan2D && self.tool == Tool::Passage {
                 ui.label("Largeur du passage libre");
-                ui.add(egui::Slider::new(&mut self.new_passage_width_cm, 40.0..=400.0)
+                ui.add(egui::Slider::new(&mut self.settings.new_passage_width_cm, 40.0..=400.0)
                     .step_by(5.0).suffix(" cm"));
                 ui.small("Sur un mur : ouvre le passage sans porte.");
                 ui.small("Dans un vide entre murs alignes : relie les 2 bouts sans mur visible.");
@@ -3155,7 +3254,7 @@ impl eframe::App for EasyDraft {
                 ui.separator();
             }
             ui.label("Epaisseur des nouveaux murs");
-            ui.add(egui::Slider::new(&mut self.new_wall_thickness_cm, 5.0..=60.0).text("cm").step_by(1.0));
+            ui.add(egui::Slider::new(&mut self.settings.new_wall_thickness_cm, 5.0..=60.0).text("cm").step_by(1.0));
             ui.separator();
             } // Dessin
             if self.sidebar_tab == SidebarTab::Inspecteur {
@@ -3207,7 +3306,7 @@ impl eframe::App for EasyDraft {
                 self.import_underlay(ui.ctx());
             }
             if let Some(current) = self.plan.background.as_ref().cloned() {
-                ui.checkbox(&mut self.show_underlay, "Afficher le fond de plan");
+                ui.checkbox(&mut self.settings.show_underlay, "Afficher le fond de plan");
                 ui.small("Fichier image externe au JSON");
                 ui.label(current.path.rsplit(['/', '\\']).next().unwrap_or("image"));
                 let mut edited = current.clone();
@@ -3244,39 +3343,39 @@ impl eframe::App for EasyDraft {
             ui.separator();
             ui.strong("AFFICHAGE");
             ui.label("Calques visibles");
-            ui.checkbox(&mut self.show_architecture, "Architecture (murs, portes, escaliers)");
-            ui.checkbox(&mut self.show_rooms, "Pieces, surfaces et dimensions");
-            ui.checkbox(&mut self.show_electrical, "Electricite (symboles et liaisons)");
+            ui.checkbox(&mut self.settings.show_architecture, "Architecture (murs, portes, escaliers)");
+            ui.checkbox(&mut self.settings.show_rooms, "Pieces, surfaces et dimensions");
+            ui.checkbox(&mut self.settings.show_electrical, "Electricite (symboles et liaisons)");
             ui.label("Lignes de circuit visibles");
             ui.horizontal_wrapped(|ui| {
-                ui.selectable_value(&mut self.circuit_visibility, CircuitVisibility::All, "Toutes");
-                ui.selectable_value(&mut self.circuit_visibility, CircuitVisibility::Active, "Circuit actif");
-                ui.selectable_value(&mut self.circuit_visibility, CircuitVisibility::None, "Aucune");
+                ui.selectable_value(&mut self.settings.circuit_visibility, CircuitVisibility::All, "Toutes");
+                ui.selectable_value(&mut self.settings.circuit_visibility, CircuitVisibility::Active, "Circuit actif");
+                ui.selectable_value(&mut self.settings.circuit_visibility, CircuitVisibility::None, "Aucune");
             });
-            if self.circuit_visibility == CircuitVisibility::Active {
+            if self.settings.circuit_visibility == CircuitVisibility::Active {
                 egui::ComboBox::from_label("Circuit actif")
-                    .selected_text(self.plan.circuit(self.active_circuit_index)
+                    .selected_text(self.plan.circuit(self.settings.active_circuit_index)
                         .map(|c| c.letter.as_str()).unwrap_or("?"))
                     .show_ui(ui, |ui| {
                         for i in 0..self.plan.circuit_count() {
                             let letter = self.plan.circuit(i)
                                 .map(|c| c.letter.as_str()).unwrap_or("?");
-                            ui.selectable_value(&mut self.active_circuit_index, i, format!("Circuit {letter}"));
+                            ui.selectable_value(&mut self.settings.active_circuit_index, i, format!("Circuit {letter}"));
                         }
                     });
             }
-            ui.checkbox(&mut self.show_dimensions, "Afficher les cotes (axe des murs)");
-            ui.checkbox(&mut self.snap_endpoints, "Aimantation aux extremites de murs");
+            ui.checkbox(&mut self.settings.show_dimensions, "Afficher les cotes (axe des murs)");
+            ui.checkbox(&mut self.settings.snap_endpoints, "Aimantation aux extremites de murs");
             ui.label("Pas d'aimantation");
-            ui.add(egui::Slider::new(&mut self.snap_m, 0.05..=0.5).step_by(0.05).suffix(" m"));
+            ui.add(egui::Slider::new(&mut self.settings.snap_m, 0.05..=0.5).step_by(0.05).suffix(" m"));
             ui.separator();
             ui.label("Zoom");
-            ui.add(egui::Slider::new(&mut self.zoom, 0.3..=4.0));
+            ui.add(egui::Slider::new(&mut self.settings.zoom, 0.3..=4.0));
             ui.small("Molette sur le plan : zoom centre sous le pointeur.");
-            ui.checkbox(&mut self.grid, "Afficher la grille");
+            ui.checkbox(&mut self.settings.grid, "Afficher la grille");
             if ui.button("Recentrer").clicked() {
-                self.pan = Vec2::ZERO;
-                self.zoom = 1.0;
+                self.settings.pan = [0.0; 2];
+                self.settings.zoom = 1.0;
             }
             ui.separator();
             } // Affichage
@@ -3379,12 +3478,12 @@ impl eframe::App for EasyDraft {
                 self.load_unifilar_example();
             }
             ui.small("L'exemple remplace le plan courant (Annuler pour revenir).");
-            if self.active_circuit_index >= self.plan.circuit_count() {
-                self.active_circuit_index = 0;
+            if self.settings.active_circuit_index >= self.plan.circuit_count() {
+                self.settings.active_circuit_index = 0;
             }
             egui::ComboBox::from_label("Circuit actif pour lampes et prises")
                 .selected_text(
-                    self.plan.circuit(self.active_circuit_index)
+                    self.plan.circuit(self.settings.active_circuit_index)
                         .map(|c| c.letter.clone()).unwrap_or_else(|| "A".into())
                 )
                 .show_ui(ui, |ui| {
@@ -3393,7 +3492,7 @@ impl eframe::App for EasyDraft {
                             "Circuit {}",
                             self.plan.circuit(index).map(|c| c.letter.as_str()).unwrap_or("?"),
                         );
-                        ui.selectable_value(&mut self.active_circuit_index, index, title);
+                        ui.selectable_value(&mut self.settings.active_circuit_index, index, title);
                     }
                 });
             if ui.button("Ajouter un circuit (prototype)").clicked() {
@@ -3402,7 +3501,7 @@ impl eframe::App for EasyDraft {
                     Ok(index) => {
                         self.snapshot();
                         self.plan = updated;
-                        self.active_circuit_index = index;
+                        self.settings.active_circuit_index = index;
                         self.pending_switch = None;
                         self.status = "Nouveau circuit ajoute et selectionne".into();
                     }
@@ -3415,7 +3514,7 @@ impl eframe::App for EasyDraft {
                 let Some(circuit_data) = self.plan.circuit(circuit_index).cloned() else { continue; };
                 egui::CollapsingHeader::new(format!(
                     "Circuit {} - protection / conducteurs", circuit_data.letter
-                )).default_open(circuit_index == self.active_circuit_index).show(ui, |ui| {
+                )).default_open(circuit_index == self.settings.active_circuit_index).show(ui, |ui| {
                     let mut circuit = circuit_data.clone();
                     ui.label("Repere du circuit (A, B, C...)");
                     ui.text_edit_singleline(&mut circuit.letter);
@@ -3491,7 +3590,7 @@ impl eframe::App for EasyDraft {
                             Ok(()) => {
                                 self.snapshot();
                                 self.plan = updated;
-                                self.active_circuit_index = 0;
+                                self.settings.active_circuit_index = 0;
                                 self.pending_switch = None;
                                 self.status = "Circuit vide supprime".into();
                             }
@@ -3575,6 +3674,7 @@ impl eframe::App for EasyDraft {
                 },
             }
         });
+        self.show_sheet_name_dialog(ctx);
     }
 }
 
@@ -3599,7 +3699,7 @@ mod plan_editor_tests {
     fn placing_socket_assigns_it_to_selected_circuit() {
         let mut app = EasyDraft::default();
         let other = app.plan.add_lighting_circuit().unwrap();
-        app.active_circuit_index = other;
+        app.settings.active_circuit_index = other;
         app.tool = Tool::Outlet;
         app.place(Point { x: 1.0, y: 2.0 }, 80.0);
         assert_eq!(app.plan.unassigned_outlets(), 0);
@@ -4196,6 +4296,80 @@ mod plan_editor_tests {
         assert!(ground_floor < first_floor && first_floor < annexe);
         assert!(pdf[first_floor..annexe].contains("1 murs"));
         assert!(pdf[annexe..].contains("0 murs"));
+    }
+
+    #[test]
+    fn project_settings_round_trip_and_legacy_files_use_defaults() {
+        let legacy = include_str!("../examples/maison-deux-pieces.json");
+        let mut app = EasyDraft::default();
+        app.set_project(serde_json::from_str(legacy).unwrap());
+        assert_eq!(app.settings, ProjectSettings::default());
+        app.add_sheet("Cave".into());
+        app.plan.add_lighting_circuit().unwrap();
+        app.settings = ProjectSettings {
+            grid: false,
+            show_dimensions: false,
+            show_architecture: false,
+            show_electrical: false,
+            show_rooms: false,
+            show_underlay: false,
+            snap_endpoints: false,
+            snap_m: 0.2,
+            zoom: 1.5,
+            pan: [12.0, -40.0],
+            circuit_visibility: CircuitVisibility::Active,
+            active_circuit_index: 1,
+            new_wall_thickness_cm: 24.0,
+            ..ProjectSettings::default()
+        };
+        let settings = app.settings;
+        let json = serde_json::to_string(&app.project()).unwrap();
+        let mut reopened = EasyDraft::default();
+        reopened.set_project(serde_json::from_str(&json).unwrap());
+        assert_eq!(reopened.active_sheet, 1);
+        assert_eq!(reopened.settings, settings);
+        reopened.switch_sheet(0);
+        assert_eq!(reopened.settings.circuit_visibility, CircuitVisibility::Active);
+        assert_eq!(reopened.settings.active_circuit_index, 0);
+    }
+
+    #[test]
+    fn clicking_and_typing_in_sheet_name_dialog_renames_active_sheet() {
+        let mut app = EasyDraft::default();
+        let ctx = egui::Context::default();
+        let frame = |app: &mut EasyDraft, events| {
+            let screen_rect = egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 800.0));
+            let _ = ctx.run(egui::RawInput { screen_rect: Some(screen_rect), events, ..Default::default() }, |ctx| {
+                app.show_sheet_name_dialog(ctx);
+            });
+        };
+        app.add_sheet("1er étage".into());
+        app.open_sheet_name_dialog(true);
+        for _ in 0..3 {
+            frame(&mut app, Vec::new());
+        }
+        let textbox = ctx.memory(|mem| mem.focused()).unwrap();
+        let pos = ctx.read_response(textbox).unwrap().rect.center();
+        let click = |pressed| egui::Event::PointerButton {
+            pos, button: egui::PointerButton::Primary, pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![egui::Event::PointerMoved(pos), click(true)]);
+        frame(&mut app, vec![click(false)]);
+        assert!(app.sheet_name_dialog.is_some());
+        let key = |key, modifiers| egui::Event::Key {
+            key, physical_key: None, pressed: true, repeat: false, modifiers,
+        };
+        frame(&mut app, vec![
+            key(egui::Key::A, egui::Modifiers::COMMAND),
+            egui::Event::Text("Étage nord".into()),
+        ]);
+        assert_eq!(app.sheet_name_dialog.as_ref().unwrap().name, "Étage nord");
+        frame(&mut app, vec![key(egui::Key::Enter, egui::Modifiers::NONE)]);
+        assert!(app.sheet_name_dialog.is_none());
+        assert_eq!(app.sheets[1].name, "Étage nord");
+        app.undo();
+        assert_eq!(app.sheets[1].name, "1er étage");
     }
 
     #[test]
