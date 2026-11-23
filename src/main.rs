@@ -69,7 +69,54 @@ enum Tool {
     Switch,
     Light,
     LinkLighting,
-    Pan,
+}
+
+/// Orientation d'un mur en cours de placement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WallAlignment {
+    Horizontal,
+    Vertical,
+}
+
+/// Oriente automatiquement le mur lorsque le curseur est proche de 0° ou 90°.
+/// Maj force l'orientation cardinale la plus proche, meme pour un angle oblique.
+/// Ce calcul est partage entre l'apercu et le second clic de validation.
+fn aligned_wall_end(
+    start: Point, candidate: Point, force_orthogonal: bool,
+) -> (Point, Option<WallAlignment>) {
+    let dx = candidate.x - start.x;
+    let dy = candidate.y - start.y;
+    if dx.abs() + dy.abs() < 0.0001 {
+        return (candidate, None);
+    }
+    // Environ 5 degres de tolerance pour la detection visuelle et l'aimantation.
+    let near_horizontal = dy.abs() <= dx.abs() * 0.0875;
+    let near_vertical = dx.abs() <= dy.abs() * 0.0875;
+    if force_orthogonal || near_horizontal || near_vertical {
+        if dx.abs() >= dy.abs() {
+            return (
+                Point { x: candidate.x, y: start.y },
+                Some(WallAlignment::Horizontal),
+            );
+        }
+        return (
+            Point { x: start.x, y: candidate.y },
+            Some(WallAlignment::Vertical),
+        );
+    }
+    (candidate, None)
+}
+
+fn wall_heading(start: Point, end: Point, orientation: Option<WallAlignment>) -> String {
+    let length = start.distance_to(end);
+    match orientation {
+        Some(WallAlignment::Horizontal) => format!("HORIZONTAL  0°   |   {length:.2} m"),
+        Some(WallAlignment::Vertical) => format!("VERTICAL  90°   |   {length:.2} m"),
+        None => {
+            let angle = (end.y - start.y).atan2(end.x - start.x).to_degrees();
+            format!("INCLINE  {angle:.1}°   |   {length:.2} m")
+        }
+    }
 }
 
 /// Palette filtrable, chaque bouton active réellement son outil de dessin.
@@ -1813,7 +1860,6 @@ impl EasyDraft {
                 }
             }
             Tool::SelectWall => self.select_at(position, ppm),
-            Tool::Pan => {}
         }
     }
 
@@ -1822,8 +1868,11 @@ impl EasyDraft {
         let rect = response.rect;
         painter.rect_filled(rect, 0.0, Color32::from_rgb(249, 250, 252));
 
-        if self.tool == Tool::Pan && response.dragged() {
-            self.pan += ui.ctx().input(|i| i.pointer.delta());
+        // La navigation reste disponible dans TOUS les outils, y compris
+        // Selection et pendant un trace : clic droit maintenu + glisser.
+        // Ne touche ni aux objets selectionnes ni au plan en cours.
+        if response.dragged_by(egui::PointerButton::Secondary) {
+            self.pan += response.drag_delta();
         }
 
         if response.hovered() {
@@ -1918,12 +1967,21 @@ impl EasyDraft {
             }
         }
 
-        if response.clicked() {
+        // Seul le clic GAUCHE pose un objet : le clic droit est reserve au pan.
+        if response.clicked_by(egui::PointerButton::Primary) {
             if let Some(pos) = response.interact_pointer_pos() {
                 let world = to_world(pos);
                 let point = match self.tool {
                     Tool::SelectWall | Tool::Door | Tool::Window | Tool::Passage | Tool::LinkLighting => world,
-                    Tool::Wall => self.snap_point(world, ppm),
+                    Tool::Wall => {
+                        let candidate = self.snap_point(world, ppm);
+                        if let Some(start) = self.pending_wall {
+                            let shift = ui.ctx().input(|i| i.modifiers.shift);
+                            aligned_wall_end(start, candidate, shift).0
+                        } else {
+                            candidate
+                        }
+                    }
                     _ => world.snapped(self.snap_m),
                 };
                 self.place(point, ppm);
@@ -2127,11 +2185,47 @@ impl EasyDraft {
 
         if let Some(start) = self.pending_wall {
             if let Some(cursor) = response.hover_pos() {
-                let end = self.snap_point(to_world(cursor), ppm);
+                let candidate = self.snap_point(to_world(cursor), ppm);
+                let shift = ui.ctx().input(|i| i.modifiers.shift);
+                let (end, orientation) = aligned_wall_end(start, candidate, shift);
                 let width_px = self.new_wall_thickness_cm / 100.0 * ppm;
-                painter.line_segment(
-                    [to_screen(start), to_screen(end)],
-                    Stroke::new(width_px.max(1.0), Color32::from_rgb(40, 130, 215)),
+                let (stroke, label_color) = if orientation.is_some() {
+                    (
+                        Stroke::new(width_px.max(1.0), Color32::from_rgb(27, 162, 106)),
+                        Color32::from_rgb(20, 125, 80),
+                    )
+                } else {
+                    (
+                        Stroke::new(width_px.max(1.0), Color32::from_rgb(40, 130, 215)),
+                        Color32::from_rgb(38, 104, 178),
+                    )
+                };
+                painter.line_segment([to_screen(start), to_screen(end)], stroke);
+                // Axes de construction et marqueur d'equerre verts sur mur droit.
+                if let Some(axis) = orientation {
+                    let guide = Stroke::new(1.0_f32, Color32::from_rgb(66, 183, 131));
+                    match axis {
+                        WallAlignment::Horizontal => {
+                            let y = to_screen(start).y;
+                            painter.line_segment(
+                                [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)], guide
+                            );
+                        }
+                        WallAlignment::Vertical => {
+                            let x = to_screen(start).x;
+                            painter.line_segment(
+                                [Pos2::new(x, rect.top()), Pos2::new(x, rect.bottom())], guide
+                            );
+                        }
+                    }
+                    painter.circle_stroke(to_screen(end), 6.0, Stroke::new(2.0_f32, label_color));
+                }
+                painter.text(
+                    to_screen(end) + Vec2::new(15.0, -22.0),
+                    Align2::LEFT_CENTER,
+                    wall_heading(start, end, orientation),
+                    FontId::proportional(13.0),
+                    label_color,
                 );
                 if self.show_dimensions {
                     draw_dimension(&painter, to_screen(start), to_screen(end), width_px, start.distance_to(end));
@@ -2282,9 +2376,7 @@ impl eframe::App for EasyDraft {
                             self.select_tool(Tool::SelectWall);
                             self.sidebar_tab = SidebarTab::Inspecteur;
                         }
-                        if ui.selectable_label(self.tool == Tool::Pan, "Main / deplacer").clicked() {
-                            self.select_tool(Tool::Pan);
-                        }
+                        ui.small("Clic droit + glisser : naviguer");
                         if ui.button("Recentrer").clicked() {
                             self.pan = Vec2::ZERO;
                             self.zoom = 1.0;
@@ -2327,8 +2419,7 @@ impl eframe::App for EasyDraft {
                             ("OUTILS DE DESSIN", &[
                                 (Tool::SelectWall, "Selection / cadre"),
                                 (Tool::Wall, "Mur droit"),
-                                (Tool::Pan, "Deplacer le plan"),
-                            ]),
+                             ]),
                             ("CONSTRUCTION", &[
                                 (Tool::Door, "Porte"),
                                 (Tool::Window, "Fenetre"),
@@ -2351,14 +2442,15 @@ impl eframe::App for EasyDraft {
                                     Tool::SelectWall => SidebarTab::Inspecteur,
                                     Tool::Outlet | Tool::Switch | Tool::Light | Tool::LinkLighting =>
                                         SidebarTab::Electricite,
-                                    Tool::Pan => SidebarTab::Affichage,
-                                    _ => SidebarTab::Dessin,
+                                     _ => SidebarTab::Dessin,
                                 };
                             }
                             ui.add_space(4.0);
                         }
                         ui.separator();
-                        ui.small("Selection : clic sur un objet ou encadrement a la souris.");
+                        ui.small("Clic gauche : selectionner ou encadrer.");
+                        ui.small("Clic droit + glisser : deplacer la vue, sans changer d'outil.");
+                        ui.small("Mur : repere vert = horizontal / vertical ; Maj verrouille l'axe.");
                         ui.small("Un mur termine revient automatiquement a Selection.");
                         if ui.button("Ouvrir l'exemple de 2 pieces").clicked() {
                             self.load_room_example();
@@ -2462,8 +2554,7 @@ impl eframe::App for EasyDraft {
                 Tool::Switch => "Interrupteur",
                 Tool::Light => "Point lumineux",
                 Tool::LinkLighting => "Lier I → L",
-                Tool::Pan => "Deplacer la vue",
-            });
+             });
             ui.small("Choisis un outil dans la barre Architecture / Electricite en haut.");
             ui.separator();
             if self.view == View::Plan2D && self.tool == Tool::Door {
