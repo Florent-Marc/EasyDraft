@@ -6,6 +6,7 @@ mod rgie_review;
 mod rgie_symbols;
 
 use eframe::egui::{self, Align2, Color32, FontId, Painter, Pos2, Sense, Stroke, Vec2};
+use std::path::Path;
 use model::{
     ElectricalAppearance, ElectricalKind, ElectricalSymbol, Opening, OpeningKind, Plan, Point, Stair, Wall,
     DEFAULT_WALL_THICKNESS_M,
@@ -115,6 +116,8 @@ struct EasyDraft {
     pan: Vec2,
     grid: bool,
     file_path: String,
+    /// Nouveau projet : pas encore de chemin sauvegarde.
+    file_path_assigned: bool,
     pdf_path: String,
     unifilar_pdf_path: String,
     status: String,
@@ -157,6 +160,7 @@ impl Default for EasyDraft {
             pan: Vec2::ZERO,
             grid: true,
             file_path: "mon-plan.json".into(),
+            file_path_assigned: false,
             pdf_path: "plan-easydraft.pdf".into(),
             unifilar_pdf_path: "unifilaire-easydraft.pdf".into(),
             status: "Clique une fois pour commencer un mur, puis une seconde fois pour le terminer.".into(),
@@ -350,14 +354,85 @@ impl EasyDraft {
         }
     }
 
-    fn save(&mut self) {
+    fn file_picker(current: &str, title: &str, label: &str, extension: &'static str) -> rfd::FileDialog {
+        let path = Path::new(current);
+        let suggested_name = path.file_name().and_then(|name| name.to_str())
+            .unwrap_or("easydraft");
+        let mut picker = rfd::FileDialog::new()
+            .set_title(title)
+            .add_filter(label, &[extension])
+            .set_file_name(suggested_name);
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            picker = picker.set_directory(parent);
+        }
+        picker
+    }
+
+    fn save_current(&mut self) {
         let result = serde_json::to_string_pretty(&self.plan)
             .map_err(|e| e.to_string())
             .and_then(|data| std::fs::write(&self.file_path, data).map_err(|e| e.to_string()));
         self.status = match result {
-            Ok(()) => format!("Enregistre : {}", self.file_path),
-            Err(e) => format!("Erreur : {e}"),
+            Ok(()) => {
+                self.file_path_assigned = true;
+                format!("Plan enregistre : {}", self.file_path)
+            }
+            Err(e) => format!("Erreur d'enregistrement : {e}"),
         };
+    }
+
+    /// Premiere sauvegarde : choisir un fichier. Ensuite, enregistrer directement.
+    fn save(&mut self) {
+        if self.file_path_assigned {
+            self.save_current();
+        } else {
+            self.save_as();
+        }
+    }
+
+    /// Demande toujours une destination. Annuler le dialogue ne modifie rien.
+    fn save_as(&mut self) {
+        if let Some(path) = Self::file_picker(
+            &self.file_path, "Enregistrer le plan EasyDraft", "Plan EasyDraft (JSON)", "json"
+        ).save_file() {
+            let path = path.with_extension("json");
+            let result = serde_json::to_string_pretty(&self.plan)
+                .map_err(|e| e.to_string())
+                .and_then(|data| std::fs::write(&path, data).map_err(|e| e.to_string()));
+            match result {
+                Ok(()) => {
+                    self.file_path = path.to_string_lossy().into_owned();
+                    self.file_path_assigned = true;
+                    self.status = format!("Plan enregistre : {}", self.file_path);
+                }
+                Err(error) => self.status = format!("Erreur d'enregistrement : {error}"),
+            }
+        }
+    }
+
+    /// Navigateur natif d'ouverture d'un fichier JSON.
+    fn open_dialog(&mut self) {
+        if let Some(path) = Self::file_picker(
+            &self.file_path, "Ouvrir un plan EasyDraft", "Plan EasyDraft (JSON)", "json"
+        ).pick_file() {
+            let result = std::fs::read_to_string(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|text| serde_json::from_str::<Plan>(&text).map_err(|e| e.to_string()));
+            match result {
+                Ok(plan) => {
+                    self.cancel_drag();
+                    self.snapshot();
+                    self.plan = plan;
+                    self.reset_pending();
+                    self.clear_selection();
+                    self.active_circuit_index = 0;
+                    self.file_path = path.to_string_lossy().into_owned();
+                    self.file_path_assigned = true;
+                    self.status = format!("Plan ouvert : {}", self.file_path);
+                }
+                Err(error) => self.status = format!("Erreur d'ouverture : {error}"),
+            }
+        }
     }
 
     fn load(&mut self) {
@@ -372,6 +447,7 @@ impl EasyDraft {
                 self.reset_pending();
                 self.clear_selection();
                 self.active_circuit_index = 0;
+                self.file_path_assigned = true;
                 self.status = format!("Ouvert : {}", self.file_path);
             }
             Err(e) => self.status = format!("Erreur : {e}"),
@@ -1154,6 +1230,24 @@ impl EasyDraft {
                 );
             }
             Err(error) => self.status = error.into(),
+        }
+    }
+
+    fn export_unifilar_pdf_dialog(&mut self) {
+        if let Some(path) = Self::file_picker(
+            &self.unifilar_pdf_path, "Exporter le schema unifilaire", "Document PDF", "pdf"
+        ).save_file() {
+            self.unifilar_pdf_path = path.with_extension("pdf").to_string_lossy().into_owned();
+            self.export_unifilar_pdf();
+        }
+    }
+
+    fn export_pdf_dialog(&mut self) {
+        if let Some(path) = Self::file_picker(
+            &self.pdf_path, "Exporter le plan en PDF", "Document PDF", "pdf"
+        ).save_file() {
+            self.pdf_path = path.with_extension("pdf").to_string_lossy().into_owned();
+            self.export_pdf();
         }
     }
 
