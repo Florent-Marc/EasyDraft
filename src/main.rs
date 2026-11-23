@@ -9,7 +9,7 @@ use eframe::egui::{self, Align2, Color32, FontId, Painter, Pos2, Sense, Stroke, 
 use std::path::Path;
 use model::{
     ElectricalAppearance, ElectricalKind, ElectricalSymbol, Opening, OpeningKind, Plan, Point, Stair, Wall,
-    BackgroundPlan, DEFAULT_WALL_THICKNESS_M,
+    BackgroundPlan, WallEndpoint as WallHandle, DEFAULT_WALL_THICKNESS_M,
 };
 
 const GRID_METERS: f32 = 0.5;
@@ -166,55 +166,12 @@ enum DragTarget {
     Joint,
 }
 
-/// Reference stable a l'une des deux extremites d'un mur existant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct WallHandle {
-    wall_index: usize,
-    is_start: bool,
-}
-
-impl WallHandle {
-    fn position(self, plan: &Plan) -> Option<Point> {
-        plan.walls.get(self.wall_index).map(|wall| {
-            if self.is_start { wall.start } else { wall.end }
-        })
-    }
-}
-
-/// Trouve toutes les extremites d'un meme noeud, sans confondre deux
-/// sommets seulement *proches* : ils doivent etre exactement raccordes.
-fn coincident_handles(plan: &Plan, point: Point) -> Vec<WallHandle> {
-    plan.walls.iter().enumerate().flat_map(|(wall_index, wall)| {
-        [
-            (WallHandle { wall_index, is_start: true }, wall.start),
-            (WallHandle { wall_index, is_start: false }, wall.end),
-        ]
-    }).filter(|(_, position)| position.distance_to(point) <= 0.0001)
-      .map(|(handle, _)| handle).collect()
-}
-
-/// Raccordement atomique : aucun mur n'est modifie si une ouverture existante
-/// rend le raccourcissement impossible, ou si un mur deviendrait trop court.
+/// Deplacement geometrique atomique conservé pour les outils et les tests.
+/// Les liens explicites sont crees uniquement par la commande Joindre.
 fn weld_wall_handles(
     plan: &mut Plan, handles: &[WallHandle], target: Point,
 ) -> Result<(), &'static str> {
-    if handles.is_empty() || !target.x.is_finite() || !target.y.is_finite() {
-        return Err("Aucun sommet valide a raccorder");
-    }
-    let mut updated = plan.clone();
-    let mut affected: Vec<usize> = handles.iter().map(|h| h.wall_index).collect();
-    affected.sort_unstable();
-    affected.dedup();
-    for wall_index in affected {
-        let wall = updated.walls.get(wall_index).cloned().ok_or("Mur introuvable")?;
-        let move_start = handles.iter().any(|h| h.wall_index == wall_index && h.is_start);
-        let move_end = handles.iter().any(|h| h.wall_index == wall_index && !h.is_start);
-        let start = if move_start { target } else { wall.start };
-        let end = if move_end { target } else { wall.end };
-        updated.update_wall(wall_index, start, end, wall.thickness_m)?;
-    }
-    *plan = updated;
-    Ok(())
+    plan.move_wall_endpoints_to(handles, target)
 }
 
 /// Selection de plusieurs elements, sans selectionner les surfaces de piece derivees.
@@ -981,17 +938,63 @@ impl EasyDraft {
 
     fn wall_handles_at(&self, point: Point, ppm: f32) -> Vec<WallHandle> {
         if !self.show_architecture { return Vec::new(); }
-        let nearest = self.plan.walls.iter().flat_map(|wall| [wall.start, wall.end])
-            .filter(|position| position.distance_to(point) <= 12.0 / ppm)
-            .min_by(|a, b| point.distance_to(*a).total_cmp(&point.distance_to(*b)));
-        nearest.map(|position| coincident_handles(&self.plan, position))
+        let nearest = self.plan.walls.iter().enumerate()
+            .flat_map(|(wall_index, wall)| [
+                (WallHandle { wall_index, is_start: true }, wall.start),
+                (WallHandle { wall_index, is_start: false }, wall.end),
+            ])
+            .filter(|(_, position)| position.distance_to(point) <= 12.0 / ppm)
+            .min_by(|a, b| point.distance_to(a.1).total_cmp(&point.distance_to(b.1)));
+        nearest.map(|(handle, _)| self.plan.linked_wall_endpoints(handle))
             .unwrap_or_default()
+    }
+
+    /// Parmi des points geométriquement confondus mais NON joints, alterner
+    /// celui qui est choisi a chaque clic sur le meme endroit.
+    /// Un groupe explicitement lie reste selectionne comme un seul noeud.
+    fn cycle_coincident_wall_handle(&self, point: Point, ppm: f32) -> Vec<WallHandle> {
+        let mut handles = self.wall_handles_at(point, ppm);
+        if handles.is_empty() || self.selected_handles.len() != 1 {
+            return handles;
+        }
+        let first = handles[0];
+        let Some(location) = first.position(&self.plan) else { return handles };
+        let candidates: Vec<WallHandle> = self.plan.walls.iter().enumerate()
+            .flat_map(|(wall_index, wall)| [
+                (WallHandle { wall_index, is_start: true }, wall.start),
+                (WallHandle { wall_index, is_start: false }, wall.end),
+            ])
+            .filter(|(_, at)| at.distance_to(location) < 0.0001)
+            .map(|(handle, _)| handle).collect();
+        if candidates.len() < 2 { return handles; }
+        if let Some(position) = candidates.iter()
+            .position(|handle| *handle == self.selected_handles[0])
+        {
+            let next = candidates[(position + 1) % candidates.len()];
+            handles = self.plan.linked_wall_endpoints(next);
+        }
+        handles
     }
 
     /// Maj + clic ajoute ou retire un groupe de points deja raccordes.
     fn toggle_wall_handles(&mut self, point: Point, ppm: f32) -> bool {
-        let clicked = self.wall_handles_at(point, ppm);
+        let mut clicked = self.wall_handles_at(point, ppm);
         if clicked.is_empty() { return false; }
+        // Permet aussi de Maj-selectionner plusieurs extremites superposees
+        // qui n'ont PAS ete jointes explicitement.
+        if clicked.len() == 1 && self.selected_handles.contains(&clicked[0]) {
+            let location = clicked[0].position(&self.plan);
+            if let Some(location) = location {
+                let other = self.plan.walls.iter().enumerate().flat_map(|(wall_index, wall)| [
+                    (WallHandle {wall_index,is_start:true},wall.start),
+                    (WallHandle {wall_index,is_start:false},wall.end),
+                ]).find(|(handle, pos)| pos.distance_to(location) < 0.0001
+                    && !self.selected_handles.contains(handle));
+                if let Some((next, _)) = other {
+                    clicked = self.plan.linked_wall_endpoints(next);
+                }
+            }
+        }
         if self.selected_handles.is_empty() { self.clear_selection(); }
         let all_selected = clicked.iter().all(|handle| self.selected_handles.contains(handle));
         if all_selected {
@@ -1388,7 +1391,7 @@ impl EasyDraft {
     }
 
     fn select_at(&mut self, point: Point, ppm: f32) {
-        let clicked = self.wall_handles_at(point, ppm);
+        let clicked = self.cycle_coincident_wall_handle(point, ppm);
         if !clicked.is_empty() {
             self.clear_selection();
             self.selected_handles = clicked;
