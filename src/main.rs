@@ -2697,6 +2697,126 @@ mod plan_editor_tests {
     }
 
     #[test]
+    fn wall_auto_switches_to_selection_after_second_click() {
+        let mut app = EasyDraft::default();
+        assert_eq!(app.tool, Tool::Wall);
+        app.place(Point { x: 0.0, y: 0.0 }, 80.0);
+        assert_eq!(app.tool, Tool::Wall);
+        app.place(Point { x: 4.0, y: 0.0 }, 80.0);
+        assert_eq!(app.plan.walls.len(), 1);
+        assert_eq!(app.tool, Tool::SelectWall);
+        assert_eq!(app.selected_wall, Some(0));
+        assert!(app.pending_wall.is_none());
+    }
+
+    #[test]
+    fn window_selection_and_crossing_selection_work_differently() {
+        let mut plan = Plan::default();
+        plan.walls.push(Wall {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 4.0, y: 0.0 },
+            thickness_m: 0.15,
+        });
+        plan.symbols.push(ElectricalSymbol {
+            position: Point { x: 1.0, y: 0.6 },
+            kind: ElectricalKind::Outlet,
+        });
+        let window = Marquee {
+            start: Point { x: 0.5, y: -0.5 },
+            current: Point { x: 2.0, y: 1.0 },
+        };
+        let selected = SelectionSet::from_marquee(&plan, window);
+        assert_eq!(selected.walls.len(), 0);
+        assert_eq!(selected.symbols, vec![0]);
+        let crossing = Marquee { start: window.current, current: window.start };
+        let selected = SelectionSet::from_marquee(&plan, crossing);
+        assert_eq!(selected.walls, vec![0]);
+        assert_eq!(selected.symbols, vec![0]);
+    }
+
+    #[test]
+    fn group_drag_moves_wall_and_symbol_preserving_its_opening_and_undo() {
+        let mut app = EasyDraft::default();
+        app.tool = Tool::SelectWall;
+        app.plan.walls.push(Wall {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 4.0, y: 0.0 },
+            thickness_m: 0.15,
+        });
+        app.plan.add_opening(0, Point { x: 1.0, y: 0.0 }, 0.9,
+            OpeningKind::Door, false, false, 0.05).unwrap();
+        app.plan.symbols.push(ElectricalSymbol {
+            position: Point { x: 2.0, y: 1.0 },
+            kind: ElectricalKind::Light,
+        });
+        // Un rectangle autour des deux objets sans toucher la porte.
+        app.selection = SelectionSet {
+            walls: vec![0], symbols: vec![0], ..SelectionSet::default()
+        };
+        app.begin_drag(Point { x: 3.0, y: 0.0 }, 80.0);
+        assert!(matches!(app.drag.as_ref().map(|d| d.target), Some(DragTarget::Group)));
+        app.update_drag(Point { x: 3.0, y: 1.2 }, 80.0);
+        app.finish_drag();
+        assert!((app.plan.walls[0].start.y - 1.2).abs() < 0.001);
+        assert!((app.plan.symbols[0].position.y - 2.2).abs() < 0.001);
+        assert_eq!(app.plan.openings[0].center_m, 1.0);
+        assert_eq!(app.undo.len(), 1);
+        app.undo();
+        assert_eq!(app.plan.walls[0].start.y, 0.0);
+        assert_eq!(app.plan.symbols[0].position.y, 1.0);
+    }
+
+    #[test]
+    fn symbol_and_stair_can_be_dragged_without_a_group() {
+        let mut app = EasyDraft::default();
+        app.tool = Tool::SelectWall;
+        app.plan.symbols.push(ElectricalSymbol {
+            position: Point { x: 2.0, y: 2.0 }, kind: ElectricalKind::Outlet
+        });
+        app.plan.stairs.push(Stair {
+            start: Point { x: 5.0, y: 0.0 },
+            end: Point { x: 5.0, y: 3.0 },
+            width_m: 1.0,
+            steps: 12,
+        });
+        app.begin_drag(Point { x: 2.0, y: 2.0 }, 80.0);
+        assert!(matches!(app.drag.as_ref().map(|d| d.target), Some(DragTarget::Symbol(0))));
+        app.update_drag(Point { x: 2.5, y: 2.0 }, 80.0);
+        app.finish_drag();
+        assert!((app.plan.symbols[0].position.x - 2.5).abs() < 0.001);
+        app.begin_drag(Point { x: 5.0, y: 1.5 }, 80.0);
+        assert!(matches!(app.drag.as_ref().map(|d| d.target), Some(DragTarget::Stair(0))));
+        app.update_drag(Point { x: 6.0, y: 1.5 }, 80.0);
+        app.finish_drag();
+        assert!((app.plan.stairs[0].start.x - 6.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn save_current_writes_valid_json_and_pdf_export_creates_file() {
+        let mut app = EasyDraft::default();
+        app.plan.walls.push(Wall {
+            start: Point { x: 0.0, y: 0.0 },
+            end: Point { x: 4.0, y: 0.0 },
+            thickness_m: 0.15,
+        });
+        let filename = format!("easydraft-file-test-{}", std::process::id());
+        let json_path = std::env::temp_dir().join(format!("{filename}.json"));
+        let pdf_path = std::env::temp_dir().join(format!("{filename}.pdf"));
+        app.file_path = json_path.to_string_lossy().into_owned();
+        app.file_path_assigned = true;
+        app.save();
+        assert!(app.status.starts_with("Plan enregistre"));
+        let restored: Plan = serde_json::from_slice(&std::fs::read(&json_path).unwrap()).unwrap();
+        assert_eq!(restored.walls.len(), 1);
+        pdf_export::export_pdf(pdf_path.to_str().unwrap(), &restored, true).unwrap();
+        let pdf_data = std::fs::read(&pdf_path).unwrap();
+        assert!(pdf_data.starts_with(b"%PDF-"));
+        assert!(pdf_data.len() > 200);
+        let _ = std::fs::remove_file(json_path);
+        let _ = std::fs::remove_file(pdf_path);
+    }
+
+    #[test]
     fn removing_electric_symbol_cleans_unifilar_from_editor() {
         let mut app = EasyDraft::default();
         app.plan.add_demo_lighting();
