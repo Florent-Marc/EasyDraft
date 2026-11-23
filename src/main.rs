@@ -9,7 +9,7 @@ use eframe::egui::{self, Align2, Color32, FontId, Painter, Pos2, Sense, Stroke, 
 use std::path::Path;
 use model::{
     ElectricalAppearance, ElectricalKind, ElectricalSymbol, Opening, OpeningKind, Plan, Point, Stair, Wall,
-    DEFAULT_WALL_THICKNESS_M,
+    BackgroundPlan, DEFAULT_WALL_THICKNESS_M,
 };
 
 const GRID_METERS: f32 = 0.5;
@@ -267,6 +267,10 @@ struct EasyDraft {
     view: View,
     sidebar_tab: SidebarTab,
     palette_search: String,
+    underlay_texture: Option<egui::TextureHandle>,
+    underlay_loaded_key: Option<String>,
+    underlay_dimensions: [usize; 2],
+    show_underlay: bool,
     pending_switch: Option<usize>,
     active_circuit_index: usize,
     pending_wall: Option<Point>,
@@ -314,6 +318,10 @@ impl Default for EasyDraft {
             view: View::Plan2D,
             sidebar_tab: SidebarTab::Affichage,
             palette_search: String::new(),
+            underlay_texture: None,
+            underlay_loaded_key: None,
+            underlay_dimensions: [1, 1],
+            show_underlay: true,
             pending_switch: None,
             active_circuit_index: 0,
             pending_wall: None,
@@ -537,6 +545,71 @@ impl EasyDraft {
             self.reset_pending();
             self.clear_selection();
             self.status = "Modification retablie".into();
+        }
+    }
+
+    fn refresh_underlay_texture(&mut self, ctx: &egui::Context) {
+        let Some(bg) = self.plan.background.as_ref() else {
+            self.underlay_texture = None;
+            self.underlay_loaded_key = None;
+            return;
+        };
+        let key = format!("{}|{}", bg.path, bg.rotation_quarters % 4);
+        if self.underlay_loaded_key.as_ref() == Some(&key) { return; }
+        self.underlay_loaded_key = Some(key);
+        self.underlay_texture = None;
+        let decoded = std::fs::read(&bg.path)
+            .map_err(|error| format!("Impossible de lire le fond de plan : {error}"))
+            .and_then(|data| image::load_from_memory(&data)
+                .map_err(|error| format!("Image invalide : {error}")));
+        match decoded {
+            Ok(image) => {
+                let rgba = image.to_rgba8();
+                let pixels = match bg.rotation_quarters % 4 {
+                    1 => image::imageops::rotate90(&rgba),
+                    2 => image::imageops::rotate180(&rgba),
+                    3 => image::imageops::rotate270(&rgba),
+                    _ => rgba,
+                };
+                let dimensions = [pixels.width() as usize, pixels.height() as usize];
+                let color = egui::ColorImage::from_rgba_unmultiplied(dimensions, pixels.as_raw());
+                self.underlay_texture = Some(ctx.load_texture(
+                    "easydraft-plan-underlay", color, egui::TextureOptions::LINEAR
+                ));
+                self.underlay_dimensions = dimensions;
+            }
+            Err(error) => self.status = error,
+        }
+    }
+
+    fn import_underlay(&mut self, ctx: &egui::Context) {
+        let chosen = rfd::FileDialog::new()
+            .set_title("Importer un fond de plan (image)")
+            .add_filter("Images", &["png", "jpg", "jpeg", "bmp"])
+            .pick_file();
+        let Some(path) = chosen else { return; };
+        // Confirme le format avant de modifier le plan ou l'historique.
+        let image = std::fs::read(&path)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| image::load_from_memory(&bytes).map_err(|error| error.to_string()));
+        match image {
+            Ok(image) => {
+                let ratio = image.height() as f32 / image.width().max(1) as f32;
+                self.snapshot();
+                self.plan.background = Some(BackgroundPlan {
+                    path: path.to_string_lossy().into_owned(),
+                    width_m: 15.0,
+                    origin: Point { x: -7.5, y: -7.5 * ratio },
+                    opacity: 0.46,
+                    rotation_quarters: 0,
+                });
+                self.show_underlay = true;
+                self.underlay_loaded_key = None;
+                self.refresh_underlay_texture(ctx);
+                self.sidebar_tab = SidebarTab::Affichage;
+                self.status = "Fond de plan importe : calibre sa largeur reelle dans Parametres > Plan".into();
+            }
+            Err(error) => self.status = format!("Import impossible : {error}"),
         }
     }
 
@@ -1745,6 +1818,27 @@ impl EasyDraft {
             Point { x: (p.x - origin.x) / ppm, y: (p.y - origin.y) / ppm }
         };
 
+        // Calque image sous les murs, cotes et symboles ; dimensions en metres.
+        if self.show_underlay {
+            if let (Some(bg), Some(texture)) = (
+                self.plan.background.as_ref(), self.underlay_texture.as_ref()
+            ) {
+                let aspect = self.underlay_dimensions[1] as f32
+                    / self.underlay_dimensions[0].max(1) as f32;
+                let at = to_screen(bg.origin);
+                let size = Vec2::new(bg.width_m * ppm, bg.width_m * aspect * ppm);
+                let underlay_rect = egui::Rect::from_min_size(at, size);
+                if underlay_rect.intersects(rect) {
+                    painter.image(
+                        texture.id(),
+                        underlay_rect,
+                        egui::Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                        Color32::from_white_alpha((bg.opacity.clamp(0.0, 1.0) * 255.0) as u8),
+                    );
+                }
+            }
+        }
+
         if self.grid {
             let step = GRID_METERS * ppm;
             let left = ((rect.left() - origin.x) / step).floor() as i32;
@@ -2055,6 +2149,7 @@ impl EasyDraft {
 
 impl eframe::App for EasyDraft {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.refresh_underlay_texture(ctx);
         if !ctx.wants_keyboard_input() {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
                 self.undo();
@@ -2393,6 +2488,47 @@ impl eframe::App for EasyDraft {
                 }
             }
             if self.sidebar_tab == SidebarTab::Affichage {
+            ui.strong("FOND DE PLAN");
+            if ui.button("Importer une image...").clicked() {
+                self.import_underlay(ui.ctx());
+            }
+            if let Some(current) = self.plan.background.as_ref().cloned() {
+                ui.checkbox(&mut self.show_underlay, "Afficher le fond de plan");
+                ui.small("Fichier image externe au JSON");
+                ui.label(current.path.rsplit(['/', '\\']).next().unwrap_or("image"));
+                let mut edited = current.clone();
+                ui.label("Largeur reelle de l'image");
+                ui.add(egui::Slider::new(&mut edited.width_m, 2.0..=80.0)
+                    .step_by(0.1).suffix(" m"));
+                ui.label("Transparence");
+                ui.add(egui::Slider::new(&mut edited.opacity, 0.0..=1.0)
+                    .step_by(0.01).text("Opacite"));
+                ui.label("Position (metres)");
+                ui.horizontal(|ui| {
+                    ui.add(egui::DragValue::new(&mut edited.origin.x).speed(0.05).prefix("X "));
+                    ui.add(egui::DragValue::new(&mut edited.origin.y).speed(0.05).prefix("Y "));
+                });
+                ui.horizontal(|ui| {
+                    if ui.button("Pivoter de 90 degres").clicked() {
+                        edited.rotation_quarters = (edited.rotation_quarters + 1) % 4;
+                    }
+                    if ui.button("Retirer").clicked() {
+                        self.snapshot();
+                        self.plan.background = None;
+                        self.underlay_texture = None;
+                        self.underlay_loaded_key = None;
+                        self.status = "Fond de plan retire".into();
+                    }
+                });
+                if self.plan.background.is_some() && edited != current {
+                    self.snapshot();
+                    self.plan.background = Some(edited);
+                }
+            } else {
+                ui.small("PNG, JPG ou BMP comme calque sous les symboles.");
+            }
+            ui.separator();
+            ui.strong("AFFICHAGE");
             ui.label("Calques visibles");
             ui.checkbox(&mut self.show_architecture, "Architecture (murs, portes, escaliers)");
             ui.checkbox(&mut self.show_rooms, "Pieces, surfaces et dimensions");
