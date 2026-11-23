@@ -5,6 +5,16 @@
 use crate::model::{Point, Wall};
 
 const EPS: f32 = 0.001;
+
+// Un mur peut sembler raccorde sur le dessin alors que son extremite
+// s'arrete a quelques millimetres de l'axe d'une autre cloison. Ces
+// micro-ecarts (< 2 cm) ne doivent pas faire disparaitre une piece.
+//
+// Ne pas augmenter EPS : cela fusionnerait aussi des intersections ou
+// des noeuds non lies. Les raccords sont construits UNIQUEMENT pour le
+// graphe de detection des pieces et ne changent pas le plan sauvegarde.
+const ROOM_JOIN_TOLERANCE_M: f32 = 0.02;
+const ROOM_JOIN_MAX_PARALLEL_COS: f32 = 0.45;
 const MIN_AREA_M2: f32 = 0.05;
 const MAX_WALLS: usize = 2000;
 
@@ -178,7 +188,79 @@ fn dimension_bounds(poly: &[Point]) -> (f32, f32) {
     (maxx - minx, maxy - miny)
 }
 
+/// Retourne de tres courts segments virtuels qui relient une extremite
+/// de mur a une cloison presque touchee, a condition que les deux murs
+/// se rencontrent avec un angle suffisant (raccord en T).
+///
+/// Seuls les espaces <= 2 cm sont corriges. Une ouverture de passage
+/// libre classique (35 cm ou plus) n'est JAMAIS refermee ici.
+/// Les portes, fenetres, passages et murs originaux ne sont pas modifies.
+fn tiny_room_junctions(walls: &[Wall]) -> Vec<Wall> {
+    let mut joins = Vec::new();
+    for (i, wall) in walls.iter().enumerate() {
+        let len = wall.length_m();
+        if len < 0.05 || !len.is_finite() { continue; }
+        let direction = delta(wall.end, wall.start);
+        for endpoint in [wall.start, wall.end] {
+            let mut nearest: Option<(f32, Point, f32)> = None;
+            for (j, other) in walls.iter().enumerate() {
+                if i == j { continue; }
+                let other_direction = delta(other.end, other.start);
+                let sq = other_direction.x * other_direction.x
+                    + other_direction.y * other_direction.y;
+                if sq < 0.05_f32.powi(2) || !sq.is_finite() { continue; }
+                let t = (delta(endpoint, other.start).x * other_direction.x
+                    + delta(endpoint, other.start).y * other_direction.y) / sq;
+                // Seules les jonctions en T SUR un mur sont raccordees.
+                // Les murs paralleles rapproches restent deux murs.
+                if t <= 0.01 || t >= 0.99 { continue; }
+                let projected = interpolate(other.start, other.end, t);
+                let gap = endpoint.distance_to(projected);
+                if gap <= EPS || gap > ROOM_JOIN_TOLERANCE_M || !gap.is_finite() {
+                    continue;
+                }
+                let dot = direction.x * other_direction.x
+                    + direction.y * other_direction.y;
+                let parallel_cos = (dot / (len * sq.sqrt())).abs();
+                if parallel_cos > ROOM_JOIN_MAX_PARALLEL_COS { continue; }
+                if nearest.as_ref().is_none_or(|current| gap < current.0) {
+                    nearest = Some((
+                        gap,
+                        projected,
+                        (wall.thickness_m.max(0.0) + other.thickness_m.max(0.0)) * 0.5,
+                    ));
+                }
+            }
+            if let Some((_, connected_at, thickness_m)) = nearest {
+                joins.push(Wall {
+                    start: endpoint,
+                    end: connected_at,
+                    thickness_m,
+                });
+            }
+        }
+    }
+    joins
+}
+
+/// Detection des pieces avec correction topologique de micro-ecarts de
+/// dessin. Ne modifie jamais les coordonnees des murs du document.
 pub fn detect_rooms(walls: &[Wall]) -> Vec<DetectedRoom> {
+    if walls.is_empty() || walls.len() > MAX_WALLS {
+        return Vec::new();
+    }
+    let joins = tiny_room_junctions(walls);
+    if joins.is_empty() {
+        return detect_rooms_strict(walls);
+    }
+    let mut topology = Vec::with_capacity((walls.len() + joins.len()).min(MAX_WALLS));
+    topology.extend_from_slice(walls);
+    topology.extend(joins.into_iter().take(MAX_WALLS - walls.len()));
+    detect_rooms_strict(&topology)
+}
+
+/// Graphe planaire strict, utilise apres construction des jonctions virtuelles.
+fn detect_rooms_strict(walls: &[Wall]) -> Vec<DetectedRoom> {
     if walls.is_empty() || walls.len() > MAX_WALLS {
         return Vec::new();
     }
