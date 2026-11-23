@@ -1471,7 +1471,7 @@ mod tests {
         let mut plan = Plan::default();
         plan.walls = vec![
             Wall {start:Point{x:0.0,y:0.0},end:Point{x:4.0,y:0.0},thickness_m:0.15},
-            Wall {start:Point{x:5.0,y:2.0},end:Point{x:5.0,y:3.0},thickness_m:0.15},
+            Wall {start:Point{x:0.5,y:0.0},end:Point{x:5.0,y:3.0},thickness_m:0.15},
         ];
         let a = WallEndpoint {wall_index:0,is_start:true};
         let b = WallEndpoint {wall_index:0,is_start:false};
