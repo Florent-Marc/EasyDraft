@@ -2067,32 +2067,7 @@ impl EasyDraft {
                     ElectricalAppearance::SwitchTwoWay | ElectricalAppearance::PushButton) {
                     ui.small("Ce pictogramme ne simule pas encore les commandes va-et-vient / telerupteur.");
                 }
-                if symbol.kind == ElectricalKind::Outlet {
-                    let ref_text = self.plan.point_ref(index)
-                        .unwrap_or_else(|| "sans repere".into());
-                    ui.label(format!("Repere sur les documents : {ref_text}"));
-                    ui.label(format!(
-                        "Circuit actif : {}",
-                        self.plan.circuit(self.settings.active_circuit_index)
-                            .map(|c| c.letter.as_str()).unwrap_or("?")
-                    ));
-                    if ui.button("Affecter cette prise au circuit actif").clicked() {
-                        let mut updated = self.plan.clone();
-                        match updated.assign_outlet_to_circuit(index, self.settings.active_circuit_index) {
-                            Ok(()) => {
-                                self.snapshot();
-                                self.plan = updated;
-                                self.status = "Prise affectee au circuit actif".into();
-                            }
-                            Err(err) => self.status = err.into(),
-                        }
-                    }
-                    if ui.button("Retirer l'affectation de cette prise").clicked() {
-                        self.snapshot();
-                        self.plan.unassign_outlet(index);
-                        self.status = "Affectation retiree : la prise sera signalee comme incomplete".into();
-                    }
-                }
+                self.show_component_circuit(ui, index, symbol.kind);
                 let mut position = symbol.position;
                 let mut changed = false;
                 ui.horizontal(|ui| {
@@ -2245,6 +2220,67 @@ impl EasyDraft {
                 );
             }
             Err(error) => self.status = error.into(),
+        }
+    }
+
+    fn show_component_circuit(&mut self, ui: &mut egui::Ui, index: usize, kind: ElectricalKind) {
+        let (current, command) = if kind == ElectricalKind::Outlet {
+            let circuit = self.plan.active_outlet_assignments().into_iter()
+                .find(|a| a.symbol_index == index).map(|a| a.circuit_index);
+            ui.label(format!("Repère : {}", self.plan.point_ref(index).as_deref().unwrap_or("—")));
+            (circuit, None)
+        } else {
+            let link = self.plan.active_lighting_connections().into_iter().find(|link| {
+                match kind {
+                    ElectricalKind::Switch => link.switch_index == index,
+                    ElectricalKind::Light => link.light_index == index,
+                    ElectricalKind::Outlet => false,
+                }
+            });
+            let Some(link) = link else {
+                ui.small("Utilise « Lier I → L » pour associer cet appareil à un circuit.");
+                return;
+            };
+            ui.small("Le changement déplace ensemble l’interrupteur et les lampes qu’il commande.");
+            (Some(link.circuit_index), Some(link.switch_index))
+        };
+
+        let mut target = current;
+        egui::ComboBox::from_id_salt(("component_circuit", index))
+            .selected_text(current.and_then(|i| self.plan.circuit(i))
+                .map_or_else(|| "Sans affectation".into(), |c| format!("Circuit {}", c.letter)))
+            .show_ui(ui, |ui| {
+                if kind == ElectricalKind::Outlet {
+                    ui.selectable_value(&mut target, None, "Sans affectation");
+                }
+                for i in 0..self.plan.circuit_count() {
+                    if let Some(circuit) = self.plan.circuit(i) {
+                        ui.selectable_value(&mut target, Some(i), format!("Circuit {}", circuit.letter));
+                    }
+                }
+            });
+        if target != current {
+            let mut updated = self.plan.clone();
+            let result = match (command, target) {
+                (Some(switch), Some(circuit)) => updated.move_lighting_group(switch, circuit),
+                (None, Some(circuit)) => updated.assign_outlet_to_circuit(index, circuit),
+                (None, None) => {
+                    updated.unassign_outlet(index);
+                    Ok(())
+                }
+                (Some(_), None) => return,
+            };
+            match result {
+                Ok(()) => {
+                    self.snapshot();
+                    self.plan = updated;
+                    self.status = match target.and_then(|i| self.plan.circuit(i)) {
+                        Some(circuit) => format!("Affectation mise à jour : circuit {}", circuit.letter),
+                        None => "Affectation de la prise retirée".into(),
+                    };
+                }
+                Err(error) => self.status = error.into(),
+            }
         }
     }
 
