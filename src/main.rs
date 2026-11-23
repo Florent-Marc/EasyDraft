@@ -1008,7 +1008,7 @@ impl EasyDraft {
         }
         self.sidebar_tab = SidebarTab::Inspecteur;
         self.status = format!(
-            "{} sommet(s) choisi(s) : glisse un sommet ou clique sur Raccorder",
+            "{} point(s) selectionne(s) : Joindre pour lier / Dissoudre pour separer",
             self.selected_handles.len()
         );
         true
@@ -1089,11 +1089,18 @@ impl EasyDraft {
             };
             return;
         };
-        // Une extremite touchee est un noeud : si plusieurs murs partagent
-        // exactement ce point, on les prend ensemble. Les sommets deja
-        // selectionnes via Maj + clic sont conserves pendant le glissement.
+        // Seuls les groupes explicitement Joints suivent automatiquement.
+        // Une coincidence geometrique n'est pas une liaison d'edition.
         if matches!(hit, DragTarget::WallStart(_) | DragTarget::WallEnd(_)) {
-            let clicked = self.wall_handles_at(point, ppm);
+            let mut clicked = self.wall_handles_at(point, ppm);
+            // Conserver le point choisi lors d'un clic precedent, utile
+            // lorsque deux extremites dissoutes se superposent encore.
+            let chosen = self.selected_handles.first().copied()
+                .filter(|h| h.position(&self.plan)
+                    .is_some_and(|p| p.distance_to(point) <= 12.0 / ppm));
+            if let Some(chosen) = chosen {
+                clicked = self.plan.linked_wall_endpoints(chosen);
+            }
             let keep = clicked.iter().any(|handle| self.selected_handles.contains(handle));
             if !keep { self.clear_selection(); }
             for handle in clicked {
@@ -1108,9 +1115,9 @@ impl EasyDraft {
             };
             self.sidebar_tab = SidebarTab::Inspecteur;
             self.status = if self.selected_handles.len() > 1 {
-                format!("Deplace {} extremites vers un meme point", self.selected_handles.len())
+                format!("Deplace {} points ensemble ; utiliser Joindre pour les lier", self.selected_handles.len())
             } else {
-                "Deplace l'extremite du mur (Maj + clic pour en ajouter)".into()
+                "Deplace le point seul (Maj + clic pour en ajouter, Joindre pour les lier)".into()
             };
             self.drag = Some(ActiveDrag {
                 target,
@@ -1162,33 +1169,117 @@ impl EasyDraft {
         });
     }
 
+    /// Joindre est une action EXPLICITE. Si un seul point est selectionne,
+    /// il peut s'accrocher a un mur perpendiculaire proche (utile pour fermer
+    /// les petits manques de jonction en T dans les pieces).
     fn weld_selected_to_first(&mut self) {
-        let Some(first) = self.selected_handles.first().copied() else { return; };
-        if self.selected_handles.len() < 2 {
-            self.status = "Selectionne au moins deux sommets (Maj + clic)".into();
-            return;
-        }
-        let Some(target) = first.position(&self.plan) else {
-            self.status = "Premier sommet introuvable".into();
+        let Some(&first) = self.selected_handles.first() else {
+            self.status = "Selectionne une ou plusieurs extremites de murs".into();
             return;
         };
         let mut updated = self.plan.clone();
-        match weld_wall_handles(&mut updated, &self.selected_handles, target) {
-            Ok(()) => {
-                let moved = self.selected_handles.iter().any(|&h|
-                    h.position(&self.plan).is_some_and(|p| p.distance_to(target) > 0.0001)
-                );
-                if moved {
+        if self.selected_handles.len() >= 2 {
+            match updated.join_wall_endpoints(&self.selected_handles) {
+                Ok(count) => {
                     self.snapshot();
                     self.plan = updated;
+                    self.selected_handles = self.plan.linked_wall_endpoints(first);
+                    self.status = format!(
+                        "Joindre : {count} extremites liees, desormais deplacables ensemble (Ctrl+Z)"
+                    );
                 }
-                self.status = format!(
-                    "{} extremites raccordees exactement en X {:.2} / Y {:.2} m",
-                    self.selected_handles.len(), target.x, target.y
-                );
+                Err(error) => self.status = format!("Joindre refuse : {error}"),
             }
-            Err(error) => self.status = format!("Raccordement refuse : {error}"),
+            return;
         }
+
+        // Une seule extremite choisie : accrochage volontaire au mur dont
+        // elle approche l'axe a moins de 20 cm. Cette commande ne met pas
+        // le plan en etat de liaison automatique.
+        let Some(point) = first.position(&self.plan) else {
+            self.status = "Sommet introuvable".into();
+            return;
+        };
+        let mut best: Option<(usize, Point, f32)> = None;
+        for (index, wall) in self.plan.walls.iter().enumerate() {
+            if index == first.wall_index { continue; }
+            let segment = Point {
+                x: wall.end.x - wall.start.x,
+                y: wall.end.y - wall.start.y,
+            };
+            let sq = segment.x * segment.x + segment.y * segment.y;
+            if sq < 0.0025 { continue; }
+            let along = ((point.x - wall.start.x) * segment.x
+                + (point.y - wall.start.y) * segment.y) / sq;
+            if !(-0.03..=1.03).contains(&along) { continue; }
+            let t = along.clamp(0.0, 1.0);
+            let projection = Point {
+                x: wall.start.x + t * segment.x,
+                y: wall.start.y + t * segment.y,
+            };
+            let distance = point.distance_to(projection);
+            if distance <= 0.20 &&
+                best.as_ref().is_none_or(|previous| distance < previous.2)
+            {
+                best = Some((index, projection, distance));
+            }
+        }
+        let Some((wall_index, target, distance)) = best else {
+            self.status = "Joindre : selectionne aussi un autre point, ou approche ce sommet d'un mur (20 cm max)".into();
+            return;
+        };
+        if distance <= 0.0001 {
+            self.status = "Ce point touche deja le mur. Pour lier deux extremites, selectionne les deux avec Maj".into();
+            return;
+        }
+        // Joindre a une extremite du mur cible cree un vrai groupe de liens.
+        // Joindre en T accroche geometriquement l'extremite a l'axe cible.
+        let wall = &self.plan.walls[wall_index];
+        let other = if target.distance_to(wall.start) <= 0.0001 {
+            Some(WallHandle {wall_index,is_start:true})
+        } else if target.distance_to(wall.end) <= 0.0001 {
+            Some(WallHandle {wall_index,is_start:false})
+        } else { None };
+        let outcome = if let Some(other) = other {
+            updated.join_wall_endpoints(&[first,other]).map(|count| {
+                format!("Joindre : {count} sommets lies sur un noeud commun")
+            })
+        } else {
+            updated.move_wall_endpoints_to(&[first], target).map(|_| {
+                format!("Jonction en T creee : sommet raccorde a l'axe du mur {wall_index}")
+            })
+        };
+        match outcome {
+            Ok(message) => {
+                self.snapshot();
+                self.plan = updated;
+                self.selected_handles = self.plan.linked_wall_endpoints(first);
+                self.status = message;
+            }
+            Err(error) => self.status = format!("Joindre refuse : {error}"),
+        }
+    }
+
+    /// Dissoudre les liaisons explicites sans deplacer la geometrie du plan.
+    /// Une extremite peut ensuite etre glissee independamment.
+    fn dissolve_selected_joints(&mut self) {
+        if self.selected_handles.is_empty() {
+            self.status = "Selectionne un point d'une jonction".into();
+            return;
+        }
+        let mut updated = self.plan.clone();
+        let count = updated.dissolve_wall_joints(&self.selected_handles);
+        if count == 0 {
+            self.status = "Aucun groupe de sommets explicitement joint a dissoudre".into();
+            return;
+        }
+        self.snapshot();
+        self.plan = updated;
+        self.selected_handles.truncate(1);
+        self.sidebar_tab = SidebarTab::Inspecteur;
+        self.status = format!(
+            "Dissoudre : {count} jonction(s) liberee(s). Deplace ce sommet seul (Ctrl+Z)"
+        );
     }
 
     fn update_marquee(&mut self, point: Point) {
@@ -1216,7 +1307,7 @@ impl EasyDraft {
             }
             self.sidebar_tab = SidebarTab::Inspecteur;
             self.status = format!(
-                "{added} point(s) ajoute(s), {} au total : glisse un point pour les raccorder",
+                "{added} point(s) ajoute(s), {} au total : glisse pour deplacer, puis Joindre",
                 self.selected_handles.len()
             );
             return;
@@ -1247,10 +1338,15 @@ impl EasyDraft {
 
         let outcome = match target {
             DragTarget::Joint => {
-                // Tous les sommets de la selection convergent vers une seule
-                // coordonnee EXACTE, aimantee aux murs non selectionnes.
+                // Les points choisis avancent ensemble en conservant leurs
+                // positions relatives. Ils ne deviennent lies QUE si le
+                // bouton Joindre est utilise.
                 let destination = self.snap_joint_destination(cursor, ppm);
-                weld_wall_handles(&mut updated, &self.selected_handles, destination)
+                let shift = Point {
+                    x: destination.x - from.x,
+                    y: destination.y - from.y,
+                };
+                updated.move_wall_endpoints_by(&self.selected_handles, shift)
             }
             DragTarget::Opening(index) => {
                 if let Some(opening) = updated.openings.get(index) {
@@ -1382,7 +1478,7 @@ impl EasyDraft {
                 if self.undo.len() > 100 { self.undo.remove(0); }
                 self.redo.clear();
                 self.status = if matches!(session.target, DragTarget::Joint) {
-                    "Sommets raccordes au meme point (Ctrl+Z pour annuler)".into()
+                    "Points de murs deplaces (Ctrl+Z pour annuler ; Joindre pour les lier)".into()
                 } else {
                     "Deplacement termine : derniere position valide conservee (Ctrl+Z pour annuler)".into()
                 };
@@ -1397,7 +1493,7 @@ impl EasyDraft {
             self.selected_handles = clicked;
             self.sidebar_tab = SidebarTab::Inspecteur;
             self.status = format!(
-                "{} sommet(s) selectionne(s) : Maj + clic sur d'autres extremites",
+                "{} sommet(s) selectionne(s) : Maj + clic, puis Joindre ou Dissoudre",
                 self.selected_handles.len()
             );
             return;
