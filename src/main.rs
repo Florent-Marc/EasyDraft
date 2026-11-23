@@ -876,7 +876,7 @@ impl EasyDraft {
                     } else { Err("Mur introuvable") }
                 } else { Err("Ouverture introuvable") }
             }
-            DragTarget::Symbol(index) | DragTarget::Stair(index) | DragTarget::Group => {
+            DragTarget::Symbol(_) | DragTarget::Stair(_) | DragTarget::Group => {
                 let shift = Point {
                     x: (delta.x / self.snap_m).round() * self.snap_m,
                     y: (delta.y / self.snap_m).round() * self.snap_m,
