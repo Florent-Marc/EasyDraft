@@ -1732,7 +1732,7 @@ impl EasyDraft {
                     }
                 } else {
                     self.pending_wall = Some(position);
-                    self.status = "Choisis le deuxieme point du mur".into();
+                    self.status = "Deuxieme point : vert = horizontal/vertical, Maj = angle droit, clic droit = deplacer la vue".into();
                 }
             }
             Tool::Stair => {
@@ -3155,6 +3155,56 @@ mod plan_editor_tests {
         app.finish_drag();
         assert_eq!(app.plan.walls[0].start.x, 0.0);
         assert!((app.plan.walls[0].end.x - 5.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn wall_preview_snaps_to_true_horizontal_and_vertical() {
+        let start = Point { x: 1.0, y: 2.0 };
+        let (horizontal, axis) =
+            aligned_wall_end(start, Point { x: 5.0, y: 2.2 }, false);
+        assert_eq!(axis, Some(WallAlignment::Horizontal));
+        assert_eq!(horizontal, Point { x: 5.0, y: 2.0 });
+        let (vertical, axis) =
+            aligned_wall_end(start, Point { x: 1.12, y: -2.0 }, false);
+        assert_eq!(axis, Some(WallAlignment::Vertical));
+        assert_eq!(vertical, Point { x: 1.0, y: -2.0 });
+        assert!(wall_heading(start, horizontal, Some(WallAlignment::Horizontal))
+            .contains("0°"));
+        assert!(wall_heading(start, vertical, Some(WallAlignment::Vertical))
+            .contains("90°"));
+    }
+
+    #[test]
+    fn oblique_wall_keeps_its_angle_except_with_shift_held() {
+        let start = Point { x: 0.0, y: 0.0 };
+        let candidate = Point { x: 3.0, y: 1.5 };
+        let (free, no_axis) = aligned_wall_end(start, candidate, false);
+        assert_eq!(no_axis, None);
+        assert_eq!(free, candidate);
+        assert!(wall_heading(start, free, no_axis).contains("INCLINE"));
+        let (locked, axis) = aligned_wall_end(start, candidate, true);
+        assert_eq!(axis, Some(WallAlignment::Horizontal));
+        assert_eq!(locked, Point { x: 3.0, y: 0.0 });
+        let (locked, axis) = aligned_wall_end(
+            start, Point { x: 1.5, y: 3.0 }, true
+        );
+        assert_eq!(axis, Some(WallAlignment::Vertical));
+        assert_eq!(locked, Point { x: 0.0, y: 3.0 });
+    }
+
+    #[test]
+    fn snapped_wall_is_recorded_straight_in_plan() {
+        let mut app = EasyDraft::default();
+        let start = Point { x: 0.0, y: 0.0 };
+        app.place(start, 80.0);
+        let (end, axis) = aligned_wall_end(
+            start, Point { x: 4.0, y: 0.25 }, true
+        );
+        assert_eq!(axis, Some(WallAlignment::Horizontal));
+        app.place(end, 80.0);
+        assert_eq!(app.plan.walls.len(), 1);
+        assert_eq!(app.plan.walls[0].start.y, app.plan.walls[0].end.y);
+        assert_eq!(app.tool, Tool::SelectWall);
     }
 
     #[test]
