@@ -166,8 +166,9 @@ enum DragTarget {
     Joint,
 }
 
-/// Deplacement geometrique atomique conservé pour les outils et les tests.
+/// Deplacement geometrique atomique conserve pour les tests.
 /// Les liens explicites sont crees uniquement par la commande Joindre.
+#[cfg(test)]
 fn weld_wall_handles(
     plan: &mut Plan, handles: &[WallHandle], target: Point,
 ) -> Result<(), &'static str> {
@@ -3595,6 +3596,12 @@ mod plan_editor_tests {
                 thickness_m: 0.15,
             },
         ];
+        // Ces deux extremites sont geometriquement confondues, mais elles
+        // ne sont solidaires QU'APRES la commande explicite Joindre.
+        app.plan.join_wall_endpoints(&[
+            WallHandle {wall_index:0,is_start:false},
+            WallHandle {wall_index:1,is_start:true},
+        ]).unwrap();
         app.begin_drag(Point { x: 2.0, y: 0.0 }, 80.0);
         assert!(matches!(
             app.drag.as_ref().map(|d| d.target), Some(DragTarget::Joint)
@@ -3614,6 +3621,7 @@ mod plan_editor_tests {
             &serde_json::to_string(&app.plan).unwrap()
         ).unwrap();
         assert_eq!(restored.walls[0].end, restored.walls[1].start);
+        assert_eq!(restored.wall_joints.len(), 1);
     }
 
     #[test]
@@ -3643,9 +3651,16 @@ mod plan_editor_tests {
         app.weld_selected_to_first();
         assert_eq!(app.plan.walls[0].end, app.plan.walls[1].start);
         assert_eq!(app.plan.walls[1].start, Point { x: 2.0, y: 0.0 });
+        assert_eq!(app.plan.wall_joints.len(), 1);
         assert_eq!(app.undo.len(), 1);
+        app.dissolve_selected_joints();
+        assert!(app.plan.wall_joints.is_empty());
+        assert_eq!(app.undo.len(), 2);
+        app.undo();
+        assert_eq!(app.plan.wall_joints.len(), 1);
         app.undo();
         assert_eq!(app.plan.walls[1].start, Point { x: 4.0, y: 2.0 });
+        assert!(app.plan.wall_joints.is_empty());
     }
 
     #[test]
@@ -3677,8 +3692,10 @@ mod plan_editor_tests {
         ));
         app.update_drag(Point { x: 5.08, y: 1.05 }, 80.0);
         assert_eq!(app.plan.walls[0].end, Point { x: 5.0, y: 1.0 });
-        assert_eq!(app.plan.walls[1].start, app.plan.walls[0].end);
-        assert_eq!(app.plan.walls[2].start, app.plan.walls[0].end);
+        assert_eq!(app.plan.walls[1].start, Point { x: 7.0, y: 1.0 });
+        assert_eq!(app.plan.walls[2].start, Point { x: 5.0, y: 1.0 });
+        // Plusieurs points deplaces ensemble NE deviennent plus joints.
+        assert!(app.plan.wall_joints.is_empty());
         app.finish_drag();
         assert_eq!(app.undo.len(), 1);
     }
