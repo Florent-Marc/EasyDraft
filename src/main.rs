@@ -162,6 +162,59 @@ enum DragTarget {
     Symbol(usize),
     Stair(usize),
     Group,
+    /// Plusieurs extremites soudees sur une seule coordonnee.
+    Joint,
+}
+
+/// Reference stable a l'une des deux extremites d'un mur existant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WallHandle {
+    wall_index: usize,
+    is_start: bool,
+}
+
+impl WallHandle {
+    fn position(self, plan: &Plan) -> Option<Point> {
+        plan.walls.get(self.wall_index).map(|wall| {
+            if self.is_start { wall.start } else { wall.end }
+        })
+    }
+}
+
+/// Trouve toutes les extremites d'un meme noeud, sans confondre deux
+/// sommets seulement *proches* : ils doivent etre exactement raccordes.
+fn coincident_handles(plan: &Plan, point: Point) -> Vec<WallHandle> {
+    plan.walls.iter().enumerate().flat_map(|(wall_index, wall)| {
+        [
+            (WallHandle { wall_index, is_start: true }, wall.start),
+            (WallHandle { wall_index, is_start: false }, wall.end),
+        ]
+    }).filter(|(_, position)| position.distance_to(point) <= 0.0001)
+      .map(|(handle, _)| handle).collect()
+}
+
+/// Raccordement atomique : aucun mur n'est modifie si une ouverture existante
+/// rend le raccourcissement impossible, ou si un mur deviendrait trop court.
+fn weld_wall_handles(
+    plan: &mut Plan, handles: &[WallHandle], target: Point,
+) -> Result<(), &'static str> {
+    if handles.is_empty() || !target.x.is_finite() || !target.y.is_finite() {
+        return Err("Aucun sommet valide a raccorder");
+    }
+    let mut updated = plan.clone();
+    let mut affected: Vec<usize> = handles.iter().map(|h| h.wall_index).collect();
+    affected.sort_unstable();
+    affected.dedup();
+    for wall_index in affected {
+        let wall = updated.walls.get(wall_index).cloned().ok_or("Mur introuvable")?;
+        let move_start = handles.iter().any(|h| h.wall_index == wall_index && h.is_start);
+        let move_end = handles.iter().any(|h| h.wall_index == wall_index && !h.is_start);
+        let start = if move_start { target } else { wall.start };
+        let end = if move_end { target } else { wall.end };
+        updated.update_wall(wall_index, start, end, wall.thickness_m)?;
+    }
+    *plan = updated;
+    Ok(())
 }
 
 /// Selection de plusieurs elements, sans selectionner les surfaces de piece derivees.
@@ -338,6 +391,8 @@ struct EasyDraft {
     drag: Option<ActiveDrag>,
     marquee: Option<Marquee>,
     selection: SelectionSet,
+    selected_handles: Vec<WallHandle>,
+    marquee_handles: bool,
     new_wall_thickness_cm: f32,
     new_door_width_cm: f32,
     new_window_width_cm: f32,
@@ -390,6 +445,8 @@ impl Default for EasyDraft {
             drag: None,
             marquee: None,
             selection: SelectionSet::default(),
+            selected_handles: Vec::new(),
+            marquee_handles: false,
             new_wall_thickness_cm: DEFAULT_WALL_THICKNESS_M * 100.0,
             new_door_width_cm: 90.0,
             new_window_width_cm: 120.0,
@@ -568,9 +625,11 @@ impl EasyDraft {
             self.plan = session.original;
         }
         self.marquee = None;
+        self.marquee_handles = false;
     }
 
     fn clear_selection(&mut self) {
+        self.selected_handles.clear();
         self.selection = SelectionSet::default();
         self.selected_wall = None;
         self.selected_symbol = None;
