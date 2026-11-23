@@ -585,25 +585,6 @@ impl EasyDraft {
         }
     }
 
-    fn load(&mut self) {
-        let result = std::fs::read_to_string(&self.file_path)
-            .map_err(|e| e.to_string())
-            .and_then(|s| serde_json::from_str::<Plan>(&s).map_err(|e| e.to_string()));
-        match result {
-            Ok(plan) => {
-                self.snapshot();
-                self.plan = plan;
-                self.cancel_drag();
-                self.reset_pending();
-                self.clear_selection();
-                self.active_circuit_index = 0;
-                self.file_path_assigned = true;
-                self.status = format!("Ouvert : {}", self.file_path);
-            }
-            Err(e) => self.status = format!("Erreur : {e}"),
-        }
-    }
-
     fn load_board_example(&mut self) {
         self.cancel_drag();
         match serde_json::from_str::<Plan>(
@@ -1046,6 +1027,35 @@ impl EasyDraft {
 
     fn delete_selected(&mut self) {
         self.cancel_drag();
+        if self.selection.len() > 1 {
+            let mut updated = self.plan.clone();
+            // Supprimer par indices decroissants pour eviter le decalage des tableaux.
+            let mut openings = self.selection.openings.clone();
+            openings.sort_unstable_by(|a,b| b.cmp(a));
+            let mut walls = self.selection.walls.clone();
+            walls.sort_unstable_by(|a,b| b.cmp(a));
+            let mut symbols = self.selection.symbols.clone();
+            symbols.sort_unstable_by(|a,b| b.cmp(a));
+            let mut stairs = self.selection.stairs.clone();
+            stairs.sort_unstable_by(|a,b| b.cmp(a));
+            let result = (|| -> Result<(), &'static str> {
+                for index in openings { updated.remove_opening(index)?; }
+                for index in walls { updated.remove_wall(index)?; }
+                for index in symbols { updated.remove_symbol(index)?; }
+                for index in stairs { updated.remove_stair(index)?; }
+                Ok(())
+            })();
+            match result {
+                Ok(()) => {
+                    self.snapshot();
+                    self.plan = updated;
+                    self.clear_selection();
+                    self.status = "Groupe supprime (Ctrl+Z pour annuler)".into();
+                }
+                Err(error) => self.status = format!("Suppression impossible : {error}"),
+            }
+            return;
+        }
         let mut updated = self.plan.clone();
         let outcome = if let Some(index) = self.selected_opening {
             updated.remove_opening(index)
