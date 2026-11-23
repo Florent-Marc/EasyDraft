@@ -2,6 +2,16 @@
 
 **EasyDraft** est un prototype en **Rust + egui/eframe** pour dessiner des plans de maison en 2D et construire des schémas électriques de travail.
 
+## Navigation souris et placement de murs parfaitement droits
+
+- **Clic droit maintenu + glisser** sur le plan : deplacement de la vue, quel que soit l'outil actif (y compris **Selection** et durant le trace d'un mur). Aucun element n'est modifie.
+- **Molette de la souris** : zoom autour du pointeur. L'outil separe « Deplacer le plan » a ete supprime.
+- **Clic gauche** : creation ou selection normale de l'element. En mode Selection, glisser depuis un espace vide encadre plusieurs objets ; glisser un objet selectionne le deplace.
+- **Tracer un mur** : un clic pour le depart, puis deplacer la souris pour l'apercu, et un second clic pour valider. Une ligne **verte avec guide horizontal/vertical** apparait quand l'axe est proche de 0 ou 90 degres (tolerance approximative de 5 degres) ; le mur est alors pose exactement sur cet axe.
+- **Mur oblique** : la previsualisation est **bleue** et affiche l'angle courant. L'orientation arbitraire reste autorisee.
+- **Maintenir Maj (Shift)** pendant la previsualisation et le deuxieme clic pour forcer exactement l'axe horizontal ou vertical le plus proche.
+- L'indication **longueur en metres + angle / axe** se met a jour sous la souris, meme si les cotes permanentes sont masquees.
+
 ## Nouvelle interface CAO - espace de travail en trois colonnes
 
 La fenetre est organisee comme un outil de dessin technique :
@@ -260,7 +270,7 @@ L'éditeur permet désormais de **modifier et supprimer les éléments sans recr
 Pour dessiner avec plus de précision :
 
 - **Aimantation aux extrémités de murs** : priorité au raccord d'un mur existant dans un rayon de 13 pixels, sinon l'aimantation à la grille prend le relais. Option désactivable.
-- **Zoom à la molette**, centré sous le pointeur ; outil « Déplacer la vue » pour se déplacer sur le plan.
+- **Zoom à la molette**, centré sous le pointeur ; **clic droit maintenu + glisser** pour déplacer la vue (sans changer d'outil).
 - **Coordonnées X et Y** du curseur affichées en haut à droite du plan.
 - **Calques d'affichage Architecture / Électricité** : possibilité de masquer temporairement l'un ou l'autre, sans supprimer les données.
 - Les nouvelles valeurs de longueur sont vérifiées : le logiciel refuse de raccourcir un mur si cela ferait sortir une porte ou fenêtre de son emprise.
