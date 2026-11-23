@@ -70,6 +70,150 @@ enum DragTarget {
     WallEnd(usize),
     WallBody(usize),
     Opening(usize),
+    Symbol(usize),
+    Stair(usize),
+    Group,
+}
+
+/// Selection de plusieurs elements, sans selectionner les surfaces de piece derivees.
+#[derive(Debug, Default, Clone)]
+struct SelectionSet {
+    walls: Vec<usize>,
+    openings: Vec<usize>,
+    stairs: Vec<usize>,
+    symbols: Vec<usize>,
+}
+
+impl SelectionSet {
+    fn len(&self) -> usize {
+        self.walls.len() + self.openings.len() + self.stairs.len() + self.symbols.len()
+    }
+
+    fn includes(&self, target: DragTarget) -> bool {
+        match target {
+            DragTarget::WallStart(i) | DragTarget::WallEnd(i) | DragTarget::WallBody(i) =>
+                self.walls.contains(&i),
+            DragTarget::Opening(i) => self.openings.contains(&i),
+            DragTarget::Stair(i) => self.stairs.contains(&i),
+            DragTarget::Symbol(i) => self.symbols.contains(&i),
+            DragTarget::Group => false,
+        }
+    }
+
+    fn from_marquee(plan: &Plan, area: Marquee) -> Self {
+        let mut selected = Self::default();
+        for (i, wall) in plan.walls.iter().enumerate() {
+            if area.selects_segment(wall.start, wall.end) {
+                selected.walls.push(i);
+            }
+        }
+        for (i, symbol) in plan.symbols.iter().enumerate() {
+            if area.contains(symbol.position) { selected.symbols.push(i); }
+        }
+        for (i, stair) in plan.stairs.iter().enumerate() {
+            if area.selects_segment(stair.start, stair.end) {
+                selected.stairs.push(i);
+            }
+        }
+        for (i, opening) in plan.openings.iter().enumerate() {
+            if let Some(wall) = plan.walls.get(opening.wall_index) {
+                let length = wall.length_m();
+                if length > 0.001 {
+                    let t = opening.center_m / length;
+                    let center = Point {
+                        x: wall.start.x + (wall.end.x - wall.start.x) * t,
+                        y: wall.start.y + (wall.end.y - wall.start.y) * t,
+                    };
+                    if area.contains(center) { selected.openings.push(i); }
+                }
+            }
+        }
+        selected
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Marquee {
+    start: Point,
+    current: Point,
+}
+
+impl Marquee {
+    fn bounds(self) -> (f32, f32, f32, f32) {
+        (self.start.x.min(self.current.x), self.start.x.max(self.current.x),
+         self.start.y.min(self.current.y), self.start.y.max(self.current.y))
+    }
+
+    fn contains(self, p: Point) -> bool {
+        let (x0,x1,y0,y1) = self.bounds();
+        p.x >= x0 && p.x <= x1 && p.y >= y0 && p.y <= y1
+    }
+
+    /// Fenetre de gauche a droite : contient l'objet entier.
+    /// De droite a gauche : capture aussi les segments qui traversent la fenetre.
+    fn selects_segment(self, a: Point, b: Point) -> bool {
+        if self.start.x <= self.current.x {
+            return self.contains(a) && self.contains(b);
+        }
+        if self.contains(a) || self.contains(b) { return true; }
+        let (x0,x1,y0,y1) = self.bounds();
+        let (dx,dy) = (b.x-a.x,b.y-a.y);
+        let mut lo = 0.0_f32;
+        let mut hi = 1.0_f32;
+        // Intersection d'un segment et d'un rectangle (Liang-Barsky).
+        for (p,q) in [(-dx, a.x-x0), (dx,x1-a.x), (-dy,a.y-y0), (dy,y1-a.y)] {
+            if p.abs() < 1e-7 {
+                if q < 0.0 { return false; }
+            } else {
+                let t = q/p;
+                if p < 0.0 { lo = lo.max(t); }
+                else { hi = hi.min(t); }
+                if lo > hi { return false; }
+            }
+        }
+        true
+    }
+}
+
+/// Deplacement atomique de la selection : les ouvertures restent attachees aux murs.
+fn translate_selection(plan: &mut Plan, selection: &SelectionSet, shift: Point)
+    -> Result<(), &'static str>
+{
+    for &index in &selection.walls {
+        let wall = plan.walls.get(index).cloned().ok_or("Mur selectionne introuvable")?;
+        plan.update_wall(
+            index,
+            Point { x: wall.start.x + shift.x, y: wall.start.y + shift.y },
+            Point { x: wall.end.x + shift.x, y: wall.end.y + shift.y },
+            wall.thickness_m,
+        )?;
+    }
+    for &index in &selection.symbols {
+        let symbol = plan.symbols.get_mut(index).ok_or("Symbole introuvable")?;
+        symbol.position.x += shift.x;
+        symbol.position.y += shift.y;
+    }
+    for &index in &selection.stairs {
+        let stair = plan.stairs.get_mut(index).ok_or("Escalier introuvable")?;
+        stair.start.x += shift.x;
+        stair.start.y += shift.y;
+        stair.end.x += shift.x;
+        stair.end.y += shift.y;
+    }
+    for &index in &selection.openings {
+        let opening = plan.openings.get(index).ok_or("Ouverture introuvable")?.clone();
+        if selection.walls.contains(&opening.wall_index) { continue; }
+        let wall = plan.walls.get(opening.wall_index).ok_or("Mur introuvable")?;
+        let length = wall.length_m();
+        if length < 0.001 { return Err("Mur porteur trop court"); }
+        let along = (shift.x * (wall.end.x-wall.start.x)
+            + shift.y * (wall.end.y-wall.start.y)) / length;
+        let edge = if opening.kind == OpeningKind::Passage {0.0} else {0.05};
+        let limit = opening.width_m/2.0 + edge;
+        if length < 2.0*limit { return Err("Ouverture trop large pour son mur"); }
+        plan.move_opening(index, (opening.center_m + along).clamp(limit,length-limit))?;
+    }
+    Ok(())
 }
 
 struct ActiveDrag {
@@ -98,6 +242,8 @@ struct EasyDraft {
     selected_room: Option<Point>,
     selected_opening: Option<usize>,
     drag: Option<ActiveDrag>,
+    marquee: Option<Marquee>,
+    selection: SelectionSet,
     new_wall_thickness_cm: f32,
     new_door_width_cm: f32,
     new_window_width_cm: f32,
@@ -142,6 +288,8 @@ impl Default for EasyDraft {
             selected_room: None,
             selected_opening: None,
             drag: None,
+            marquee: None,
+            selection: SelectionSet::default(),
             new_wall_thickness_cm: DEFAULT_WALL_THICKNESS_M * 100.0,
             new_door_width_cm: 90.0,
             new_window_width_cm: 120.0,
@@ -318,9 +466,11 @@ impl EasyDraft {
         if let Some(session) = self.drag.take() {
             self.plan = session.original;
         }
+        self.marquee = None;
     }
 
     fn clear_selection(&mut self) {
+        self.selection = SelectionSet::default();
         self.selected_wall = None;
         self.selected_symbol = None;
         self.selected_stair = None;
