@@ -641,6 +641,8 @@ impl Plan {
         Ok(())
     }
 
+    // API historique conservee pour les editions futures.
+    #[allow(dead_code)]
     pub fn set_circuit_differential(
         &mut self, circuit_index: usize, upstream_index: Option<usize>
     ) -> Result<(), &'static str> {
@@ -842,6 +844,7 @@ impl Plan {
     }
 
     /// Ancien appel : toujours lie au circuit historique (index 0).
+    #[allow(dead_code)]
     pub fn connect_switch_to_light(
         &mut self,
         switch_index: usize,
@@ -956,6 +959,7 @@ impl Plan {
     }
 
     /// Compatibilite avec les appels existants de groupement.
+    #[allow(dead_code)]
     pub fn lighting_groups(&self) -> Vec<(usize, Vec<usize>)> {
         self.lighting_groups_for_circuit(0)
     }
@@ -990,6 +994,7 @@ impl Plan {
         ))
     }
 
+    #[allow(dead_code)]
     pub fn lighting_point_number(&self, light_index: usize) -> Option<usize> {
         let link = self.active_lighting_connections().into_iter()
             .find(|link| link.light_index == light_index)?;
@@ -1033,6 +1038,7 @@ impl Plan {
     }
 
     /// Ajoute une demonstration fonctionnelle dans les deux vues, sans effacer le projet.
+    #[allow(dead_code)]
     pub fn add_demo_lighting(&mut self) {
         let _ = self.add_demo_lighting_in_circuit(0);
     }
