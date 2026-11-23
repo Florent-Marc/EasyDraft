@@ -2681,6 +2681,11 @@ impl eframe::App for EasyDraft {
                         ui.checkbox(&mut self.show_dimensions, "Cotes");
                         ui.separator();
                         ui.small(format!("Zoom {:.0} %", self.zoom * 100.0));
+                        ui.separator();
+                        ui.strong(format!(
+                            "{} piece(s) detectee(s)",
+                            rooms::detect_rooms(&self.plan.walls).len()
+                        ));
                     } else if self.view == View::Unifilar {
                         ui.label(format!(
                             "{} circuit(s)  •  {} differentiel(s)  •  {} appareil(s)",
