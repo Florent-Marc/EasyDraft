@@ -11,6 +11,7 @@ const MAX_WALLS: usize = 2000;
 #[derive(Debug, Clone)]
 pub struct DetectedRoom {
     /// Polygone ferme par les axes des murs (dernier sommet non repete).
+    #[allow(dead_code)] // Contour brut preserve pour les futurs outils de selection et cotation.
     pub polygon: Vec<Point>,
     /// Polygone approxime des faces interieures des murs.
     pub inner_polygon: Vec<Point>,
