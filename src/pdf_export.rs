@@ -457,18 +457,14 @@ fn render_plan_page(
     }
     let title_size = if title.chars().count() > 38 { 11.0 } else { 16.0 };
     pdf.text_pt(MARGIN, PAGE_H - 34.0, title_size, &format!("EasyDraft - {title}"), DARK);
+    let mut details = format!("Adresse : {}", truncate_pdf(&plan.installation_info.address, 74));
+    let revision = plan.installation_info.revision.trim();
+    if !revision.is_empty() {
+        let _ = write!(details, " | Révision : {}", truncate_pdf(revision, 8));
+    }
+    pdf.text_pt(MARGIN, PAGE_H - 53.0, 9.0, &details, DIM);
     pdf.text_pt(
-        MARGIN, PAGE_H - 53.0, 9.0,
-        &format!(
-            "Adresse : {} | Revision : {}",
-            truncate_pdf(&plan.installation_info.address, 74),
-            truncate_pdf(&plan.installation_info.revision, 8),
-        ),
-        DIM,
-    );
-    pdf.text_pt(MARGIN, 25.0, 9.0, "A4 paysage - Ajuste a la page (pas une echelle 1:50 ou 1:100)", DIM);
-    pdf.text_pt(
-        PAGE_W - 226.0, 25.0, 9.0,
+        MARGIN, 25.0, 9.0,
         &format!(
             "{} murs  |  {} portes  |  {} fenetres  |  {} passages  |  {} escaliers",
             plan.walls.len(),
@@ -1109,6 +1105,20 @@ mod tests {
         assert!(pdf.ends_with(b"%%EOF\n"));
         let _ = std::fs::remove_file(&output);
         let _ = std::fs::remove_file(&picture);
+    }
+
+    #[test]
+    fn plan_page_omits_blank_revision_and_places_counts_at_left_margin() {
+        let mut plan = Plan::default();
+        plan.installation_info.revision = "  ".into();
+        let (page, _) = render_plan_page("Cave", &plan, true).unwrap();
+        assert!(!page.contains(r"R\351vision"));
+        assert!(!page.contains("Ajuste a la page"));
+        assert!(page.contains(&format!("{MARGIN:.3} 25.000 Td (0 murs")));
+
+        plan.installation_info.revision = "B".into();
+        let (page, _) = render_plan_page("Cave", &plan, true).unwrap();
+        assert!(page.contains(r"R\351vision : B"));
     }
 
     #[test]
