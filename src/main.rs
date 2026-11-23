@@ -753,7 +753,15 @@ impl EasyDraft {
 
     /// Selectionne d'abord une ouverture, puis une poignee de mur, puis le corps du mur.
     fn drag_target_at(&self, point: Point, ppm: f32) -> Option<DragTarget> {
+        if self.show_electrical {
+            if let Some(index) = self.find_symbol_any(point, ppm) {
+                return Some(DragTarget::Symbol(index));
+            }
+        }
         if !self.show_architecture { return None; }
+        if let Some(index) = self.find_stair(point, ppm) {
+            return Some(DragTarget::Stair(index));
+        }
         if let Some(index) = self.find_opening(point, ppm) {
             return Some(DragTarget::Opening(index));
         }
@@ -789,28 +797,78 @@ impl EasyDraft {
     }
 
     fn begin_drag(&mut self, point: Point, ppm: f32) {
-        let Some(target) = self.drag_target_at(point, ppm) else { return; };
-        self.clear_selection();
-        match target {
-            DragTarget::Opening(index) => {
-                self.selected_opening = Some(index);
-                self.status = "Glisse la porte ou la fenetre le long du mur".into();
+        let Some(hit) = self.drag_target_at(point, ppm) else {
+            self.clear_selection();
+            self.marquee = Some(Marquee { start: point, current: point });
+            self.sidebar_tab = SidebarTab::Inspecteur;
+            self.status = "Selection rectangulaire : encadre les elements".into();
+            return;
+        };
+        let target = if self.selection.len() > 1 && self.selection.includes(hit) {
+            DragTarget::Group
+        } else {
+            hit
+        };
+        if !matches!(target, DragTarget::Group) {
+            self.clear_selection();
+            match target {
+                DragTarget::Opening(index) => {
+                    self.selected_opening = Some(index);
+                    self.status = "Glisse l'ouverture le long de son mur".into();
+                }
+                DragTarget::WallStart(index) | DragTarget::WallEnd(index) => {
+                    self.selected_wall = Some(index);
+                    self.status = "Deplace la poignee du mur".into();
+                }
+                DragTarget::WallBody(index) => {
+                    self.selected_wall = Some(index);
+                    self.status = "Deplace le mur avec ses ouvertures".into();
+                }
+                DragTarget::Symbol(index) => {
+                    self.selected_symbol = Some(index);
+                    self.status = "Deplace le symbole electrique".into();
+                }
+                DragTarget::Stair(index) => {
+                    self.selected_stair = Some(index);
+                    self.status = "Deplace l'escalier".into();
+                }
+                DragTarget::Group => unreachable!(),
             }
-            DragTarget::WallStart(index) | DragTarget::WallEnd(index) => {
-                self.selected_wall = Some(index);
-                self.status = "Deplace la poignee du mur (accrochage disponible)".into();
-            }
-            DragTarget::WallBody(index) => {
-                self.selected_wall = Some(index);
-                self.status = "Deplace le mur entier avec ses ouvertures".into();
-            }
+        } else {
+            self.status = format!("Deplacement de {} elements", self.selection.len());
         }
+        self.sidebar_tab = SidebarTab::Inspecteur;
         self.drag = Some(ActiveDrag {
             target,
             from: point,
             original: self.plan.clone(),
             changed: false,
         });
+    }
+
+    fn update_marquee(&mut self, point: Point) {
+        if let Some(marquee) = self.marquee.as_mut() {
+            marquee.current = point;
+        }
+    }
+
+    fn finish_marquee(&mut self) {
+        let Some(marquee) = self.marquee.take() else { return; };
+        self.clear_selection();
+        self.selection = SelectionSet::from_marquee(&self.plan, marquee);
+        let count = self.selection.len();
+        if count == 1 {
+            self.selected_wall = self.selection.walls.first().copied();
+            self.selected_opening = self.selection.openings.first().copied();
+            self.selected_symbol = self.selection.symbols.first().copied();
+            self.selected_stair = self.selection.stairs.first().copied();
+        }
+        self.sidebar_tab = SidebarTab::Inspecteur;
+        self.status = if count == 0 {
+            "Aucun element dans le rectangle".into()
+        } else {
+            format!("{count} element(s) selectionne(s) : glisse l'un d'eux pour deplacer le groupe")
+        };
     }
 
     fn update_drag(&mut self, cursor: Point, ppm: f32) {
@@ -836,6 +894,23 @@ impl EasyDraft {
                         }
                     } else { Err("Mur introuvable") }
                 } else { Err("Ouverture introuvable") }
+            }
+            DragTarget::Symbol(index) | DragTarget::Stair(index) | DragTarget::Group => {
+                let shift = Point {
+                    x: (delta.x / self.snap_m).round() * self.snap_m,
+                    y: (delta.y / self.snap_m).round() * self.snap_m,
+                };
+                let selected = match target {
+                    DragTarget::Symbol(i) => SelectionSet {
+                        symbols: vec![i], ..SelectionSet::default()
+                    },
+                    DragTarget::Stair(i) => SelectionSet {
+                        stairs: vec![i], ..SelectionSet::default()
+                    },
+                    DragTarget::Group => self.selection.clone(),
+                    _ => unreachable!(),
+                };
+                translate_selection(&mut updated, &selected, shift)
             }
             DragTarget::WallBody(index) => {
                 if let Some(wall) = updated.walls.get(index).cloned() {
@@ -874,6 +949,28 @@ impl EasyDraft {
         match outcome {
             Ok(()) => {
                 let moved = match target {
+                    DragTarget::Symbol(index) => {
+                        let old = drag.original.symbols[index].position;
+                        let now = updated.symbols[index].position;
+                        old.distance_to(now) > 0.0001
+                    }
+                    DragTarget::Stair(index) => {
+                        let old = &drag.original.stairs[index];
+                        let now = &updated.stairs[index];
+                        old.start.distance_to(now.start) > 0.0001
+                    }
+                    DragTarget::Group => {
+                        delta.x.abs() + delta.y.abs() > 0.0001
+                            && self.selection.len() > 1
+                            && (self.selection.walls.iter().any(|&i|
+                                drag.original.walls[i].start.distance_to(updated.walls[i].start) > 0.0001)
+                            || self.selection.symbols.iter().any(|&i|
+                                drag.original.symbols[i].position.distance_to(updated.symbols[i].position) > 0.0001)
+                            || self.selection.stairs.iter().any(|&i|
+                                drag.original.stairs[i].start.distance_to(updated.stairs[i].start) > 0.0001)
+                            || self.selection.openings.iter().any(|&i|
+                                (drag.original.openings[i].center_m - updated.openings[i].center_m).abs() > 0.0001))
+                    }
                     DragTarget::Opening(index) => {
                         let old = &drag.original.openings[index];
                         let now = &updated.openings[index];
