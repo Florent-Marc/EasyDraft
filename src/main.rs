@@ -64,6 +64,40 @@ enum Tool {
     Pan,
 }
 
+/// Palette filtrable, chaque bouton active réellement son outil de dessin.
+fn palette_section(
+    ui: &mut egui::Ui,
+    title: &str,
+    selected: Tool,
+    search: &str,
+    tools: &[(Tool, &str)],
+) -> Option<Tool> {
+    let needle = search.trim().to_lowercase();
+    if !needle.is_empty() && !tools.iter().any(|(_, name)|
+        name.to_lowercase().contains(&needle) || title.to_lowercase().contains(&needle)
+    ) {
+        return None;
+    }
+    let mut chosen = None;
+    egui::CollapsingHeader::new(title)
+        .default_open(true)
+        .show(ui, |ui| {
+            for &(tool, name) in tools {
+                if needle.is_empty() || name.to_lowercase().contains(&needle)
+                    || title.to_lowercase().contains(&needle)
+                {
+                    if ui.add_sized(
+                        [ui.available_width(), 28.0],
+                        egui::Button::new(name).selected(selected == tool)
+                    ).clicked() {
+                        chosen = Some(tool);
+                    }
+                }
+            }
+        });
+    chosen
+}
+
 #[derive(Clone, Copy, Debug)]
 enum DragTarget {
     WallStart(usize),
@@ -232,6 +266,7 @@ struct EasyDraft {
     tool: Tool,
     view: View,
     sidebar_tab: SidebarTab,
+    palette_search: String,
     pending_switch: Option<usize>,
     active_circuit_index: usize,
     pending_wall: Option<Point>,
@@ -277,7 +312,8 @@ impl Default for EasyDraft {
             redo: Vec::new(),
             tool: Tool::Wall,
             view: View::Plan2D,
-            sidebar_tab: SidebarTab::Dessin,
+            sidebar_tab: SidebarTab::Affichage,
+            palette_search: String::new(),
             pending_switch: None,
             active_circuit_index: 0,
             pending_wall: None,
@@ -2037,107 +2073,252 @@ impl eframe::App for EasyDraft {
                 self.delete_selected();
             }
         }
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                ui.heading("EasyDraft");
-                ui.separator();
-                if ui.selectable_label(self.view == View::Plan2D, "Plan 2D").clicked() {
-                    self.view = View::Plan2D;
-                    self.sidebar_tab = SidebarTab::Dessin;
-                }
-                if ui.selectable_label(self.view == View::Unifilar, "Schema unifilaire").clicked() {
-                    self.view = View::Unifilar;
-                    self.sidebar_tab = SidebarTab::Electricite;
-                }
-                if ui.selectable_label(self.view == View::RgieReview, "Dossier RGIE").clicked() {
-                    self.view = View::RgieReview;
-                    self.sidebar_tab = SidebarTab::Dossier;
-                }
-                ui.separator();
-                ui.menu_button("Fichier", |ui| {
-                    if ui.button("Nouveau plan").clicked() {
-                        self.cancel_drag();
-                        self.snapshot();
-                        self.plan = Plan::default();
-                        self.file_path_assigned = false;
-                        self.file_path = "mon-plan.json".into();
-                        self.reset_pending();
-                        self.clear_selection();
-                        self.active_circuit_index = 0;
-                        self.view = View::Plan2D;
-                        self.sidebar_tab = SidebarTab::Dessin;
-                        self.status = "Nouveau plan".into();
-                    }
-                    if ui.button("Ouvrir...").clicked() { self.open_dialog(); }
-                    if ui.button("Enregistrer").clicked() { self.save(); }
-                    if ui.button("Enregistrer sous...").clicked() { self.save_as(); }
-                    if ui.button("Chemins des fichiers...").clicked() {
-                        self.sidebar_tab = SidebarTab::Fichiers;
-                    }
-                });
-                ui.menu_button("Edition", |ui| {
-                    if ui.button("Annuler (Ctrl+Z)").clicked() { self.undo(); }
-                    if ui.button("Retablir (Ctrl+Y)").clicked() { self.redo(); }
-                    if self.view == View::Plan2D && ui.button("Supprimer la selection").clicked() {
-                        self.delete_selected();
-                    }
-                });
-                ui.menu_button("Exporter", |ui| {
-                    if ui.button("Plan en PDF...").clicked() { self.export_pdf_dialog(); }
-                    if ui.button("Schema unifilaire en PDF...").clicked() { self.export_unifilar_pdf_dialog(); }
-                });
-                if ui.button("Enregistrer").clicked() { self.save(); }
-            });
-            if self.view == View::Plan2D {
-                ui.separator();
-                ui.horizontal_wrapped(|ui| {
-                    ui.strong("Architecture");
-                    if ui.selectable_label(self.tool == Tool::SelectWall, "Selection").clicked() {
-                        self.select_tool(Tool::SelectWall);
-                        self.sidebar_tab = SidebarTab::Inspecteur;
-                    }
-                    if ui.selectable_label(self.tool == Tool::Wall, "Mur").clicked() { self.select_tool(Tool::Wall); self.sidebar_tab = SidebarTab::Dessin; }
-                    if ui.selectable_label(self.tool == Tool::Passage, "Passage libre").clicked() { self.select_tool(Tool::Passage); self.sidebar_tab = SidebarTab::Dessin; }
-                    if ui.selectable_label(self.tool == Tool::Door, "Porte").clicked() { self.select_tool(Tool::Door); self.sidebar_tab = SidebarTab::Dessin; }
-                    if ui.selectable_label(self.tool == Tool::Window, "Fenetre").clicked() { self.select_tool(Tool::Window); self.sidebar_tab = SidebarTab::Dessin; }
-                    if ui.selectable_label(self.tool == Tool::Stair, "Escalier").clicked() { self.select_tool(Tool::Stair); self.sidebar_tab = SidebarTab::Dessin; }
-                    ui.separator();
-                    ui.strong("Electricite");
-                    if ui.selectable_label(self.tool == Tool::Outlet, "Prise").clicked() { self.select_tool(Tool::Outlet); self.sidebar_tab = SidebarTab::Electricite; }
-                    if ui.selectable_label(self.tool == Tool::Switch, "Interrupteur").clicked() { self.select_tool(Tool::Switch); self.sidebar_tab = SidebarTab::Electricite; }
-                    if ui.selectable_label(self.tool == Tool::Light, "Luminaire").clicked() { self.select_tool(Tool::Light); self.sidebar_tab = SidebarTab::Electricite; }
-                    if ui.selectable_label(self.tool == Tool::LinkLighting, "Lier I → L").clicked() {
-                        self.select_tool(Tool::LinkLighting);
-                        self.sidebar_tab = SidebarTab::Electricite;
-                        self.status = "Clique sur un interrupteur puis sur un luminaire".into();
-                    }
-                    ui.separator();
-                    if ui.selectable_label(self.tool == Tool::Pan, "Deplacer").clicked() { self.select_tool(Tool::Pan); }
-                });
-            }
-        });
-
-        egui::SidePanel::left("tools").resizable(true)
-            .default_width(288.0).min_width(235.0).max_width(390.0)
+        // Barre globale : navigation principale et actions de fichier, sans melanger
+        // les outils de construction avec les exports.
+        egui::TopBottomPanel::top("workspace_top")
             .show(ctx, |ui| {
-            ui.heading(match self.sidebar_tab {
-                SidebarTab::Dessin => "Dessin",
-                SidebarTab::Inspecteur => "Proprietes",
-                SidebarTab::Affichage => "Affichage",
-                SidebarTab::Electricite => "Electricite",
-                SidebarTab::Dossier => "Dossier RGIE",
-                SidebarTab::Fichiers => "Fichiers et exports",
+                ui.add_space(5.0);
+                ui.horizontal(|ui| {
+                    ui.heading(egui::RichText::new("EasyDraft").color(Color32::from_rgb(28, 88, 186)));
+                    ui.separator();
+                    ui.small("PLAN TYPE");
+                    ui.separator();
+                    if ui.selectable_label(self.view == View::Unifilar, "Schema unifilaire").clicked() {
+                        self.view = View::Unifilar;
+                        self.sidebar_tab = SidebarTab::Electricite;
+                    }
+                    if ui.selectable_label(self.view == View::Plan2D, "Plan de situation").clicked() {
+                        self.view = View::Plan2D;
+                        self.sidebar_tab = SidebarTab::Affichage;
+                    }
+                    if ui.selectable_label(self.view == View::RgieReview, "Dossier RGIE").clicked() {
+                        self.view = View::RgieReview;
+                        self.sidebar_tab = SidebarTab::Dossier;
+                    }
+                    ui.separator();
+                    ui.menu_button("Fichier", |ui| {
+                        if ui.button("Nouveau plan").clicked() {
+                            self.cancel_drag();
+                            self.snapshot();
+                            self.plan = Plan::default();
+                            self.file_path_assigned = false;
+                            self.file_path = "mon-plan.json".into();
+                            self.reset_pending();
+                            self.clear_selection();
+                            self.active_circuit_index = 0;
+                            self.view = View::Plan2D;
+                            self.sidebar_tab = SidebarTab::Affichage;
+                            self.status = "Nouveau plan".into();
+                            ui.close();
+                        }
+                        if ui.button("Ouvrir...").clicked() { self.open_dialog(); ui.close(); }
+                        if ui.button("Enregistrer").clicked() { self.save(); ui.close(); }
+                        if ui.button("Enregistrer sous...").clicked() { self.save_as(); ui.close(); }
+                        if ui.button("Chemins des fichiers").clicked() {
+                            self.sidebar_tab = SidebarTab::Fichiers;
+                            ui.close();
+                        }
+                    });
+                    ui.menu_button("Edition", |ui| {
+                        if ui.button("Annuler  Ctrl+Z").clicked() { self.undo(); ui.close(); }
+                        if ui.button("Retablir  Ctrl+Y").clicked() { self.redo(); ui.close(); }
+                        if self.view == View::Plan2D && ui.button("Supprimer  Suppr").clicked() {
+                            self.delete_selected();
+                            ui.close();
+                        }
+                    });
+                    ui.menu_button("Exporter", |ui| {
+                        if ui.button("Plan de situation en PDF...").clicked() {
+                            self.export_pdf_dialog(); ui.close();
+                        }
+                        if ui.button("Schema unifilaire en PDF...").clicked() {
+                            self.export_unifilar_pdf_dialog(); ui.close();
+                        }
+                    });
+                    if ui.button("Enregistrer").clicked() { self.save(); }
+                });
+                ui.add_space(5.0);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let caption = match self.view {
+                        View::Plan2D => "PLAN DE SITUATION",
+                        View::Unifilar => "SCHEMA UNIFILAIRE",
+                        View::RgieReview => "DOSSIER / CONTROLES",
+                    };
+                    ui.strong(caption);
+                    ui.separator();
+                    if self.view == View::Plan2D {
+                        if ui.selectable_label(self.tool == Tool::SelectWall, "Selection").clicked() {
+                            self.select_tool(Tool::SelectWall);
+                            self.sidebar_tab = SidebarTab::Inspecteur;
+                        }
+                        if ui.selectable_label(self.tool == Tool::Pan, "Main / deplacer").clicked() {
+                            self.select_tool(Tool::Pan);
+                        }
+                        if ui.button("Recentrer").clicked() {
+                            self.pan = Vec2::ZERO;
+                            self.zoom = 1.0;
+                        }
+                        ui.separator();
+                        ui.checkbox(&mut self.grid, "Grille");
+                        ui.checkbox(&mut self.show_dimensions, "Cotes");
+                        ui.separator();
+                        ui.small(format!("Zoom {:.0} %", self.zoom * 100.0));
+                    } else if self.view == View::Unifilar {
+                        ui.label(format!(
+                            "{} circuit(s)  •  {} differentiel(s)  •  {} appareil(s)",
+                            self.plan.circuit_count(),
+                            self.plan.differentials.len(),
+                            self.plan.symbols.len()
+                        ));
+                    } else {
+                        ui.small("Verification des informations saisies - conformite non certifiee");
+                    }
+                });
+                ui.add_space(4.0);
             });
-            ui.horizontal_wrapped(|ui| {
-                ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Dessin, "Dessin");
-                ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Inspecteur, "Inspecteur");
-                ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Affichage, "Calques");
-                ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Electricite, "Elec.");
-                ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Dossier, "RGIE");
-                ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Fichiers, "Fichiers");
+
+        // Bibliotheque de composants, comparable a une palette CAO : toujours
+        // distincte de l'inspecteur et du grand espace central.
+        egui::SidePanel::left("component_library")
+            .resizable(true)
+            .default_width(220.0).min_width(180.0).max_width(325.0)
+            .show(ctx, |ui| {
+                ui.add_space(8.0);
+                ui.heading("COMPOSANTS");
+                ui.add_space(4.0);
+                ui.add(egui::TextEdit::singleline(&mut self.palette_search)
+                    .hint_text("Rechercher un outil..."));
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false]).show(ui, |ui| {
+                    if self.view == View::Plan2D {
+                        let families: [(&str, &[(Tool, &str)]); 3] = [
+                            ("OUTILS DE DESSIN", &[
+                                (Tool::SelectWall, "Selection / cadre"),
+                                (Tool::Wall, "Mur droit"),
+                                (Tool::Pan, "Deplacer le plan"),
+                            ]),
+                            ("CONSTRUCTION", &[
+                                (Tool::Door, "Porte"),
+                                (Tool::Window, "Fenetre"),
+                                (Tool::Passage, "Passage libre"),
+                                (Tool::Stair, "Escalier"),
+                            ]),
+                            ("ELECTRICITE", &[
+                                (Tool::Outlet, "Prise de courant"),
+                                (Tool::Switch, "Interrupteur"),
+                                (Tool::Light, "Point lumineux"),
+                                (Tool::LinkLighting, "Lier interrupteur / lampe"),
+                            ]),
+                        ];
+                        for (family, items) in families {
+                            if let Some(tool) = palette_section(
+                                ui, family, self.tool, &self.palette_search, items
+                            ) {
+                                self.select_tool(tool);
+                                self.sidebar_tab = match tool {
+                                    Tool::SelectWall => SidebarTab::Inspecteur,
+                                    Tool::Outlet | Tool::Switch | Tool::Light | Tool::LinkLighting =>
+                                        SidebarTab::Electricite,
+                                    Tool::Pan => SidebarTab::Affichage,
+                                    _ => SidebarTab::Dessin,
+                                };
+                            }
+                            ui.add_space(4.0);
+                        }
+                        ui.separator();
+                        ui.small("Selection : clic sur un objet ou encadrement a la souris.");
+                        ui.small("Un mur termine revient automatiquement a Selection.");
+                        if ui.button("Ouvrir l'exemple de 2 pieces").clicked() {
+                            self.load_room_example();
+                        }
+                    } else if self.view == View::Unifilar {
+                        ui.strong("CIRCUITS");
+                        for i in 0..self.plan.circuit_count() {
+                            let name = self.plan.circuit(i)
+                                .map(|c| c.letter.as_str()).unwrap_or("?");
+                            if ui.add_sized(
+                                [ui.available_width(), 29.0],
+                                egui::Button::new(format!("Circuit {name}"))
+                                    .selected(self.active_circuit_index == i)
+                            ).clicked() {
+                                self.active_circuit_index = i;
+                                self.sidebar_tab = SidebarTab::Electricite;
+                            }
+                        }
+                        if ui.button("+ Ajouter un circuit").clicked() {
+                            let mut updated = self.plan.clone();
+                            match updated.add_lighting_circuit() {
+                                Ok(i) => {
+                                    self.snapshot();
+                                    self.plan = updated;
+                                    self.active_circuit_index = i;
+                                    self.status = "Nouveau circuit ajoute".into();
+                                }
+                                Err(error) => self.status = error.into(),
+                            }
+                        }
+                        ui.separator();
+                        ui.strong("APPAREILS");
+                        ui.small("Les appareils du schema sont derives du plan de situation.");
+                        for (name, tool) in [
+                            ("Prise de courant", Tool::Outlet),
+                            ("Interrupteur", Tool::Switch),
+                            ("Point lumineux", Tool::Light),
+                        ] {
+                            let query = self.palette_search.trim().to_lowercase();
+                            if !query.is_empty() && !name.to_lowercase().contains(&query) {
+                                continue;
+                            }
+                            if ui.add_sized([ui.available_width(), 30.0], egui::Button::new(name)).clicked() {
+                                self.view = View::Plan2D;
+                                self.select_tool(tool);
+                                self.sidebar_tab = SidebarTab::Electricite;
+                                self.status = format!("Place {name} sur le plan, il apparaitra dans l'unifilaire");
+                            }
+                        }
+                        ui.separator();
+                        if ui.button("Charger l'exemple unifilaire A + B").clicked() {
+                            self.load_unifilar_example();
+                        }
+                    } else {
+                        ui.strong("DOSSIER");
+                        ui.label("Les controles proviennent du modele du plan et des circuits.");
+                        if ui.button("Configurer l'installation").clicked() {
+                            self.sidebar_tab = SidebarTab::Dossier;
+                        }
+                        if ui.button("Configurer les circuits").clicked() {
+                            self.sidebar_tab = SidebarTab::Electricite;
+                        }
+                    }
+                });
             });
-            ui.separator();
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+
+        // Inspecteur contextuel et reglages du document a droite.
+        egui::SidePanel::right("property_inspector")
+            .resizable(true)
+            .default_width(302.0).min_width(235.0).max_width(410.0)
+            .show(ctx, |ui| {
+                ui.add_space(8.0);
+                ui.heading("PARAMETRES");
+                ui.horizontal_wrapped(|ui| {
+                    if self.view == View::Plan2D {
+                        ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Inspecteur, "Objet");
+                        ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Dessin, "Outil");
+                        ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Affichage, "Plan");
+                        ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Electricite, "Circuits");
+                    } else if self.view == View::Unifilar {
+                        ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Electricite, "Circuits");
+                        ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Dossier, "Dossier");
+                    } else {
+                        ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Dossier, "Dossier");
+                        ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Electricite, "Circuits");
+                    }
+                    ui.selectable_value(&mut self.sidebar_tab, SidebarTab::Fichiers, "Export");
+                });
+                ui.separator();
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             if self.sidebar_tab == SidebarTab::Dessin {
             ui.label("Outil actif");
             ui.heading(match self.tool {
@@ -2492,8 +2673,8 @@ impl eframe::App for EasyDraft {
                 });
             ui.small("Symboles du tableau 2.23 pour les appareils couverts ; dossier RGIE incomplet.");
             } // Electricite
+                });
             });
-        });
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.label(&self.status);
