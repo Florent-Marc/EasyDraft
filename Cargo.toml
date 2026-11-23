@@ -8,3 +8,5 @@ description = "Editeur Rust de plans de maison et d'electricite en 2D"
 eframe = "0.33.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Dialogues natifs Windows / macOS ; portail XDG sous Linux.
+rfd = "=0.15.4"
