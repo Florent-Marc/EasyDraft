@@ -21,6 +21,30 @@ impl Point {
 
 pub const DEFAULT_WALL_THICKNESS_M: f32 = 0.15;
 
+/// Index stable dans une version du document : les operations de suppression
+/// de mur reecrivent les index des liaisons survivantes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct WallEndpoint {
+    pub wall_index: usize,
+    pub is_start: bool,
+}
+
+impl WallEndpoint {
+    pub fn position(self, plan: &Plan) -> Option<Point> {
+        plan.walls.get(self.wall_index).map(|wall| {
+            if self.is_start { wall.start } else { wall.end }
+        })
+    }
+}
+
+/// Groupe explicitement lie par l'utilisateur. Des points simplement
+/// superposes ne forment pas automatiquement un joint edit-able.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WallJoint {
+    pub endpoints: Vec<WallEndpoint>,
+}
+
+
 fn default_wall_thickness_m() -> f32 {
     DEFAULT_WALL_THICKNESS_M
 }
@@ -385,6 +409,9 @@ pub struct Plan {
     #[serde(default)]
     pub background: Option<BackgroundPlan>,
     pub walls: Vec<Wall>,
+    /// Connexions intentionnelles, absentes dans les anciens fichiers JSON.
+    #[serde(default)]
+    pub wall_joints: Vec<WallJoint>,
     pub symbols: Vec<ElectricalSymbol>,
     #[serde(default)]
     pub symbol_appearances: Vec<SymbolAppearanceRecord>,
@@ -415,6 +442,128 @@ pub struct Plan {
 }
 
 impl Plan {
+    /// Retourne UNIQUEMENT les points explicitement joints. La coincidence
+    /// geometrique seule ne provoque pas un deplacement groupe.
+    pub fn linked_wall_endpoints(&self, endpoint: WallEndpoint) -> Vec<WallEndpoint> {
+        self.wall_joints.iter()
+            .find(|group| group.endpoints.contains(&endpoint))
+            .map(|group| group.endpoints.clone())
+            .unwrap_or_else(|| vec![endpoint])
+    }
+
+    /// Deplace un ensemble de sommets avec un unique decalage, sans les
+    /// souder implicitement et sans modifier le document si un mur devient
+    /// invalide (porte qui deborde, longueur inferieure a 5 cm, etc.).
+    pub fn move_wall_endpoints_by(
+        &mut self, handles: &[WallEndpoint], delta: Point,
+    ) -> Result<(), &'static str> {
+        if !delta.x.is_finite() || !delta.y.is_finite() {
+            return Err("Deplacement de sommets invalide");
+        }
+        if handles.iter().any(|h| h.position(self).is_none()) {
+            return Err("Sommet de mur introuvable");
+        }
+        let mut updated = self.clone();
+        let mut affected: Vec<usize> = handles.iter().map(|h| h.wall_index).collect();
+        affected.sort_unstable();
+        affected.dedup();
+        for index in affected {
+            let wall = self.walls[index].clone();
+            let start = if handles.contains(&WallEndpoint {wall_index:index, is_start:true}) {
+                Point { x: wall.start.x + delta.x, y: wall.start.y + delta.y }
+            } else { wall.start };
+            let end = if handles.contains(&WallEndpoint {wall_index:index, is_start:false}) {
+                Point { x: wall.end.x + delta.x, y: wall.end.y + delta.y }
+            } else { wall.end };
+            updated.update_wall(index, start, end, wall.thickness_m)?;
+        }
+        *self = updated;
+        Ok(())
+    }
+
+    /// Soudage geometrique atomique : tous les sommets recoivent EXACTEMENT
+    /// les memes coordonnees. Cette primitive ne cree pas de liaison logique.
+    pub fn move_wall_endpoints_to(
+        &mut self, handles: &[WallEndpoint], target: Point,
+    ) -> Result<(), &'static str> {
+        if handles.is_empty() || !target.x.is_finite() || !target.y.is_finite() {
+            return Err("Sommet ou destination invalide");
+        }
+        if handles.iter().any(|h| h.position(self).is_none()) {
+            return Err("Sommet de mur introuvable");
+        }
+        let mut updated = self.clone();
+        let mut affected: Vec<usize> = handles.iter().map(|h| h.wall_index).collect();
+        affected.sort_unstable();
+        affected.dedup();
+        for index in affected {
+            let wall = self.walls[index].clone();
+            let start = if handles.contains(&WallEndpoint {wall_index:index, is_start:true}) {
+                target
+            } else { wall.start };
+            let end = if handles.contains(&WallEndpoint {wall_index:index, is_start:false}) {
+                target
+            } else { wall.end };
+            updated.update_wall(index, start, end, wall.thickness_m)?;
+        }
+        *self = updated;
+        Ok(())
+    }
+
+    /// Joindre volontairement les extremites choisies. Les groupes joints
+    /// preexistants impliques sont fusionnes sans perdre leurs membres.
+    /// Un seul Ctrl+Z peut annuler a la fois le soudage et la liaison logique.
+    pub fn join_wall_endpoints(
+        &mut self, selected: &[WallEndpoint],
+    ) -> Result<usize, &'static str> {
+        let mut members: Vec<WallEndpoint> = Vec::new();
+        for &endpoint in selected {
+            if endpoint.position(self).is_none() { return Err("Sommet introuvable"); }
+            if !members.contains(&endpoint) { members.push(endpoint); }
+        }
+        if members.len() < 2 { return Err("Choisis au moins deux extremites"); }
+
+        // Fermeture transitive des groupes deja lies.
+        let mut expanded = true;
+        while expanded {
+            expanded = false;
+            for joint in &self.wall_joints {
+                if joint.endpoints.iter().any(|m| members.contains(m)) {
+                    for &member in &joint.endpoints {
+                        if !members.contains(&member) {
+                            if member.position(self).is_none() {
+                                return Err("Liaison de mur invalide");
+                            }
+                            members.push(member);
+                            expanded = true;
+                        }
+                    }
+                }
+            }
+        }
+        let target = selected[0].position(self).ok_or("Premier sommet introuvable")?;
+        let mut updated = self.clone();
+        updated.move_wall_endpoints_to(&members, target)?;
+        updated.wall_joints.retain(|joint|
+            !joint.endpoints.iter().any(|m| members.contains(m))
+        );
+        updated.wall_joints.push(WallJoint { endpoints: members.clone() });
+        *self = updated;
+        Ok(members.len())
+    }
+
+    /// Dissoudre les jonctions volontairement creees sur les sommets choisis.
+    /// La position des points ne change pas : ils pourront ensuite etre
+    /// deplaces independamment. Les vrais contours geometriques restent fermes
+    /// tant que les points sont physiquement superposes.
+    pub fn dissolve_wall_joints(&mut self, selected: &[WallEndpoint]) -> usize {
+        let before = self.wall_joints.len();
+        self.wall_joints.retain(|joint|
+            !joint.endpoints.iter().any(|m| selected.contains(m))
+        );
+        before - self.wall_joints.len()
+    }
+
     pub fn symbol_appearance(&self, symbol_index: usize) -> ElectricalAppearance {
         let Some(symbol) = self.symbols.get(symbol_index) else {
             return ElectricalAppearance::General;
@@ -571,6 +720,15 @@ impl Plan {
             return Err("Mur introuvable");
         }
         self.walls.remove(index);
+        // Conserver les connexions liees aux autres murs, dont les indices
+        // diminuent lors d'une suppression.
+        for joint in &mut self.wall_joints {
+            joint.endpoints.retain(|endpoint| endpoint.wall_index != index);
+            for endpoint in &mut joint.endpoints {
+                if endpoint.wall_index > index { endpoint.wall_index -= 1; }
+            }
+        }
+        self.wall_joints.retain(|joint| joint.endpoints.len() >= 2);
         self.openings.retain(|opening| opening.wall_index != index);
         for opening in &mut self.openings {
             if opening.wall_index > index {
