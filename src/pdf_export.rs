@@ -552,8 +552,10 @@ fn board_pdf_pages(plan: &Plan) -> Vec<String> {
                         raw_pdf_text(&mut out, 411.0, y - 2.0, 10.0,
                             &format!("Circuit {} / {}", c.letter,
                                 truncate_pdf(&c.protection_label(), 25)), DARK);
-                        raw_pdf_text(&mut out, 635.0, y - 2.0, 9.0,
-                            &truncate_pdf(&c.cable_label(), 27), DIM);
+                        if let Some(cable) = c.cable_label() {
+                            raw_pdf_text(&mut out, 635.0, y - 2.0, 9.0,
+                                &truncate_pdf(&cable, 27), DIM);
+                        }
                     }
                 }
             }
@@ -623,11 +625,9 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
             ),
             color,
         );
-        raw_pdf_text(
-            &mut pdf, 35.0, 496.0, 10.0,
-            &format!("Canalisation : {}", circuit.cable_label()),
-            color,
-        );
+        if let Some(cable) = circuit.cable_label() {
+            raw_pdf_text(&mut pdf, 35.0, 496.0, 10.0, &format!("Canalisation : {cable}"), color);
+        }
         raw_pdf_text(
             &mut pdf, 35.0, 480.0, 9.0,
             &format!(

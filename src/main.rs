@@ -437,6 +437,7 @@ struct EasyDraft {
     sheets: Vec<PlanSheet>,
     active_sheet: usize,
     sheet_name_dialog: Option<SheetNameDialog>,
+    reveal_circuit: Option<usize>,
     settings: ProjectSettings,
     undo: Vec<HistoryEntry>,
     redo: Vec<HistoryEntry>,
@@ -475,6 +476,7 @@ impl Default for EasyDraft {
             sheets: vec![PlanSheet { name: default_sheet_name(), plan: Plan::default() }],
             active_sheet: 0,
             sheet_name_dialog: None,
+            reveal_circuit: None,
             settings: ProjectSettings::default(),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -719,6 +721,7 @@ impl EasyDraft {
     fn reset_sheet_editor(&mut self) {
         self.reset_pending();
         self.clear_selection();
+        self.reveal_circuit = None;
         self.settings.active_circuit_index = 0;
     }
 
@@ -3591,11 +3594,15 @@ impl eframe::App for EasyDraft {
             }
             ui.small("Les prises et liaisons I -> L sont affectees au circuit actif.");
             ui.label(format!("Prises sans circuit : {}", self.plan.unassigned_outlets()));
+            let reveal_circuit = self.reveal_circuit.take();
             for circuit_index in 0..self.plan.circuit_count() {
                 let Some(circuit_data) = self.plan.circuit(circuit_index).cloned() else { continue; };
-                egui::CollapsingHeader::new(format!(
+                let reveal = reveal_circuit == Some(circuit_index);
+                let section = egui::CollapsingHeader::new(format!(
                     "Circuit {} - protection / conducteurs", circuit_data.letter
-                )).default_open(circuit_index == self.settings.active_circuit_index).show(ui, |ui| {
+                )).id_salt(("circuit_properties", self.active_sheet, circuit_index))
+                    .open(reveal.then_some(true))
+                    .default_open(circuit_index == self.settings.active_circuit_index).show(ui, |ui| {
                     let mut circuit = circuit_data.clone();
                     ui.label("Repere du circuit (A, B, C...)");
                     ui.text_edit_singleline(&mut circuit.letter);
@@ -3680,6 +3687,9 @@ impl eframe::App for EasyDraft {
                         }
                     }
                 });
+                if reveal {
+                    section.header_response.scroll_to_me(Some(egui::Align::Min));
+                }
             }
             ui.separator();
             if self.view == View::Unifilar {
@@ -3735,8 +3745,15 @@ impl eframe::App for EasyDraft {
                 View::Plan2D => self.canvas(ui),
                 View::RgieReview => rgie_review::show(ui, &self.plan),
                 View::Unifilar => {
-                    if let Some(action) = unifilar::show(ui, &self.plan) {
+                    if let Some(action) = unifilar::show(ui, &self.plan, self.settings.active_circuit_index) {
                         match action {
+                            unifilar::Action::SelectCircuit(index) => {
+                                self.settings.active_circuit_index = index;
+                                self.pending_switch = None;
+                                self.sidebar_tab = SidebarTab::Electricite;
+                                self.reveal_circuit = Some(index);
+                                ctx.request_repaint();
+                            }
                             unifilar::Action::RemoveConnection(index) => {
                                 self.remove_connection(index);
                             }

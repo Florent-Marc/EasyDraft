@@ -14,6 +14,7 @@ const WARNING: Color32 = Color32::from_rgb(177, 93, 21);
 
 /// Actions remontées au niveau de l'application, pour enregistrer une annulation.
 pub enum Action {
+    SelectCircuit(usize),
     RemoveConnection(usize),
     MoveGroup { switch_index: usize, target_circuit: usize },
 }
@@ -207,7 +208,7 @@ fn show_board_overview(ui: &mut egui::Ui, plan: &Plan) {
                 );
                 caption(
                     &painter, Pos2::new(origin.x + 655.0, y + 9.0),
-                    &circuit.cable_label(), 10.0, MUTED,
+                    circuit.cable_label().as_deref().unwrap_or(""), 10.0, MUTED,
                 );
                 let lights = plan.active_lighting_connections_for_circuit(*circuit_index).len();
                 let sockets = plan.outlets_on_circuit(*circuit_index).len();
@@ -278,7 +279,8 @@ fn draw_circuit(
         Pos2::new(x + CIRCUIT_WIDTH - 19.0, foot.y),
     );
     let label_painter = painter.with_clip_rect(painter.clip_rect().intersect(column));
-    for (offset, text) in [(39.0, circuit.protection_label()), (83.0, circuit.cable_label())] {
+    for (offset, text) in [(39.0, Some(circuit.protection_label())), (83.0, circuit.cable_label())] {
+        let Some(text) = text else { continue };
         label_painter.text(foot + Vec2::new(18.0, -offset), Align2::LEFT_CENTER,
             text, FontId::proportional(11.0), MUTED);
     }
@@ -330,7 +332,7 @@ fn draw_circuit(
 }
 
 /// Circuits côte à côte et rails distincts pour les DDR enregistrés.
-fn show_schematic_sheet(ui: &mut egui::Ui, plan: &Plan) {
+fn show_schematic_sheet(ui: &mut egui::Ui, plan: &Plan, active: usize) -> Option<Action> {
     let mut groups: Vec<_> = plan.differentials.iter().enumerate().map(|(index, ddr)| {
         (Some(ddr), plan.circuits_for_differential(index))
     }).collect();
@@ -357,6 +359,7 @@ fn show_schematic_sheet(ui: &mut egui::Ui, plan: &Plan) {
         let origin = response.rect.center() - Vec2::new(width / 2.0, height / 2.0);
         let bus_y = origin.y + height - 82.0;
         let mut left = origin.x + 18.0;
+        let mut action = None;
         for (ddr, circuits) in &groups {
             let width = group_width(circuits.len());
             let group_rect = egui::Rect::from_min_size(Pos2::new(left, origin.y + 10.0),
@@ -367,6 +370,18 @@ fn show_schematic_sheet(ui: &mut egui::Ui, plan: &Plan) {
             for (slot, circuit) in circuits.iter().enumerate() {
                 let x = first_x + slot as f32 * CIRCUIT_WIDTH;
                 let foot = Pos2::new(x, bus_y);
+                let hit_area = egui::Rect::from_min_max(
+                    Pos2::new(x - 16.0, bus_y - 159.0 - circuit.height()),
+                    Pos2::new(x + CIRCUIT_WIDTH - 16.0, bus_y),
+                ).intersect(group_rect);
+                let hit = ui.interact(hit_area, ui.id().with(("unifilar_circuit", circuit.index)),
+                    egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                if hit.hovered() || active == circuit.index {
+                    group_painter.rect_filled(hit_area, 5.0, Color32::from_rgb(237, 245, 255));
+                }
+                if hit.clicked() {
+                    action = Some(Action::SelectCircuit(circuit.index));
+                }
                 draw_circuit(&group_painter, plan, circuit, foot);
                 if ddr.is_some() {
                     group_painter.circle_filled(foot, 3.0, INK);
@@ -394,7 +409,8 @@ fn show_schematic_sheet(ui: &mut egui::Ui, plan: &Plan) {
                 description, FontId::proportional(11.0), MUTED);
             left += width + 16.0;
         }
-    });
+        action
+    }).inner
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -405,7 +421,7 @@ enum SchematicView {
     Connections,
 }
 
-pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
+pub fn show(ui: &mut egui::Ui, plan: &Plan, active: usize) -> Option<Action> {
     let view_id = ui.id().with("unifilar_view");
     let mut view = ui.data_mut(|data| data.get_temp::<SchematicView>(view_id)).unwrap_or_default();
     ui.horizontal_wrapped(|ui| {
@@ -420,8 +436,7 @@ pub fn show(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
             if !plan.installation_info.address.trim().is_empty() {
                 ui.label(&plan.installation_info.address);
             }
-            show_schematic_sheet(ui, plan);
-            None
+            show_schematic_sheet(ui, plan, active)
         }
         SchematicView::Board => {
             egui::ScrollArea::vertical().show(ui, |ui| show_board_overview(ui, plan));
@@ -550,9 +565,9 @@ mod tests {
             screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 900.0))),
             ..Default::default()
         };
-        let output = ctx.run(input, |ctx| {
+        let output = ctx.run(input.clone(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                assert!(show(ui, &plan).is_none());
+                assert!(show(ui, &plan, 0).is_none());
             });
         });
         let labels: Vec<_> = output.shapes.iter().filter_map(|shape| {
@@ -571,6 +586,25 @@ mod tests {
         assert_eq!(ddr_1.y, ddr_2.y);
         assert!(position("A1").y < ddr_1.y);
         assert!(position("C1").x > c.x);
+
+        let pos = b + Vec2::new(16.0, 8.0);
+        let mut action = None;
+        for pressed in [true, false] {
+            let mut input = input.clone();
+            input.events = vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos, button: egui::PointerButton::Primary, pressed,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ];
+            let _ = ctx.run(input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    action = show(ui, &plan, 0);
+                });
+            });
+        }
+        assert!(matches!(action, Some(Action::SelectCircuit(1))));
     }
 
     #[test]

@@ -104,17 +104,18 @@ pub fn schematic_device_primitives(
         }).collect(),
         ElectricalKind::Outlet => {
             let mut marks = vec![
-                line((-19.0, 0.0), (-10.0, 0.0)),
+                line((-19.0, 0.0), (10.0, 0.0)),
                 Primitive::Arc((0.0, 0.0), 10.0,
-                    std::f32::consts::FRAC_PI_2, 3.0 * std::f32::consts::FRAC_PI_2),
-                line((0.0, -10.0), (4.0, -10.0)),
-                line((0.0, 10.0), (4.0, 10.0)),
+                    -std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2),
+                line((-4.0, -10.0), (0.0, -10.0)),
+                line((-4.0, 10.0), (0.0, 10.0)),
+                line((9.0, -9.0), (9.0, 9.0)),
             ];
             if matches!(appearance, ElectricalAppearance::OutletEarth | ElectricalAppearance::OutletEarthChild) {
-                marks.push(line((2.0, -12.0), (2.0, 12.0)));
+                marks.push(line((13.0, -8.0), (13.0, 8.0)));
             }
             if matches!(appearance, ElectricalAppearance::OutletChild | ElectricalAppearance::OutletEarthChild) {
-                marks.push(line((6.0, -6.0), (6.0, 6.0)));
+                marks.push(line((-2.0, -6.0), (-2.0, 6.0)));
             }
             marks
         }

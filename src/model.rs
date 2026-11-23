@@ -337,12 +337,20 @@ impl LightingCircuit {
         parts.join(" ")
     }
 
-    pub fn cable_label(&self) -> String {
-        if self.cable_type.trim().is_empty() || self.conductor_count == 0
-            || !self.section_mm2.is_finite() || self.section_mm2 <= 0.0 {
-            return "Canalisation : a renseigner".to_owned();
+    pub fn cable_label(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if !self.cable_type.trim().is_empty() {
+            parts.push(self.cable_type.trim().to_owned());
         }
-        format!("{} {} x {} mm2", self.cable_type.trim(), self.conductor_count, self.section_mm2)
+        let section = self.section_mm2.is_finite() && self.section_mm2 > 0.0;
+        if self.conductor_count > 0 && section {
+            parts.push(format!("{} x {} mm2", self.conductor_count, self.section_mm2));
+        } else if self.conductor_count > 0 {
+            parts.push(format!("{} conducteur(s)", self.conductor_count));
+        } else if section {
+            parts.push(format!("{} mm2", self.section_mm2));
+        }
+        (!parts.is_empty()).then(|| parts.join(" "))
     }
 }
 
@@ -1863,7 +1871,9 @@ mod tests {
         assert_eq!(circuit.letter, "A");
         assert_eq!(circuit.breaker_amp, 0);
         assert!(!circuit.missing_fields().is_empty());
-        assert!(circuit.cable_label().contains("renseigner"));
+        assert!(circuit.cable_label().is_none());
+        let circuit = LightingCircuit { section_mm2: 2.5, ..circuit };
+        assert_eq!(circuit.cable_label().as_deref(), Some("2.5 mm2"));
     }
 
     #[test]
