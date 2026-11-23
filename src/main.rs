@@ -3155,6 +3155,16 @@ fn main() -> eframe::Result {
     eframe::run_native(
         "EasyDraft",
         options,
-        Box::new(|_cc| Ok(Box::new(EasyDraft::default()))),
+        Box::new(|cc| {
+            // Presentation claire et consistante : fond blanc, accent bleu pour
+            // les commandes actives et titres visuels discrets.
+            let mut style = (*cc.egui_ctx.style()).clone();
+            style.visuals = egui::Visuals::light();
+            style.visuals.selection.bg_fill = Color32::from_rgb(46, 108, 224);
+            style.visuals.selection.stroke = Stroke::new(1.0_f32, Color32::WHITE);
+            style.spacing.item_spacing = Vec2::new(6.0, 6.0);
+            cc.egui_ctx.set_style(style);
+            Ok(Box::new(EasyDraft::default()))
+        }),
     )
 }
