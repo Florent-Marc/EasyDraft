@@ -2,32 +2,35 @@
 
 **EasyDraft** est un prototype en **Rust + egui/eframe** pour dessiner des plans de maison en 2D et construire des schémas électriques de travail.
 
-## Raccorder plusieurs murs par leurs sommets
+## Joindre et dissoudre les sommets de murs (sans raccordement automatique)
 
-En mode **Selection**, les extremites des murs sont maintenant reperees par
-de petits points bleus et les points choisis deviennent **ambre**.
+En mode **Selection**, un clic sur un point de mur le selectionne (poignee
+ambre). **Maj + clic** ajoute un autre sommet. **Maj + rectangle** capture
+plusieurs extremites. Les murs superposes ne sont **plus lies implicitement** :
+deux points qui ont les memes coordonnees peuvent etre deplaces independamment.
 
-1. **Cliquer sur une extremite** : selectionne ce point. Si plusieurs murs
-   partagent deja exactement la meme extremite, ils forment un seul noeud et
-   sont selectionnes ensemble.
-2. **Maintenir Maj + cliquer** sur les points de depart / d'arrivee d'autres
-   murs pour les **ajouter** ou les retirer de la selection. On peut egalement
-   faire **Maj + rectangle de selection** depuis une zone vide pour capturer
-   plusieurs extremites a la fois, sans deplacer les murs entiers.
-3. **Glisser un des points ambre selectionnes** : toutes les extremites
-   selectionnees convergent vers **une seule et meme position exacte**.
-   Le placement s'aimante a la grille ou a une extremite de mur voisine.
-4. Autre possibilite : dans **Parametres > Objet**, utiliser le bouton
-   **Raccorder au premier point** pour ramener toutes les extremites sur la
-   coordonnee du premier point selectionne, sans glisser.
-5. **Ctrl+Z** annule tout le raccordement en une seule action. Les ouvertures
-   des murs restent sur leurs murs ; un mouvement qui rendrait un mur trop
-   court ou ferait depasser une ouverture est refuse sans modifier le plan.
+- **Glisser** les sommets choisis deplace leur groupe en conservant leur
+  decalage initial ; cela ne les joint pas automatiquement.
+- **Joindre** dans la barre superieure ou dans **Parametres > Objet** :
+  avec **au moins deux sommets selectionnes**, tous prennent exactement la
+  position du premier point choisi. Une **liaison persistante** les fait
+  ensuite bouger ensemble si tu glisses un de leurs sommets.
+- **Joindre avec un seul sommet selectionne** : le sommet est rapproche de
+  l'axe du mur le plus proche dans un rayon de **20 cm** (fermeture manuelle
+  de petits manques en T pour la detection des pieces). S'il s'agit de
+  l'extremite d'un autre mur, la liaison devient persistante.
+- **Dissoudre** enlève une liaison explicite de la selection **sans bouger**
+  les murs : un nouveau glissement d'un sommet le deplace seul. Sur deux
+  sommets encore superposes, un clic suivant peut alterner le sommet actif.
+- **Ctrl+Z / Ctrl+Y** annule ou retablit en une operation un Joindre, un
+  Dissoudre ou un deplacement.
+- Les groupes joints sont conserves dans le **JSON** (champ optionnel
+  `wall_joints`), sans casser la lecture des anciens fichiers. La suppression
+  d'un mur ajuste automatiquement les references des groupes survivants.
 
-Les raccordements coincidents sont representes par une seule poignee ambre
-avec le nombre de points concernes. Les coordonnees des murs sont reelles
-(et identiques dans le JSON) : la detection des pieces peut donc utiliser
-ces jonctions sans tolerance artificielle.
+Les jonctions impossibles (mur trop court, ouverture qui sortirait de son
+mur) sont refusees en bloc, sans deformation partielle.
+
 
 ## Navigation souris et placement de murs parfaitement droits
 
