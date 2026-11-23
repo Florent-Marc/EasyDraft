@@ -114,26 +114,23 @@ pub fn schematic_device_primitives(
             }
         }).collect(),
         ElectricalKind::Outlet => {
-            let mut marks = vec![
-                line((-19.0, 0.0), (10.0, 0.0)),
-                Primitive::Arc((0.0, 0.0), 10.0,
-                    -std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2),
-                line((-4.0, -10.0), (0.0, -10.0)),
-                line((-4.0, 10.0), (0.0, 10.0)),
-                line((9.0, -9.0), (9.0, 9.0)),
-            ];
-            if appearance == ElectricalAppearance::OutletTriple {
-                for x in [17.0, 24.0] {
-                    marks.push(Primitive::Arc((x - 10.0, 0.0), 10.0,
-                        -std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2));
-                }
-                marks.push(line((10.0, 0.0), (24.0, 0.0)));
+            let rows: &[f32] = if appearance == ElectricalAppearance::OutletTriple {
+                &[-12.0, 0.0, 12.0]
+            } else {
+                &[0.0]
+            };
+            let mut marks = vec![line((0.0, rows[0] - 14.0), (0.0, rows[rows.len() - 1] + 12.0))];
+            for &y in rows {
+                marks.push(Primitive::Arc((0.0, y - 2.0), 10.0, 0.0, std::f32::consts::PI));
+                marks.push(line((-14.0, y - 2.0), (-10.0, y - 2.0)));
+                marks.push(line((10.0, y - 2.0), (14.0, y - 2.0)));
+                marks.push(line((-10.0, y + 7.0), (10.0, y + 7.0)));
             }
             if matches!(appearance, ElectricalAppearance::OutletEarth | ElectricalAppearance::OutletEarthChild) {
-                marks.push(line((13.0, -8.0), (13.0, 8.0)));
+                marks.push(line((-7.0, 12.0), (7.0, 12.0)));
             }
             if matches!(appearance, ElectricalAppearance::OutletChild | ElectricalAppearance::OutletEarthChild) {
-                marks.push(line((-2.0, -6.0), (-2.0, 6.0)));
+                marks.push(line((-7.0, -6.0), (7.0, -6.0)));
             }
             marks
         }

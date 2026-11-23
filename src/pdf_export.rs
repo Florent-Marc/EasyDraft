@@ -718,7 +718,7 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
                         BLUE);
                 }
                 CircuitEntry::Socket(symbol_index) => {
-                    raw_pdf_line(&mut pdf, 431.0, y, 670.0 - 19.0 * 0.85, y, color, 1.6);
+                    raw_pdf_line(&mut pdf, 431.0, y, 670.0, y, color, 1.6);
                     draw_pdf_primitives(
                         &mut pdf, 670.0, y, 0.85,
                         &rgie_symbols::schematic_device_primitives(

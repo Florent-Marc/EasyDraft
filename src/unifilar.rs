@@ -336,7 +336,7 @@ fn draw_circuit(
         if symbol_hit(ui, *outlet, point) {
             selected = Some(*outlet);
         }
-        segment(painter, Pos2::new(x, y), point + Vec2::new(-19.0 * 0.85, 0.0), INK, 1.5);
+        segment(painter, Pos2::new(x, y), point, INK, 1.5);
         painter.circle_filled(Pos2::new(x, y), 2.8, INK);
         rgie_symbols::draw_egui(painter, point,
             &rgie_symbols::schematic_device_primitives(ElectricalKind::Outlet, plan.symbol_appearance(*outlet)),
