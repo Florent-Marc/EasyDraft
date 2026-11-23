@@ -49,7 +49,7 @@ fn draw_logical_link(painter: &Painter, a: Pos2, b: Pos2) {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tool {
     Wall,
     SelectWall,
