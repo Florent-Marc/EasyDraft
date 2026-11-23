@@ -1431,6 +1431,105 @@ mod tests {
     use super::*;
 
     #[test]
+    fn explicit_wall_join_dissolve_and_json_roundtrip() {
+        let mut plan = Plan::default();
+        plan.walls = vec![
+            Wall {
+                start: Point { x: 0.0, y: 0.0 },
+                end: Point { x: 2.0, y: 0.0 },
+                thickness_m: 0.15,
+            },
+            Wall {
+                start: Point { x: 2.1, y: 0.3 },
+                end: Point { x: 2.1, y: 4.0 },
+                thickness_m: 0.15,
+            },
+        ];
+        let a = WallEndpoint {wall_index:0,is_start:false};
+        let b = WallEndpoint {wall_index:1,is_start:true};
+        assert_eq!(plan.linked_wall_endpoints(a), vec![a]); // pas de liaison par defaut
+        let count = plan.join_wall_endpoints(&[a, b]).unwrap();
+        assert_eq!(count, 2);
+        assert_eq!(a.position(&plan), b.position(&plan));
+        assert_eq!(plan.linked_wall_endpoints(a), vec![a, b]);
+        let json = serde_json::to_string(&plan).unwrap();
+        let mut restored: Plan = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.wall_joints.len(), 1);
+        assert_eq!(restored.dissolve_wall_joints(&[b]), 1);
+        assert!(restored.wall_joints.is_empty());
+        let old_other = b.position(&restored).unwrap();
+        restored.move_wall_endpoints_by(&[a], Point {x:0.5,y:0.25}).unwrap();
+        assert_eq!(b.position(&restored), Some(old_other));
+        assert_ne!(a.position(&restored), b.position(&restored));
+        // Un document ancien sans wall_joints se charge normalement.
+        let old: Plan = serde_json::from_str(r#"{"walls":[],"symbols":[]}"#).unwrap();
+        assert!(old.wall_joints.is_empty());
+    }
+
+    #[test]
+    fn explicit_join_is_atomic_for_invalid_wall_shortening() {
+        let mut plan = Plan::default();
+        plan.walls = vec![
+            Wall {start:Point{x:0.0,y:0.0},end:Point{x:4.0,y:0.0},thickness_m:0.15},
+            Wall {start:Point{x:5.0,y:2.0},end:Point{x:5.0,y:3.0},thickness_m:0.15},
+        ];
+        let a = WallEndpoint {wall_index:0,is_start:true};
+        let b = WallEndpoint {wall_index:0,is_start:false};
+        assert!(plan.join_wall_endpoints(&[a, b]).is_err());
+        assert_eq!(plan.walls[0].length_m(), 4.0);
+        assert!(plan.wall_joints.is_empty());
+        // Soudage qui raccourcit un mur avec une porte : refus total.
+        plan.add_opening(0, Point{x:2.0,y:0.0}, 1.0,
+            OpeningKind::Door, false, false, 0.05).unwrap();
+        let c = WallEndpoint {wall_index:1,is_start:true};
+        let original = plan.walls[0].end;
+        assert!(plan.join_wall_endpoints(&[c, b]).is_err());
+        assert_eq!(plan.walls[0].end, original);
+        assert!(plan.wall_joints.is_empty());
+    }
+
+    #[test]
+    fn joint_metadata_updates_when_deleting_wall() {
+        let mut plan = Plan::default();
+        plan.walls = vec![
+            Wall {start:Point{x:0.0,y:0.0},end:Point{x:1.0,y:0.0},thickness_m:0.15},
+            Wall {start:Point{x:2.0,y:0.0},end:Point{x:3.0,y:0.0},thickness_m:0.15},
+            Wall {start:Point{x:4.0,y:0.0},end:Point{x:5.0,y:0.0},thickness_m:0.15},
+        ];
+        plan.join_wall_endpoints(&[
+            WallEndpoint {wall_index:1,is_start:false},
+            WallEndpoint {wall_index:2,is_start:true},
+        ]).unwrap();
+        plan.remove_wall(0).unwrap();
+        assert_eq!(plan.wall_joints[0].endpoints[0].wall_index, 0);
+        assert_eq!(plan.wall_joints[0].endpoints[1].wall_index, 1);
+        plan.remove_wall(1).unwrap();
+        assert!(plan.wall_joints.is_empty());
+    }
+
+    #[test]
+    fn merging_existing_explicit_groups_preserves_all_members() {
+        let mut plan = Plan::default();
+        plan.walls = vec![
+            Wall {start:Point{x:0.0,y:0.0},end:Point{x:1.0,y:0.0},thickness_m:0.15},
+            Wall {start:Point{x:1.1,y:1.0},end:Point{x:1.1,y:3.0},thickness_m:0.15},
+            Wall {start:Point{x:2.0,y:0.0},end:Point{x:3.0,y:0.0},thickness_m:0.15},
+            Wall {start:Point{x:3.0,y:2.0},end:Point{x:3.0,y:4.0},thickness_m:0.15},
+        ];
+        let a = WallEndpoint {wall_index:0,is_start:false};
+        let b = WallEndpoint {wall_index:1,is_start:true};
+        let c = WallEndpoint {wall_index:2,is_start:false};
+        let d = WallEndpoint {wall_index:3,is_start:true};
+        plan.join_wall_endpoints(&[a,b]).unwrap();
+        plan.join_wall_endpoints(&[c,d]).unwrap();
+        assert_eq!(plan.wall_joints.len(), 2);
+        assert_eq!(plan.join_wall_endpoints(&[b,c]).unwrap(), 4);
+        assert_eq!(plan.wall_joints.len(), 1);
+        assert_eq!(plan.linked_wall_endpoints(a).len(), 4);
+        assert_eq!(a.position(&plan), d.position(&plan));
+    }
+
+    #[test]
     fn snapping_to_half_meter() {
         assert_eq!(
             Point { x: 1.26, y: -0.24 }.snapped(0.5),
