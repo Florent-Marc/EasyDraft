@@ -478,7 +478,7 @@ impl Default for EasyDraft {
             settings: ProjectSettings::default(),
             undo: Vec::new(),
             redo: Vec::new(),
-            tool: Tool::Wall,
+            tool: Tool::SelectWall,
             view: View::Plan2D,
             sidebar_tab: SidebarTab::Affichage,
             palette_search: String::new(),
@@ -502,7 +502,7 @@ impl Default for EasyDraft {
             file_path_assigned: false,
             pdf_path: "plan-easydraft.pdf".into(),
             unifilar_pdf_path: "unifilaire-easydraft.pdf".into(),
-            status: "Clique une fois pour commencer un mur, puis une seconde fois pour le terminer.".into(),
+            status: "Sélection / Cadre actif. Choisis un outil pour ajouter un élément.".into(),
         }
     }
 }
@@ -2320,6 +2320,13 @@ impl EasyDraft {
         };
     }
 
+    fn finish_placement(&mut self) {
+        self.tool = Tool::SelectWall;
+        self.reset_pending();
+        self.clear_selection();
+        self.sidebar_tab = SidebarTab::Inspecteur;
+    }
+
     fn place(&mut self, position: Point, ppm: f32) {
         match self.tool {
             Tool::Wall => {
@@ -2332,10 +2339,8 @@ impl EasyDraft {
                             end: position,
                             thickness_m: self.settings.new_wall_thickness_cm / 100.0,
                         });
-                        self.clear_selection();
+                        self.finish_placement();
                         self.selected_wall = Some(self.plan.walls.len() - 1);
-                        self.tool = Tool::SelectWall;
-                        self.sidebar_tab = SidebarTab::Inspecteur;
                         self.status = format!(
                             "Mur de {distance:.2} m ajoute. Mode Selection actif : deplace ou modifie le mur."
                         );
@@ -2356,6 +2361,8 @@ impl EasyDraft {
                     if stair.is_valid() {
                         self.snapshot();
                         self.plan.stairs.push(stair);
+                        self.finish_placement();
+                        self.selected_stair = Some(self.plan.stairs.len() - 1);
                         self.status = "Escalier ajoute (fleche dans le sens de la montee)".into();
                     } else {
                         self.status = "L'escalier doit mesurer au moins 5 cm".into();
@@ -2382,6 +2389,8 @@ impl EasyDraft {
                     let (updated, width, rooms) = gap_candidate.unwrap();
                     self.snapshot();
                     self.plan = updated;
+                    self.finish_placement();
+                    self.selected_opening = Some(self.plan.openings.len() - 1);
                     self.status = format!(
                         "Passage libre de {:.2} m : {} pieces reconnues (separation invisible)",
                         width, rooms
@@ -2413,6 +2422,8 @@ impl EasyDraft {
                         Ok(()) => {
                             self.snapshot();
                             self.plan = updated;
+                            self.finish_placement();
+                            self.selected_opening = Some(self.plan.openings.len() - 1);
                             self.status = match kind {
                                 OpeningKind::Door => format!("Porte de {:.0} cm ajoutee", width_m * 100.0),
                                 OpeningKind::Window => format!("Fenetre de {:.0} cm ajoutee", width_m * 100.0),
@@ -2438,6 +2449,8 @@ impl EasyDraft {
                     if let Some((updated, width, rooms)) = gap_candidate {
                         self.snapshot();
                         self.plan = updated;
+                        self.finish_placement();
+                        self.selected_opening = Some(self.plan.openings.len() - 1);
                         self.status = format!(
                             "Passage libre de {:.2} m ajoute. {} piece(s) reconnue(s) ; verifie les autres jonctions si besoin.",
                             width, rooms
@@ -2499,6 +2512,8 @@ impl EasyDraft {
                 } else {
                     self.status = "Symbole ajoute".into();
                 }
+                self.finish_placement();
+                self.selected_symbol = Some(new_index);
             }
             Tool::SelectWall => self.select_at(position, ppm),
         }
@@ -4108,6 +4123,7 @@ mod plan_editor_tests {
     fn snapped_wall_is_recorded_straight_in_plan() {
         let mut app = EasyDraft::default();
         let start = Point { x: 0.0, y: 0.0 };
+        app.select_tool(Tool::Wall);
         app.place(start, 80.0);
         let (end, axis) = aligned_wall_end(
             start, Point { x: 4.0, y: 0.25 }, true
@@ -4167,7 +4183,8 @@ mod plan_editor_tests {
     #[test]
     fn wall_auto_switches_to_selection_after_second_click() {
         let mut app = EasyDraft::default();
-        assert_eq!(app.tool, Tool::Wall);
+        assert_eq!(app.tool, Tool::SelectWall);
+        app.select_tool(Tool::Wall);
         app.place(Point { x: 0.0, y: 0.0 }, 80.0);
         assert_eq!(app.tool, Tool::Wall);
         app.place(Point { x: 4.0, y: 0.0 }, 80.0);
@@ -4175,6 +4192,37 @@ mod plan_editor_tests {
         assert_eq!(app.tool, Tool::SelectWall);
         assert_eq!(app.selected_wall, Some(0));
         assert!(app.pending_wall.is_none());
+    }
+
+    #[test]
+    fn placement_returns_to_selection_and_selects_the_new_element() {
+        let mut app = EasyDraft::default();
+        let start = Point { x: 0.0, y: 0.0 };
+        let end = Point { x: 5.0, y: 0.0 };
+        app.select_tool(Tool::Wall);
+        app.place(start, 80.0);
+        app.place(end, 80.0);
+
+        app.select_tool(Tool::Door);
+        app.place(Point { x: 2.5, y: 3.0 }, 80.0);
+        assert_eq!(app.tool, Tool::Door);
+        app.place(Point { x: 2.5, y: 0.0 }, 80.0);
+        assert_eq!(app.tool, Tool::SelectWall);
+        assert_eq!(app.selected_opening, Some(0));
+
+        app.select_tool(Tool::Stair);
+        app.place(start, 80.0);
+        assert_eq!(app.tool, Tool::Stair);
+        app.place(end, 80.0);
+        assert_eq!(app.tool, Tool::SelectWall);
+        assert_eq!(app.selected_stair, Some(0));
+
+        for (index, tool) in [Tool::Outlet, Tool::Switch, Tool::Light].into_iter().enumerate() {
+            app.select_tool(tool);
+            app.place(start, 80.0);
+            assert_eq!(app.tool, Tool::SelectWall);
+            assert_eq!(app.selected_symbol, Some(index));
+        }
     }
 
     #[test]
