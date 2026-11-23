@@ -2,6 +2,33 @@
 
 **EasyDraft** est un prototype en **Rust + egui/eframe** pour dessiner des plans de maison en 2D et construire des schémas électriques de travail.
 
+## Raccorder plusieurs murs par leurs sommets
+
+En mode **Selection**, les extremites des murs sont maintenant reperees par
+de petits points bleus et les points choisis deviennent **ambre**.
+
+1. **Cliquer sur une extremite** : selectionne ce point. Si plusieurs murs
+   partagent deja exactement la meme extremite, ils forment un seul noeud et
+   sont selectionnes ensemble.
+2. **Maintenir Maj + cliquer** sur les points de depart / d'arrivee d'autres
+   murs pour les **ajouter** ou les retirer de la selection. On peut egalement
+   faire **Maj + rectangle de selection** depuis une zone vide pour capturer
+   plusieurs extremites a la fois, sans deplacer les murs entiers.
+3. **Glisser un des points ambre selectionnes** : toutes les extremites
+   selectionnees convergent vers **une seule et meme position exacte**.
+   Le placement s'aimante a la grille ou a une extremite de mur voisine.
+4. Autre possibilite : dans **Parametres > Objet**, utiliser le bouton
+   **Raccorder au premier point** pour ramener toutes les extremites sur la
+   coordonnee du premier point selectionne, sans glisser.
+5. **Ctrl+Z** annule tout le raccordement en une seule action. Les ouvertures
+   des murs restent sur leurs murs ; un mouvement qui rendrait un mur trop
+   court ou ferait depasser une ouverture est refuse sans modifier le plan.
+
+Les raccordements coincidents sont representes par une seule poignee ambre
+avec le nombre de points concernes. Les coordonnees des murs sont reelles
+(et identiques dans le JSON) : la detection des pieces peut donc utiliser
+ces jonctions sans tolerance artificielle.
+
 ## Navigation souris et placement de murs parfaitement droits
 
 - **Clic droit maintenu + glisser** sur le plan : deplacement de la vue, quel que soit l'outil actif (y compris **Selection** et durant le trace d'un mur). Aucun element n'est modifie.

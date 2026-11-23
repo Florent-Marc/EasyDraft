@@ -162,6 +162,59 @@ enum DragTarget {
     Symbol(usize),
     Stair(usize),
     Group,
+    /// Plusieurs extremites soudees sur une seule coordonnee.
+    Joint,
+}
+
+/// Reference stable a l'une des deux extremites d'un mur existant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct WallHandle {
+    wall_index: usize,
+    is_start: bool,
+}
+
+impl WallHandle {
+    fn position(self, plan: &Plan) -> Option<Point> {
+        plan.walls.get(self.wall_index).map(|wall| {
+            if self.is_start { wall.start } else { wall.end }
+        })
+    }
+}
+
+/// Trouve toutes les extremites d'un meme noeud, sans confondre deux
+/// sommets seulement *proches* : ils doivent etre exactement raccordes.
+fn coincident_handles(plan: &Plan, point: Point) -> Vec<WallHandle> {
+    plan.walls.iter().enumerate().flat_map(|(wall_index, wall)| {
+        [
+            (WallHandle { wall_index, is_start: true }, wall.start),
+            (WallHandle { wall_index, is_start: false }, wall.end),
+        ]
+    }).filter(|(_, position)| position.distance_to(point) <= 0.0001)
+      .map(|(handle, _)| handle).collect()
+}
+
+/// Raccordement atomique : aucun mur n'est modifie si une ouverture existante
+/// rend le raccourcissement impossible, ou si un mur deviendrait trop court.
+fn weld_wall_handles(
+    plan: &mut Plan, handles: &[WallHandle], target: Point,
+) -> Result<(), &'static str> {
+    if handles.is_empty() || !target.x.is_finite() || !target.y.is_finite() {
+        return Err("Aucun sommet valide a raccorder");
+    }
+    let mut updated = plan.clone();
+    let mut affected: Vec<usize> = handles.iter().map(|h| h.wall_index).collect();
+    affected.sort_unstable();
+    affected.dedup();
+    for wall_index in affected {
+        let wall = updated.walls.get(wall_index).cloned().ok_or("Mur introuvable")?;
+        let move_start = handles.iter().any(|h| h.wall_index == wall_index && h.is_start);
+        let move_end = handles.iter().any(|h| h.wall_index == wall_index && !h.is_start);
+        let start = if move_start { target } else { wall.start };
+        let end = if move_end { target } else { wall.end };
+        updated.update_wall(wall_index, start, end, wall.thickness_m)?;
+    }
+    *plan = updated;
+    Ok(())
 }
 
 /// Selection de plusieurs elements, sans selectionner les surfaces de piece derivees.
@@ -185,7 +238,7 @@ impl SelectionSet {
             DragTarget::Opening(i) => self.openings.contains(&i),
             DragTarget::Stair(i) => self.stairs.contains(&i),
             DragTarget::Symbol(i) => self.symbols.contains(&i),
-            DragTarget::Group => false,
+            DragTarget::Group | DragTarget::Joint => false,
         }
     }
 
@@ -338,6 +391,8 @@ struct EasyDraft {
     drag: Option<ActiveDrag>,
     marquee: Option<Marquee>,
     selection: SelectionSet,
+    selected_handles: Vec<WallHandle>,
+    marquee_handles: bool,
     new_wall_thickness_cm: f32,
     new_door_width_cm: f32,
     new_window_width_cm: f32,
@@ -390,6 +445,8 @@ impl Default for EasyDraft {
             drag: None,
             marquee: None,
             selection: SelectionSet::default(),
+            selected_handles: Vec::new(),
+            marquee_handles: false,
             new_wall_thickness_cm: DEFAULT_WALL_THICKNESS_M * 100.0,
             new_door_width_cm: 90.0,
             new_window_width_cm: 120.0,
@@ -568,9 +625,11 @@ impl EasyDraft {
             self.plan = session.original;
         }
         self.marquee = None;
+        self.marquee_handles = false;
     }
 
     fn clear_selection(&mut self) {
+        self.selected_handles.clear();
         self.selection = SelectionSet::default();
         self.selected_wall = None;
         self.selected_symbol = None;
@@ -920,6 +979,56 @@ impl EasyDraft {
             .map(|(index, _)| index)
     }
 
+    fn wall_handles_at(&self, point: Point, ppm: f32) -> Vec<WallHandle> {
+        if !self.show_architecture { return Vec::new(); }
+        let nearest = self.plan.walls.iter().flat_map(|wall| [wall.start, wall.end])
+            .filter(|position| position.distance_to(point) <= 12.0 / ppm)
+            .min_by(|a, b| point.distance_to(*a).total_cmp(&point.distance_to(*b)));
+        nearest.map(|position| coincident_handles(&self.plan, position))
+            .unwrap_or_default()
+    }
+
+    /// Maj + clic ajoute ou retire un groupe de points deja raccordes.
+    fn toggle_wall_handles(&mut self, point: Point, ppm: f32) -> bool {
+        let clicked = self.wall_handles_at(point, ppm);
+        if clicked.is_empty() { return false; }
+        if self.selected_handles.is_empty() { self.clear_selection(); }
+        let all_selected = clicked.iter().all(|handle| self.selected_handles.contains(handle));
+        if all_selected {
+            self.selected_handles.retain(|handle| !clicked.contains(handle));
+        } else {
+            for handle in clicked {
+                if !self.selected_handles.contains(&handle) {
+                    self.selected_handles.push(handle);
+                }
+            }
+        }
+        self.sidebar_tab = SidebarTab::Inspecteur;
+        self.status = format!(
+            "{} sommet(s) choisi(s) : glisse un sommet ou clique sur Raccorder",
+            self.selected_handles.len()
+        );
+        true
+    }
+
+    fn snap_joint_destination(&self, raw: Point, ppm: f32) -> Point {
+        if self.snap_endpoints {
+            if let Some(position) = self.plan.walls.iter().enumerate()
+                .flat_map(|(wall_index, wall)| [
+                    (WallHandle { wall_index, is_start: true }, wall.start),
+                    (WallHandle { wall_index, is_start: false }, wall.end),
+                ])
+                .filter(|(handle, position)| !self.selected_handles.contains(handle)
+                    && position.distance_to(raw) <= 13.0 / ppm)
+                .min_by(|a, b| raw.distance_to(a.1).total_cmp(&raw.distance_to(b.1)))
+                .map(|(_, position)| position)
+            {
+                return position;
+            }
+        }
+        raw.snapped(self.snap_m)
+    }
+
     /// Selectionne d'abord une ouverture, puis une poignee de mur, puis le corps du mur.
     fn drag_target_at(&self, point: Point, ppm: f32) -> Option<DragTarget> {
         if self.show_electrical {
@@ -967,12 +1076,47 @@ impl EasyDraft {
 
     fn begin_drag(&mut self, point: Point, ppm: f32) {
         let Some(hit) = self.drag_target_at(point, ppm) else {
-            self.clear_selection();
+            if !self.marquee_handles { self.clear_selection(); }
             self.marquee = Some(Marquee { start: point, current: point });
             self.sidebar_tab = SidebarTab::Inspecteur;
-            self.status = "Selection rectangulaire : encadre les elements".into();
+            self.status = if self.marquee_handles {
+                "Encadre les extremites des murs a raccorder (Maj + glisser)".into()
+            } else {
+                "Selection rectangulaire : encadre les elements".into()
+            };
             return;
         };
+        // Une extremite touchee est un noeud : si plusieurs murs partagent
+        // exactement ce point, on les prend ensemble. Les sommets deja
+        // selectionnes via Maj + clic sont conserves pendant le glissement.
+        if matches!(hit, DragTarget::WallStart(_) | DragTarget::WallEnd(_)) {
+            let clicked = self.wall_handles_at(point, ppm);
+            let keep = clicked.iter().any(|handle| self.selected_handles.contains(handle));
+            if !keep { self.clear_selection(); }
+            for handle in clicked {
+                if !self.selected_handles.contains(&handle) {
+                    self.selected_handles.push(handle);
+                }
+            }
+            let target = if self.selected_handles.len() > 1 {
+                DragTarget::Joint
+            } else {
+                hit
+            };
+            self.sidebar_tab = SidebarTab::Inspecteur;
+            self.status = if self.selected_handles.len() > 1 {
+                format!("Deplace {} extremites vers un meme point", self.selected_handles.len())
+            } else {
+                "Deplace l'extremite du mur (Maj + clic pour en ajouter)".into()
+            };
+            self.drag = Some(ActiveDrag {
+                target,
+                from: point,
+                original: self.plan.clone(),
+                changed: false,
+            });
+            return;
+        }
         let target = if self.selection.len() > 1 && self.selection.includes(hit) {
             DragTarget::Group
         } else {
@@ -1001,7 +1145,7 @@ impl EasyDraft {
                     self.selected_stair = Some(index);
                     self.status = "Deplace l'escalier".into();
                 }
-                DragTarget::Group => unreachable!(),
+                DragTarget::Group | DragTarget::Joint => unreachable!(),
             }
         } else {
             self.status = format!("Deplacement de {} elements", self.selection.len());
@@ -1015,6 +1159,35 @@ impl EasyDraft {
         });
     }
 
+    fn weld_selected_to_first(&mut self) {
+        let Some(first) = self.selected_handles.first().copied() else { return; };
+        if self.selected_handles.len() < 2 {
+            self.status = "Selectionne au moins deux sommets (Maj + clic)".into();
+            return;
+        }
+        let Some(target) = first.position(&self.plan) else {
+            self.status = "Premier sommet introuvable".into();
+            return;
+        };
+        let mut updated = self.plan.clone();
+        match weld_wall_handles(&mut updated, &self.selected_handles, target) {
+            Ok(()) => {
+                let moved = self.selected_handles.iter().any(|&h|
+                    h.position(&self.plan).is_some_and(|p| p.distance_to(target) > 0.0001)
+                );
+                if moved {
+                    self.snapshot();
+                    self.plan = updated;
+                }
+                self.status = format!(
+                    "{} extremites raccordees exactement en X {:.2} / Y {:.2} m",
+                    self.selected_handles.len(), target.x, target.y
+                );
+            }
+            Err(error) => self.status = format!("Raccordement refuse : {error}"),
+        }
+    }
+
     fn update_marquee(&mut self, point: Point) {
         if let Some(marquee) = self.marquee.as_mut() {
             marquee.current = point;
@@ -1023,6 +1196,28 @@ impl EasyDraft {
 
     fn finish_marquee(&mut self) {
         let Some(marquee) = self.marquee.take() else { return; };
+        let handles_only = self.marquee_handles;
+        self.marquee_handles = false;
+        if handles_only {
+            let mut added = 0;
+            for (wall_index, wall) in self.plan.walls.iter().enumerate() {
+                for (handle, position) in [
+                    (WallHandle { wall_index, is_start: true }, wall.start),
+                    (WallHandle { wall_index, is_start: false }, wall.end),
+                ] {
+                    if marquee.contains(position) && !self.selected_handles.contains(&handle) {
+                        self.selected_handles.push(handle);
+                        added += 1;
+                    }
+                }
+            }
+            self.sidebar_tab = SidebarTab::Inspecteur;
+            self.status = format!(
+                "{added} point(s) ajoute(s), {} au total : glisse un point pour les raccorder",
+                self.selected_handles.len()
+            );
+            return;
+        }
         self.clear_selection();
         self.selection = SelectionSet::from_marquee(&self.plan, marquee);
         let count = self.selection.len();
@@ -1048,6 +1243,12 @@ impl EasyDraft {
         let mut updated = drag.original.clone();
 
         let outcome = match target {
+            DragTarget::Joint => {
+                // Tous les sommets de la selection convergent vers une seule
+                // coordonnee EXACTE, aimantee aux murs non selectionnes.
+                let destination = self.snap_joint_destination(cursor, ppm);
+                weld_wall_handles(&mut updated, &self.selected_handles, destination)
+            }
             DragTarget::Opening(index) => {
                 if let Some(opening) = updated.openings.get(index) {
                     if let Some(wall) = updated.walls.get(opening.wall_index) {
@@ -1118,6 +1319,12 @@ impl EasyDraft {
         match outcome {
             Ok(()) => {
                 let moved = match target {
+                    DragTarget::Joint => self.selected_handles.iter().any(|&handle| {
+                        match (handle.position(&drag.original), handle.position(&updated)) {
+                            (Some(before), Some(after)) => before.distance_to(after) > 0.0001,
+                            _ => false,
+                        }
+                    }),
                     DragTarget::Symbol(index) => {
                         let old = drag.original.symbols[index].position;
                         let now = updated.symbols[index].position;
@@ -1171,12 +1378,27 @@ impl EasyDraft {
                 self.undo.push(session.original);
                 if self.undo.len() > 100 { self.undo.remove(0); }
                 self.redo.clear();
-                self.status = "Deplacement termine : derniere position valide conservee (Ctrl+Z pour annuler)".into();
+                self.status = if matches!(session.target, DragTarget::Joint) {
+                    "Sommets raccordes au meme point (Ctrl+Z pour annuler)".into()
+                } else {
+                    "Deplacement termine : derniere position valide conservee (Ctrl+Z pour annuler)".into()
+                };
             }
         }
     }
 
     fn select_at(&mut self, point: Point, ppm: f32) {
+        let clicked = self.wall_handles_at(point, ppm);
+        if !clicked.is_empty() {
+            self.clear_selection();
+            self.selected_handles = clicked;
+            self.sidebar_tab = SidebarTab::Inspecteur;
+            self.status = format!(
+                "{} sommet(s) selectionne(s) : Maj + clic sur d'autres extremites",
+                self.selected_handles.len()
+            );
+            return;
+        }
         self.clear_selection();
         self.sidebar_tab = SidebarTab::Inspecteur;
         if self.show_electrical {
@@ -1940,6 +2162,7 @@ impl EasyDraft {
 
         if self.tool == Tool::SelectWall {
             if response.drag_started_by(egui::PointerButton::Primary) {
+                self.marquee_handles = ui.ctx().input(|i| i.modifiers.shift);
                 let initial = ui.ctx().input(|i| i.pointer.press_origin());
                 if let Some(pos) = initial.or(response.interact_pointer_pos()) {
                     self.begin_drag(to_world(pos), ppm);
@@ -1971,6 +2194,12 @@ impl EasyDraft {
         if response.clicked_by(egui::PointerButton::Primary) {
             if let Some(pos) = response.interact_pointer_pos() {
                 let world = to_world(pos);
+                if self.tool == Tool::SelectWall
+                    && ui.ctx().input(|i| i.modifiers.shift)
+                    && self.toggle_wall_handles(world, ppm)
+                {
+                    // Maj + clic : ne pas reinitialiser les autres sommets.
+                } else {
                 let point = match self.tool {
                     Tool::SelectWall | Tool::Door | Tool::Window | Tool::Passage | Tool::LinkLighting => world,
                     Tool::Wall => {
@@ -1985,6 +2214,7 @@ impl EasyDraft {
                     _ => world.snapped(self.snap_m),
                 };
                 self.place(point, ppm);
+                }
             }
         }
 
@@ -2086,6 +2316,12 @@ impl EasyDraft {
             if self.show_dimensions {
                 draw_dimension(&painter, a, b, width_px, wall.length_m());
             }
+            if self.tool == Tool::SelectWall {
+                // Les sommets doivent etre visibles meme avant leur selection.
+                for endpoint in [a, b] {
+                    painter.circle_filled(endpoint, 3.0, Color32::from_rgb(94, 151, 210));
+                }
+            }
             if self.selected_wall == Some(index) || self.selection.walls.contains(&index) {
                 for endpoint in [a, b] {
                     painter.circle_filled(endpoint, 6.0, Color32::WHITE);
@@ -2094,6 +2330,34 @@ impl EasyDraft {
                         Stroke::new(2.5_f32, Color32::from_rgb(40, 135, 230)),
                     );
                 }
+            }
+        }
+
+        // Une poignee ambre represente un ou plusieurs sommets selectionnes
+        // exactement au meme point, en particulier les jonctions des murs.
+        let mut drawn_nodes: Vec<Point> = Vec::new();
+        for handle in &self.selected_handles {
+            let Some(point) = handle.position(&self.plan) else { continue };
+            if drawn_nodes.iter().any(|&previous| previous.distance_to(point) < 0.0001) {
+                continue;
+            }
+            drawn_nodes.push(point);
+            let pos = to_screen(point);
+            painter.circle_filled(pos, 7.0, Color32::from_rgb(250, 187, 62));
+            painter.circle_stroke(
+                pos, 9.0,
+                Stroke::new(2.0_f32, Color32::from_rgb(166, 98, 9))
+            );
+            let linked = self.selected_handles.iter()
+                .filter(|h| h.position(&self.plan)
+                    .is_some_and(|p| p.distance_to(point) < 0.0001))
+                .count();
+            if linked > 1 {
+                painter.text(
+                    pos + Vec2::new(12.0, -12.0), Align2::LEFT_CENTER,
+                    format!("{linked} pts"), FontId::proportional(12.0),
+                    Color32::from_rgb(125, 78, 7),
+                );
             }
         }
 
@@ -2449,6 +2713,9 @@ impl eframe::App for EasyDraft {
                         }
                         ui.separator();
                         ui.small("Clic gauche : selectionner ou encadrer.");
+                        ui.small("Maj + clic sur un sommet : selectionner plusieurs extremites.");
+                        ui.small("Maj + rectangle : choisir plusieurs sommets de murs.");
+                        ui.small("Glisser un sommet ambre : raccorder les points a une meme position.");
                         ui.small("Clic droit + glisser : deplacer la vue, sans changer d'outil.");
                         ui.small("Mur : repere vert = horizontal / vertical ; Maj verrouille l'axe.");
                         ui.small("Un mur termine revient automatiquement a Selection.");
@@ -2597,7 +2864,23 @@ impl eframe::App for EasyDraft {
             } // Dessin
             if self.sidebar_tab == SidebarTab::Inspecteur {
                 ui.heading("Element selectionne");
-                if self.selection.len() <= 1 { self.selected_properties(ui); }
+                if !self.selected_handles.is_empty() {
+                    ui.strong(format!("{} sommet(s) de mur", self.selected_handles.len()));
+                    ui.small("Maj + clic sur les extremites pour ajouter ou retirer des points.");
+                    ui.small("Maj + dessiner un rectangle vide pour selectionner plusieurs sommets.");
+                    ui.small("Glisse un sommet ambre : tous les points selectionnes seront raccordes au meme endroit.");
+                    ui.small("Le nouvel emplacement s'accroche a la grille et aux autres extremites de murs.");
+                    if self.selected_handles.len() >= 2
+                        && ui.button("Raccorder au premier point").clicked()
+                    {
+                        self.weld_selected_to_first();
+                    }
+                    if ui.button("Effacer la selection des points").clicked() {
+                        self.clear_selection();
+                    }
+                } else if self.selection.len() <= 1 {
+                    self.selected_properties(ui);
+                }
                 ui.separator();
                 ui.small("Clic : selectionner un objet. Glisser depuis le vide : rectangle multi-selection.");
                 ui.small("Rectangle gauche → droite : elements entiers ; droite → gauche : elements traverses.");
@@ -3139,6 +3422,177 @@ mod plan_editor_tests {
         app.update_drag(Point { x: 2.01, y: 0.0 }, 80.0);
         app.finish_drag();
         assert!(app.undo.is_empty());
+    }
+
+    #[test]
+    fn joint_drag_moves_all_connected_wall_ends_and_undoes_once() {
+        let mut app = EasyDraft::default();
+        app.tool = Tool::SelectWall;
+        app.plan.walls = vec![
+            Wall {
+                start: Point { x: 0.0, y: 0.0 },
+                end: Point { x: 2.0, y: 0.0 },
+                thickness_m: 0.15,
+            },
+            Wall {
+                start: Point { x: 2.0, y: 0.0 },
+                end: Point { x: 2.0, y: 3.0 },
+                thickness_m: 0.15,
+            },
+        ];
+        app.begin_drag(Point { x: 2.0, y: 0.0 }, 80.0);
+        assert!(matches!(
+            app.drag.as_ref().map(|d| d.target), Some(DragTarget::Joint)
+        ));
+        assert_eq!(app.selected_handles.len(), 2);
+        app.update_drag(Point { x: 2.75, y: 1.25 }, 80.0);
+        assert_eq!(app.plan.walls[0].end, Point { x: 2.75, y: 1.25 });
+        assert_eq!(app.plan.walls[1].start, Point { x: 2.75, y: 1.25 });
+        app.finish_drag();
+        assert_eq!(app.undo.len(), 1);
+        app.undo();
+        assert_eq!(app.plan.walls[0].end, Point { x: 2.0, y: 0.0 });
+        assert_eq!(app.plan.walls[1].start, Point { x: 2.0, y: 0.0 });
+        app.redo();
+        assert_eq!(app.plan.walls[0].end, app.plan.walls[1].start);
+        let restored: Plan = serde_json::from_str(
+            &serde_json::to_string(&app.plan).unwrap()
+        ).unwrap();
+        assert_eq!(restored.walls[0].end, restored.walls[1].start);
+    }
+
+    #[test]
+    fn shift_adds_independent_handles_and_weld_button_joins_them() {
+        let mut app = EasyDraft::default();
+        app.tool = Tool::SelectWall;
+        app.plan.walls = vec![
+            Wall {
+                start: Point { x: 0.0, y: 0.0 },
+                end: Point { x: 2.0, y: 0.0 },
+                thickness_m: 0.15,
+            },
+            Wall {
+                start: Point { x: 4.0, y: 2.0 },
+                end: Point { x: 4.0, y: 5.0 },
+                thickness_m: 0.15,
+            },
+        ];
+        app.select_at(Point { x: 2.0, y: 0.0 }, 80.0);
+        assert_eq!(app.selected_handles.len(), 1);
+        assert!(app.toggle_wall_handles(Point { x: 4.0, y: 2.0 }, 80.0));
+        assert_eq!(app.selected_handles.len(), 2);
+        // A second Shift-click is an actual toggle.
+        assert!(app.toggle_wall_handles(Point { x: 4.0, y: 2.0 }, 80.0));
+        assert_eq!(app.selected_handles.len(), 1);
+        assert!(app.toggle_wall_handles(Point { x: 4.0, y: 2.0 }, 80.0));
+        app.weld_selected_to_first();
+        assert_eq!(app.plan.walls[0].end, app.plan.walls[1].start);
+        assert_eq!(app.plan.walls[1].start, Point { x: 2.0, y: 0.0 });
+        assert_eq!(app.undo.len(), 1);
+        app.undo();
+        assert_eq!(app.plan.walls[1].start, Point { x: 4.0, y: 2.0 });
+    }
+
+    #[test]
+    fn multi_handle_drag_snaps_to_a_third_unselected_wall() {
+        let mut app = EasyDraft::default();
+        app.tool = Tool::SelectWall;
+        app.plan.walls = vec![
+            Wall {
+                start: Point { x: 0.0, y: 0.0 },
+                end: Point { x: 2.0, y: 0.0 },
+                thickness_m: 0.15,
+            },
+            Wall {
+                start: Point { x: 4.0, y: 0.0 },
+                end: Point { x: 4.0, y: 3.0 },
+                thickness_m: 0.15,
+            },
+            Wall {
+                start: Point { x: 5.0, y: 1.0 },
+                end: Point { x: 7.0, y: 1.0 },
+                thickness_m: 0.15,
+            },
+        ];
+        app.select_at(Point { x: 2.0, y: 0.0 }, 80.0);
+        assert!(app.toggle_wall_handles(Point { x: 4.0, y: 0.0 }, 80.0));
+        app.begin_drag(Point { x: 2.0, y: 0.0 }, 80.0);
+        assert!(matches!(
+            app.drag.as_ref().map(|d| d.target), Some(DragTarget::Joint)
+        ));
+        app.update_drag(Point { x: 5.08, y: 1.05 }, 80.0);
+        assert_eq!(app.plan.walls[0].end, Point { x: 5.0, y: 1.0 });
+        assert_eq!(app.plan.walls[1].start, app.plan.walls[0].end);
+        assert_eq!(app.plan.walls[2].start, app.plan.walls[0].end);
+        app.finish_drag();
+        assert_eq!(app.undo.len(), 1);
+    }
+
+    #[test]
+    fn welding_rejects_invalid_shortening_atomically() {
+        let mut plan = Plan::default();
+        plan.walls = vec![
+            Wall {
+                start: Point { x: 0.0, y: 0.0 },
+                end: Point { x: 4.0, y: 0.0 },
+                thickness_m: 0.15,
+            },
+            Wall {
+                start: Point { x: 6.0, y: 1.0 },
+                end: Point { x: 6.0, y: 3.0 },
+                thickness_m: 0.15,
+            },
+        ];
+        plan.add_opening(0, Point { x: 2.0, y: 0.0 }, 1.0,
+            OpeningKind::Door, false, false, 0.05).unwrap();
+        let originals = plan.walls.clone();
+        let handles = [
+            WallHandle { wall_index: 0, is_start: false },
+            WallHandle { wall_index: 1, is_start: true },
+        ];
+        assert!(weld_wall_handles(
+            &mut plan, &handles, Point { x: 1.0, y: 0.0 },
+        ).is_err());
+        assert_eq!(plan.walls[0].end, originals[0].end);
+        assert_eq!(plan.walls[1].start, originals[1].start);
+        let both_ends = [
+            WallHandle { wall_index: 0, is_start: true },
+            WallHandle { wall_index: 0, is_start: false },
+        ];
+        assert!(weld_wall_handles(
+            &mut plan, &both_ends, Point { x: 2.0, y: 0.0 },
+        ).is_err());
+    }
+
+    #[test]
+    fn shift_marquee_selects_only_wall_endpoints_not_entire_walls() {
+        let mut app = EasyDraft::default();
+        app.tool = Tool::SelectWall;
+        app.plan.walls = vec![
+            Wall {
+                start: Point { x: 0.0, y: 0.0 },
+                end: Point { x: 2.0, y: 0.0 },
+                thickness_m: 0.15,
+            },
+            Wall {
+                start: Point { x: 2.0, y: 1.0 },
+                end: Point { x: 4.0, y: 1.0 },
+                thickness_m: 0.15,
+            },
+        ];
+        app.marquee_handles = true;
+        app.begin_drag(Point { x: 1.5, y: -0.5 }, 80.0);
+        assert!(app.marquee.is_some());
+        app.update_marquee(Point { x: 2.5, y: 1.5 });
+        app.finish_marquee();
+        assert_eq!(app.selected_handles.len(), 2);
+        assert!(app.selection.walls.is_empty());
+        assert!(app.selected_handles.contains(&WallHandle {
+            wall_index: 0, is_start: false
+        }));
+        assert!(app.selected_handles.contains(&WallHandle {
+            wall_index: 1, is_start: true
+        }));
     }
 
     #[test]
