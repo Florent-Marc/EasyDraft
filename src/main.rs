@@ -1726,15 +1726,23 @@ impl EasyDraft {
             }
             if response.dragged_by(egui::PointerButton::Primary) {
                 if let Some(cursor) = response.interact_pointer_pos() {
-                    self.update_drag(to_world(cursor), ppm);
+                    if self.marquee.is_some() {
+                        self.update_marquee(to_world(cursor));
+                    } else {
+                        self.update_drag(to_world(cursor), ppm);
+                    }
                 }
             }
             if response.drag_stopped_by(egui::PointerButton::Primary) {
-                // Appliquer egalement la position de la souris au moment du relachement.
                 if let Some(cursor) = response.interact_pointer_pos() {
-                    self.update_drag(to_world(cursor), ppm);
+                    if self.marquee.is_some() {
+                        self.update_marquee(to_world(cursor));
+                    } else {
+                        self.update_drag(to_world(cursor), ppm);
+                    }
                 }
-                self.finish_drag();
+                if self.marquee.is_some() { self.finish_marquee(); }
+                else { self.finish_drag(); }
             }
         }
 
@@ -1820,11 +1828,12 @@ impl EasyDraft {
                             a + direction * (cursor_m * ppm),
                             a + direction * (from_m * ppm),
                             width_px,
-                            self.selected_wall == Some(index),
+                            self.selected_wall == Some(index) || self.selection.walls.contains(&index),
                         );
                     }
                     draw_opening(&painter, a, direction, width_px, ppm, opening);
-                    if self.selected_opening == Some(opening_index) {
+                    if self.selected_opening == Some(opening_index)
+                        || self.selection.openings.contains(&opening_index) {
                         let handle = a + direction * (opening.center_m * ppm);
                         painter.circle_filled(handle, 5.0, Color32::from_rgb(242, 178, 73));
                         painter.circle_stroke(
@@ -1840,14 +1849,14 @@ impl EasyDraft {
                         a + direction * (cursor_m * ppm),
                         b,
                         width_px,
-                        self.selected_wall == Some(index),
+                        self.selected_wall == Some(index) || self.selection.walls.contains(&index),
                     );
                 }
             }
             if self.show_dimensions {
                 draw_dimension(&painter, a, b, width_px, wall.length_m());
             }
-            if self.selected_wall == Some(index) {
+            if self.selected_wall == Some(index) || self.selection.walls.contains(&index) {
                 for endpoint in [a, b] {
                     painter.circle_filled(endpoint, 6.0, Color32::WHITE);
                     painter.circle_stroke(
@@ -1860,7 +1869,8 @@ impl EasyDraft {
 
         for (index, stair) in self.plan.stairs.iter().enumerate() {
             draw_stair(&painter, stair, origin, ppm);
-            if self.selected_stair == Some(index) && stair.is_valid() {
+            if (self.selected_stair == Some(index) || self.selection.stairs.contains(&index))
+                && stair.is_valid() {
                 let corners = stair.corners().map(to_screen);
                 for j in 0..4 {
                     painter.line_segment(
@@ -1921,7 +1931,7 @@ impl EasyDraft {
             if self.pending_switch == Some(index) {
                 painter.circle_stroke(pos, 17.0, Stroke::new(2.0_f32, Color32::from_rgb(233, 139, 40)));
             }
-            if self.selected_symbol == Some(index) {
+            if self.selected_symbol == Some(index) || self.selection.symbols.contains(&index) {
                 painter.circle_stroke(pos, 24.0, Stroke::new(3.0_f32, Color32::from_rgb(40, 135, 230)));
             }
         }
@@ -1965,6 +1975,22 @@ impl EasyDraft {
                 FontId::proportional(13.0),
                 Color32::DARK_GRAY,
             );
+        }
+
+        if let Some(marquee) = self.marquee {
+            let from = to_screen(marquee.start);
+            let to = to_screen(marquee.current);
+            let bounds = egui::Rect::from_two_pos(from, to).intersect(rect);
+            painter.rect_filled(bounds, 0.0, Color32::from_rgba_unmultiplied(36, 130, 225, 32));
+            let stroke = Stroke::new(1.5_f32, Color32::from_rgb(35, 115, 215));
+            for (a, b) in [
+                (bounds.left_top(), bounds.right_top()),
+                (bounds.right_top(), bounds.right_bottom()),
+                (bounds.right_bottom(), bounds.left_bottom()),
+                (bounds.left_bottom(), bounds.left_top()),
+            ] {
+                painter.line_segment([a, b], stroke);
+            }
         }
 
         painter.text(
@@ -2159,10 +2185,21 @@ impl eframe::App for EasyDraft {
             } // Dessin
             if self.sidebar_tab == SidebarTab::Inspecteur {
                 ui.heading("Element selectionne");
-                self.selected_properties(ui);
+                if self.selection.len() <= 1 { self.selected_properties(ui); }
                 ui.separator();
-                ui.small("Clique sur un mur, une ouverture, une piece ou un symbole.");
-                ui.small("Ctrl+Z pour annuler, Ctrl+Y pour retablir.");
+                ui.small("Clic : selectionner un objet. Glisser depuis le vide : rectangle multi-selection.");
+                ui.small("Rectangle gauche → droite : elements entiers ; droite → gauche : elements traverses.");
+                ui.small("Glisser un element selectionne : deplacer l'ensemble. Ctrl+Z : annuler.");
+                if self.selection.len() > 1 {
+                    ui.separator();
+                    ui.strong(format!("{} elements selectionnes", self.selection.len()));
+                    ui.label(format!(
+                        "{} mur(s), {} ouverture(s), {} symbole(s), {} escalier(s)",
+                        self.selection.walls.len(), self.selection.openings.len(),
+                        self.selection.symbols.len(), self.selection.stairs.len()
+                    ));
+                    if ui.button("Supprimer le groupe").clicked() { self.delete_selected(); }
+                }
             }
             if self.sidebar_tab == SidebarTab::Affichage {
             ui.label("Calques visibles");
