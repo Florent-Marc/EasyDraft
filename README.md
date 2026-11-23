@@ -324,7 +324,7 @@ Pour dessiner avec plus de précision :
 - **Calques d'affichage Architecture / Électricité** : possibilité de masquer temporairement l'un ou l'autre, sans supprimer les données.
 - Les nouvelles valeurs de longueur sont vérifiées : le logiciel refuse de raccourcir un mur si cela ferait sortir une porte ou fenêtre de son emprise.
 
-Les calques sont des **options d'affichage du logiciel** ; l'export PDF actuel du plan contient les données du projet indépendamment de leur visibilité à l'écran. Les plans JSON existants restent compatibles.
+La case **Électricité** contrôle aussi l’affichage des symboles, repères et liaisons électriques sur toutes les feuilles du PDF du plan de situation.
 
 ## Niveaux et parties du bâtiment
 

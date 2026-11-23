@@ -26,7 +26,7 @@ struct Canvas {
 }
 
 impl Canvas {
-    fn new(plan: &Plan) -> Self {
+    fn new(plan: &Plan, show_electrical: bool) -> Self {
         let mut min_x = f32::INFINITY;
         let mut min_y = f32::INFINITY;
         let mut max_x = f32::NEG_INFINITY;
@@ -52,8 +52,10 @@ impl Canvas {
                 }
             }
         }
-        for symbol in &plan.symbols {
-            include(symbol.position, 0.25);
+        if show_electrical {
+            for symbol in &plan.symbols {
+                include(symbol.position, 0.25);
+            }
         }
         if let Some(bg) = plan.background.as_ref() {
             if let Ok((mut width_px, mut height_px)) = image::image_dimensions(&bg.path) {
@@ -379,7 +381,7 @@ fn pdf_background(bg: &BackgroundPlan) -> Result<PdfBackgroundImage, String> {
 
 #[cfg(test)]
 pub(crate) fn export_pdf(path: &str, plan: &Plan, show_dimensions: bool) -> Result<(), String> {
-    export_plan_sheets(path, [("Plan 2D", plan)], show_dimensions)
+    export_plan_sheets(path, [("Plan 2D", plan)], show_dimensions, true)
 }
 
 /// Exporte une page A4 paysage par feuille, ajustée au dessin de la feuille.
@@ -387,9 +389,10 @@ pub fn export_plan_sheets<'a>(
     path: &str,
     sheets: impl IntoIterator<Item = (&'a str, &'a Plan)>,
     show_dimensions: bool,
+    show_electrical: bool,
 ) -> Result<(), String> {
     let pages = sheets.into_iter().map(|(name, plan)| {
-        render_plan_page(name, plan, show_dimensions)
+        render_plan_page(name, plan, show_dimensions, show_electrical)
             .map_err(|error| format!("{name} : {error}"))
     }).collect::<Result<Vec<_>, _>>()?;
     let bytes = build_pdf_document(pages.iter().map(|(stream, image)| {
@@ -399,10 +402,10 @@ pub fn export_plan_sheets<'a>(
 }
 
 fn render_plan_page(
-    name: &str, plan: &Plan, show_dimensions: bool,
+    name: &str, plan: &Plan, show_dimensions: bool, show_electrical: bool,
 ) -> Result<(String, Option<PdfBackgroundImage>), String> {
     let image = plan.background.as_ref().map(pdf_background).transpose()?;
-    let mut pdf = Canvas::new(plan);
+    let mut pdf = Canvas::new(plan, show_electrical);
     // Dessiner le fond de plan raster AVANT les symboles et la geometrie
     // vectorielle ; l'opacity est precomposee dans le JPEG embarque.
     if let (Some(bg), Some(raster)) = (plan.background.as_ref(), image.as_ref()) {
@@ -448,7 +451,9 @@ fn render_plan_page(
             );
         }
     }
-    pdf.symbols(plan);
+    if show_electrical {
+        pdf.symbols(plan);
+    }
 
     // Le texte du titre est ajoute en coordonnees de page, sans transformation du plan.
     let mut title: String = name.chars().take(60).collect();
@@ -1099,7 +1104,7 @@ mod tests {
             thickness_m: 0.15,
         });
         let other = Plan::default();
-        export_plan_sheets(output.to_str().unwrap(), [("Cave", &plan), ("Grenier", &other)], true)
+        export_plan_sheets(output.to_str().unwrap(), [("Cave", &plan), ("Grenier", &other)], true, true)
             .unwrap();
         let pdf = std::fs::read(&output).unwrap();
         assert_eq!(pdf.windows(15).filter(|piece| *piece == b"/Subtype /Image").count(), 1);
@@ -1114,14 +1119,28 @@ mod tests {
     fn plan_page_omits_blank_revision_and_places_counts_at_left_margin() {
         let mut plan = Plan::default();
         plan.installation_info.revision = "  ".into();
-        let (page, _) = render_plan_page("Cave", &plan, true).unwrap();
+        let (page, _) = render_plan_page("Cave", &plan, true, true).unwrap();
         assert!(!page.contains(r"R\351vision"));
         assert!(!page.contains("Ajuste a la page"));
         assert!(page.contains(&format!("{MARGIN:.3} 25.000 Td (0 murs")));
 
         plan.installation_info.revision = "B".into();
-        let (page, _) = render_plan_page("Cave", &plan, true).unwrap();
+        let (page, _) = render_plan_page("Cave", &plan, true, true).unwrap();
         assert!(page.contains(r"R\351vision : B"));
+    }
+
+    #[test]
+    fn hidden_electrical_layer_does_not_affect_plan_pdf_or_framing() {
+        let mut plan: Plan = serde_json::from_str(include_str!("../examples/maison-deux-pieces.json"))
+            .unwrap();
+        plan.symbols[0].position.x += 100.0;
+        let (visible, _) = render_plan_page("Rez-de-chaussée", &plan, true, true).unwrap();
+        let (hidden, _) = render_plan_page("Rez-de-chaussée", &plan, true, false).unwrap();
+        plan.symbols.clear();
+        plan.lighting_connections.clear();
+        let (architecture, _) = render_plan_page("Rez-de-chaussée", &plan, true, true).unwrap();
+        assert_ne!(visible, hidden);
+        assert_eq!(hidden, architecture);
     }
 
     #[test]
@@ -1138,7 +1157,7 @@ mod tests {
             width_m: 0.9,
             steps: 10,
         });
-        let mut canvas = Canvas::new(&plan);
+        let mut canvas = Canvas::new(&plan, true);
         canvas.wall(0, &plan.walls[0], &[], true);
         canvas.stair(&plan.stairs[0]);
         let pdf = build_pdf_pages(&[canvas.commands]);

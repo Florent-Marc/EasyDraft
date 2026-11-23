@@ -2418,7 +2418,9 @@ impl EasyDraft {
             let plan = if index == self.active_sheet { &self.plan } else { &sheet.plan };
             (sheet.name.as_str(), plan)
         });
-        self.status = match pdf_export::export_plan_sheets(&self.pdf_path, sheets, self.settings.show_dimensions) {
+        self.status = match pdf_export::export_plan_sheets(
+            &self.pdf_path, sheets, self.settings.show_dimensions, self.settings.show_electrical,
+        ) {
             Ok(()) => format!("PDF exporté ({} feuille(s)) : {}", self.sheets.len(), self.pdf_path),
             Err(error) => error,
         };
