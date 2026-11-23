@@ -45,7 +45,7 @@ fn switch_symbol(
 ) {
     rgie_symbols::draw_egui(
         painter, at,
-        &rgie_symbols::device_primitives(ElectricalKind::Switch, appearance),
+        &rgie_symbols::schematic_device_primitives(ElectricalKind::Switch, appearance),
         INK, 0.91
     );
 }
@@ -55,7 +55,7 @@ fn light_symbol(
 ) {
     rgie_symbols::draw_egui(
         painter, at,
-        &rgie_symbols::device_primitives(ElectricalKind::Light, appearance),
+        &rgie_symbols::schematic_device_primitives(ElectricalKind::Light, appearance),
         INK, 1.1
     );
 }
@@ -288,20 +288,22 @@ fn draw_circuit(
         let switch_x = x + 47.0;
         let split_x = x + 93.0;
         let lamp_x = x + 136.0;
-        segment(painter, Pos2::new(x, y), Pos2::new(switch_x - 19.0, y), INK, 1.5);
+        let appearance = plan.symbol_appearance(*switch_index);
+        let radius = rgie_symbols::schematic_switch_radius(appearance) * 0.91;
+        segment(painter, Pos2::new(x, y), Pos2::new(switch_x - radius, y), INK, 1.5);
         painter.circle_filled(Pos2::new(x, y), 2.8, INK);
-        switch_symbol(painter, Pos2::new(switch_x, y), plan.symbol_appearance(*switch_index));
+        switch_symbol(painter, Pos2::new(switch_x, y), appearance);
         if let Some(number) = plan.symbol_number(*switch_index) {
             caption(painter, Pos2::new(switch_x, y + 25.0), &format!("I{number}"), size, MUTED);
         }
-        segment(painter, Pos2::new(switch_x + 19.0, y), Pos2::new(split_x, y), INK, 1.5);
+        segment(painter, Pos2::new(switch_x + radius, y), Pos2::new(split_x, y), INK, 1.5);
         let last_y = y + lamps.len().saturating_sub(1) as f32 * POINT_STEP;
         if lamps.len() > 1 {
             segment(painter, Pos2::new(split_x, y), Pos2::new(split_x, last_y), INK, 1.5);
         }
         for (index, lamp) in lamps.iter().enumerate() {
             let row_y = y + index as f32 * POINT_STEP;
-            segment(painter, Pos2::new(split_x, row_y), Pos2::new(lamp_x - 15.0, row_y), INK, 1.5);
+            segment(painter, Pos2::new(split_x, row_y), Pos2::new(lamp_x, row_y), INK, 1.5);
             light_symbol(painter, Pos2::new(lamp_x, row_y), plan.symbol_appearance(*lamp));
             if let Some(reference) = plan.lighting_point_ref(*lamp) {
                 caption(painter, Pos2::new(lamp_x + 34.0, row_y), &reference, size, BLUE);
@@ -311,10 +313,10 @@ fn draw_circuit(
     }
     for outlet in &branches.outlets {
         let point = Pos2::new(x + 65.0, y);
-        segment(painter, Pos2::new(x, y), point + Vec2::new(-19.0, 0.0), INK, 1.5);
+        segment(painter, Pos2::new(x, y), point + Vec2::new(-19.0 * 0.85, 0.0), INK, 1.5);
         painter.circle_filled(Pos2::new(x, y), 2.8, INK);
         rgie_symbols::draw_egui(painter, point,
-            &rgie_symbols::device_primitives(ElectricalKind::Outlet, plan.symbol_appearance(*outlet)),
+            &rgie_symbols::schematic_device_primitives(ElectricalKind::Outlet, plan.symbol_appearance(*outlet)),
             INK, 0.85);
         if let Some(reference) = plan.point_ref(*outlet) {
             caption(painter, point + Vec2::new(49.0, 0.0), &reference, size, BLUE);

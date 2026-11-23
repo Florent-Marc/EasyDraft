@@ -689,18 +689,21 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
             match entry {
                 CircuitEntry::Light(link_index) => {
                     let link = links[*link_index];
+                    let appearance = plan.symbol_appearance(link.switch_index);
+                    let radius = rgie_symbols::schematic_switch_radius(appearance) * 0.83;
+                    raw_pdf_line(&mut pdf, 431.0, y, 451.0 - radius, y, color, 1.6);
                     draw_pdf_primitives(
                         &mut pdf, 451.0, y, 0.83,
-                        &rgie_symbols::device_primitives(
+                        &rgie_symbols::schematic_device_primitives(
                             ElectricalKind::Switch,
-                            plan.symbol_appearance(link.switch_index),
+                            appearance,
                         ),
                         color,
                     );
-                    raw_pdf_line(&mut pdf, 478.0, y, 655.0, y, color, 1.6);
+                    raw_pdf_line(&mut pdf, 451.0 + radius, y, 670.0, y, color, 1.6);
                     draw_pdf_primitives(
                         &mut pdf, 670.0, y, 1.02,
-                        &rgie_symbols::device_primitives(
+                        &rgie_symbols::schematic_device_primitives(
                             ElectricalKind::Light,
                             plan.symbol_appearance(link.light_index),
                         ),
@@ -715,10 +718,10 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
                         BLUE);
                 }
                 CircuitEntry::Socket(symbol_index) => {
-                    raw_pdf_line(&mut pdf, 431.0, y, 645.0, y, color, 1.6);
+                    raw_pdf_line(&mut pdf, 431.0, y, 670.0 - 19.0 * 0.85, y, color, 1.6);
                     draw_pdf_primitives(
                         &mut pdf, 670.0, y, 0.85,
-                        &rgie_symbols::device_primitives(
+                        &rgie_symbols::schematic_device_primitives(
                             ElectricalKind::Outlet,
                             plan.symbol_appearance(*symbol_index),
                         ),

@@ -85,6 +85,47 @@ pub fn device_primitives(kind: ElectricalKind, appearance: ElectricalAppearance)
     }
 }
 
+/// Signes pour une branche horizontale (amont à gauche).
+pub fn schematic_device_primitives(
+    kind: ElectricalKind, appearance: ElectricalAppearance,
+) -> Vec<Primitive> {
+    match kind {
+        ElectricalKind::Light => device_primitives(kind, appearance),
+        ElectricalKind::Switch => device_primitives(kind, appearance).into_iter().map(|mark| {
+            if appearance == ElectricalAppearance::PushButton {
+                return mark;
+            }
+            let center = |(x, y): (f32, f32)| (x + 2.0, y - 7.0);
+            match mark {
+                Primitive::Line(a, b) => Primitive::Line(center(a), center(b)),
+                Primitive::Circle(at, radius) => Primitive::Circle(center(at), radius),
+                other => other,
+            }
+        }).collect(),
+        ElectricalKind::Outlet => {
+            let mut marks = vec![
+                line((-19.0, 0.0), (-10.0, 0.0)),
+                Primitive::Arc((0.0, 0.0), 10.0,
+                    std::f32::consts::FRAC_PI_2, 3.0 * std::f32::consts::FRAC_PI_2),
+                line((0.0, -10.0), (4.0, -10.0)),
+                line((0.0, 10.0), (4.0, 10.0)),
+            ];
+            if matches!(appearance, ElectricalAppearance::OutletEarth | ElectricalAppearance::OutletEarthChild) {
+                marks.push(line((2.0, -12.0), (2.0, 12.0)));
+            }
+            if matches!(appearance, ElectricalAppearance::OutletChild | ElectricalAppearance::OutletEarthChild) {
+                marks.push(line((6.0, -6.0), (6.0, 6.0)));
+            }
+            marks
+        }
+    }
+}
+
+/// Distance entre le centre d'une commande et son bord de raccord.
+pub fn schematic_switch_radius(appearance: ElectricalAppearance) -> f32 {
+    if appearance == ElectricalAppearance::PushButton { 11.0 } else { 5.8 }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProtectionMark {
     Breaker,

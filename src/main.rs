@@ -643,6 +643,38 @@ fn draw_stair(painter: &Painter, stair: &Stair, origin: Pos2, ppm: f32) {
     painter.line_segment([to, to - direction * 13.0 - normal * 6.0], arrow);
 }
 
+fn electrical_choices<T: PartialEq + Clone>(
+    ui: &mut egui::Ui, value: &mut T, choices: impl IntoIterator<Item = (T, String)>,
+) {
+    ui.push_id(ui.next_auto_id(), |ui| ui.menu_button("Choix rapides", |ui| {
+        for (choice, label) in choices {
+            if ui.selectable_value(value, choice, label).clicked() {
+                ui.close();
+            }
+        }
+    }));
+}
+
+fn electrical_text(ui: &mut egui::Ui, value: &mut String, choices: &[&str]) {
+    ui.horizontal(|ui| {
+        electrical_choices(ui, value, choices.iter().map(|&label| (label.into(), label.into())));
+        ui.add(egui::TextEdit::singleline(value).desired_width(110.0));
+    });
+}
+
+fn electrical_number<T: egui::emath::Numeric>(
+    ui: &mut egui::Ui, value: &mut T, range: std::ops::RangeInclusive<T>,
+    choices: &[T], suffix: &str,
+) {
+    ui.horizontal(|ui| {
+        electrical_choices(ui, value, choices.iter().map(|&n| {
+            let label = format!("{}{suffix}", n.to_f64()).replace('.', ",");
+            (n, label)
+        }));
+        ui.add(egui::DragValue::new(value).range(range).suffix(suffix));
+    });
+}
+
 impl EasyDraft {
     fn project(&self) -> Project {
         let mut sheets = self.sheets.clone();
@@ -1873,15 +1905,13 @@ impl EasyDraft {
                 ui.label("Repere du differentiel (D1, D2...)");
                 ui.text_edit_singleline(&mut edited.reference);
                 ui.label("Type du DDR (ex. A, F, B selon appareil)");
-                ui.text_edit_singleline(&mut edited.kind);
+                electrical_text(ui, &mut edited.kind, &["AC", "A", "F", "B"]);
                 ui.label("Courant nominal In");
-                ui.add(egui::DragValue::new(&mut edited.rated_current_amp)
-                    .range(0..=125).suffix(" A"));
+                electrical_number(ui, &mut edited.rated_current_amp, 0..=125, &[25, 40, 63, 80, 100], " A");
                 ui.label("Sensibilite I delta n");
-                ui.add(egui::DragValue::new(&mut edited.sensitivity_ma)
-                    .range(0..=1000).suffix(" mA"));
+                electrical_number(ui, &mut edited.sensitivity_ma, 0..=1000, &[10, 30, 100, 300, 500], " mA");
                 ui.label("Nombre de poles");
-                ui.add(egui::DragValue::new(&mut edited.poles).range(0..=4));
+                electrical_number(ui, &mut edited.poles, 0..=4, &[2, 4], "");
                 ui.label("Observation / modele");
                 ui.text_edit_singleline(&mut edited.notes);
                 if edited != original {
@@ -3570,18 +3600,19 @@ impl eframe::App for EasyDraft {
                     ui.label("Repere du circuit (A, B, C...)");
                     ui.text_edit_singleline(&mut circuit.letter);
                     ui.label("Type de protection (disjoncteur, fusible...)");
-                    ui.text_edit_singleline(&mut circuit.protection_kind);
+                    electrical_text(ui, &mut circuit.protection_kind, &["Disjoncteur", "Fusible"]);
                     ui.label("Protection contre surintensites - calibre");
-                    ui.add(egui::DragValue::new(&mut circuit.breaker_amp).range(0..=125).suffix(" A"));
+                    electrical_number(ui, &mut circuit.breaker_amp, 0..=125, &[6, 10, 13, 16, 20, 25, 32, 40, 50, 63], " A");
                     ui.label("Nombre de poles");
-                    ui.add(egui::DragValue::new(&mut circuit.breaker_poles).range(0..=4));
+                    electrical_number(ui, &mut circuit.breaker_poles, 0..=4, &[1, 2, 3, 4], "");
                     ui.label("Courbe / type protection");
-                    ui.text_edit_singleline(&mut circuit.breaker_curve);
+                    electrical_text(ui, &mut circuit.breaker_curve, &["B", "C", "D"]);
                     let ddr_label = circuit.upstream_differential
                         .and_then(|i| self.plan.differentials.get(i))
                         .map(|d| d.description())
                         .unwrap_or_else(|| "Non attribue".to_owned());
-                    egui::ComboBox::from_label("Differentiel EN AMONT du circuit")
+                    ui.label("Différentiel en amont");
+                    egui::ComboBox::from_id_salt(("circuit_ddr", circuit_index))
                         .selected_text(ddr_label)
                         .show_ui(ui, |ui| {
                             ui.selectable_value(
@@ -3607,12 +3638,12 @@ impl eframe::App for EasyDraft {
                         );
                     }
                     ui.label("Type de canalisation");
-                    ui.text_edit_singleline(&mut circuit.cable_type);
+                    electrical_text(ui, &mut circuit.cable_type, &["VOB", "XVB", "XGB", "EXVB", "H07RN-F"]);
                     ui.label("Nombre de conducteurs");
-                    ui.add(egui::DragValue::new(&mut circuit.conductor_count).range(0..=10));
+                    electrical_number(ui, &mut circuit.conductor_count, 0..=10, &[2, 3, 4, 5], "");
                     ui.label("Section des conducteurs");
-                    ui.add(egui::DragValue::new(&mut circuit.section_mm2).speed(0.1)
-                        .range(0.0..=35.0).suffix(" mm²"));
+                    electrical_number(ui, &mut circuit.section_mm2, 0.0..=35.0,
+                        &[1.5, 2.5, 4.0, 6.0, 10.0, 16.0, 25.0, 35.0], " mm²");
                     ui.label("Mode de pose");
                     ui.text_edit_singleline(&mut circuit.installation_method);
                     if circuit != circuit_data {
