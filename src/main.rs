@@ -3425,6 +3425,177 @@ mod plan_editor_tests {
     }
 
     #[test]
+    fn joint_drag_moves_all_connected_wall_ends_and_undoes_once() {
+        let mut app = EasyDraft::default();
+        app.tool = Tool::SelectWall;
+        app.plan.walls = vec![
+            Wall {
+                start: Point { x: 0.0, y: 0.0 },
+                end: Point { x: 2.0, y: 0.0 },
+                thickness_m: 0.15,
+            },
+            Wall {
+                start: Point { x: 2.0, y: 0.0 },
+                end: Point { x: 2.0, y: 3.0 },
+                thickness_m: 0.15,
+            },
+        ];
+        app.begin_drag(Point { x: 2.0, y: 0.0 }, 80.0);
+        assert!(matches!(
+            app.drag.as_ref().map(|d| d.target), Some(DragTarget::Joint)
+        ));
+        assert_eq!(app.selected_handles.len(), 2);
+        app.update_drag(Point { x: 2.75, y: 1.25 }, 80.0);
+        assert_eq!(app.plan.walls[0].end, Point { x: 2.75, y: 1.25 });
+        assert_eq!(app.plan.walls[1].start, Point { x: 2.75, y: 1.25 });
+        app.finish_drag();
+        assert_eq!(app.undo.len(), 1);
+        app.undo();
+        assert_eq!(app.plan.walls[0].end, Point { x: 2.0, y: 0.0 });
+        assert_eq!(app.plan.walls[1].start, Point { x: 2.0, y: 0.0 });
+        app.redo();
+        assert_eq!(app.plan.walls[0].end, app.plan.walls[1].start);
+        let restored: Plan = serde_json::from_str(
+            &serde_json::to_string(&app.plan).unwrap()
+        ).unwrap();
+        assert_eq!(restored.walls[0].end, restored.walls[1].start);
+    }
+
+    #[test]
+    fn shift_adds_independent_handles_and_weld_button_joins_them() {
+        let mut app = EasyDraft::default();
+        app.tool = Tool::SelectWall;
+        app.plan.walls = vec![
+            Wall {
+                start: Point { x: 0.0, y: 0.0 },
+                end: Point { x: 2.0, y: 0.0 },
+                thickness_m: 0.15,
+            },
+            Wall {
+                start: Point { x: 4.0, y: 2.0 },
+                end: Point { x: 4.0, y: 5.0 },
+                thickness_m: 0.15,
+            },
+        ];
+        app.select_at(Point { x: 2.0, y: 0.0 }, 80.0);
+        assert_eq!(app.selected_handles.len(), 1);
+        assert!(app.toggle_wall_handles(Point { x: 4.0, y: 2.0 }, 80.0));
+        assert_eq!(app.selected_handles.len(), 2);
+        // A second Shift-click is an actual toggle.
+        assert!(app.toggle_wall_handles(Point { x: 4.0, y: 2.0 }, 80.0));
+        assert_eq!(app.selected_handles.len(), 1);
+        assert!(app.toggle_wall_handles(Point { x: 4.0, y: 2.0 }, 80.0));
+        app.weld_selected_to_first();
+        assert_eq!(app.plan.walls[0].end, app.plan.walls[1].start);
+        assert_eq!(app.plan.walls[1].start, Point { x: 2.0, y: 0.0 });
+        assert_eq!(app.undo.len(), 1);
+        app.undo();
+        assert_eq!(app.plan.walls[1].start, Point { x: 4.0, y: 2.0 });
+    }
+
+    #[test]
+    fn multi_handle_drag_snaps_to_a_third_unselected_wall() {
+        let mut app = EasyDraft::default();
+        app.tool = Tool::SelectWall;
+        app.plan.walls = vec![
+            Wall {
+                start: Point { x: 0.0, y: 0.0 },
+                end: Point { x: 2.0, y: 0.0 },
+                thickness_m: 0.15,
+            },
+            Wall {
+                start: Point { x: 4.0, y: 0.0 },
+                end: Point { x: 4.0, y: 3.0 },
+                thickness_m: 0.15,
+            },
+            Wall {
+                start: Point { x: 5.0, y: 1.0 },
+                end: Point { x: 7.0, y: 1.0 },
+                thickness_m: 0.15,
+            },
+        ];
+        app.select_at(Point { x: 2.0, y: 0.0 }, 80.0);
+        assert!(app.toggle_wall_handles(Point { x: 4.0, y: 0.0 }, 80.0));
+        app.begin_drag(Point { x: 2.0, y: 0.0 }, 80.0);
+        assert!(matches!(
+            app.drag.as_ref().map(|d| d.target), Some(DragTarget::Joint)
+        ));
+        app.update_drag(Point { x: 5.08, y: 1.05 }, 80.0);
+        assert_eq!(app.plan.walls[0].end, Point { x: 5.0, y: 1.0 });
+        assert_eq!(app.plan.walls[1].start, app.plan.walls[0].end);
+        assert_eq!(app.plan.walls[2].start, app.plan.walls[0].end);
+        app.finish_drag();
+        assert_eq!(app.undo.len(), 1);
+    }
+
+    #[test]
+    fn welding_rejects_invalid_shortening_atomically() {
+        let mut plan = Plan::default();
+        plan.walls = vec![
+            Wall {
+                start: Point { x: 0.0, y: 0.0 },
+                end: Point { x: 4.0, y: 0.0 },
+                thickness_m: 0.15,
+            },
+            Wall {
+                start: Point { x: 6.0, y: 1.0 },
+                end: Point { x: 6.0, y: 3.0 },
+                thickness_m: 0.15,
+            },
+        ];
+        plan.add_opening(0, Point { x: 2.0, y: 0.0 }, 1.0,
+            OpeningKind::Door, false, false, 0.05).unwrap();
+        let originals = plan.walls.clone();
+        let handles = [
+            WallHandle { wall_index: 0, is_start: false },
+            WallHandle { wall_index: 1, is_start: true },
+        ];
+        assert!(weld_wall_handles(
+            &mut plan, &handles, Point { x: 1.0, y: 0.0 },
+        ).is_err());
+        assert_eq!(plan.walls[0].end, originals[0].end);
+        assert_eq!(plan.walls[1].start, originals[1].start);
+        let both_ends = [
+            WallHandle { wall_index: 0, is_start: true },
+            WallHandle { wall_index: 0, is_start: false },
+        ];
+        assert!(weld_wall_handles(
+            &mut plan, &both_ends, Point { x: 2.0, y: 0.0 },
+        ).is_err());
+    }
+
+    #[test]
+    fn shift_marquee_selects_only_wall_endpoints_not_entire_walls() {
+        let mut app = EasyDraft::default();
+        app.tool = Tool::SelectWall;
+        app.plan.walls = vec![
+            Wall {
+                start: Point { x: 0.0, y: 0.0 },
+                end: Point { x: 2.0, y: 0.0 },
+                thickness_m: 0.15,
+            },
+            Wall {
+                start: Point { x: 2.0, y: 1.0 },
+                end: Point { x: 4.0, y: 1.0 },
+                thickness_m: 0.15,
+            },
+        ];
+        app.marquee_handles = true;
+        app.begin_drag(Point { x: 1.5, y: -0.5 }, 80.0);
+        assert!(app.marquee.is_some());
+        app.update_marquee(Point { x: 2.5, y: 1.5 });
+        app.finish_marquee();
+        assert_eq!(app.selected_handles.len(), 2);
+        assert!(app.selection.walls.is_empty());
+        assert!(app.selected_handles.contains(&WallHandle {
+            wall_index: 0, is_start: false
+        }));
+        assert!(app.selected_handles.contains(&WallHandle {
+            wall_index: 1, is_start: true
+        }));
+    }
+
+    #[test]
     fn wall_end_handles_resize_without_changing_other_endpoint() {
         let mut app = EasyDraft::default();
         app.plan.walls.push(Wall {
