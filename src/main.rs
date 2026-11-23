@@ -33,6 +33,14 @@ enum SidebarTab {
     Fichiers,
 }
 
+/// Filtre les appareils et les liaisons affiches sur le plan de situation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CircuitVisibility {
+    All,
+    Active,
+    None,
+}
+
 /// Pointilles indiquant une relation logique, pas le passage reel des cables.
 fn draw_logical_link(painter: &Painter, a: Pos2, b: Pos2) {
     let delta = b - a;
@@ -295,6 +303,7 @@ struct EasyDraft {
     show_architecture: bool,
     show_rooms: bool,
     show_electrical: bool,
+    circuit_visibility: CircuitVisibility,
     snap_endpoints: bool,
     snap_m: f32,
     zoom: f32,
@@ -346,6 +355,7 @@ impl Default for EasyDraft {
             show_architecture: true,
             show_rooms: true,
             show_electrical: true,
+            circuit_visibility: CircuitVisibility::All,
             snap_endpoints: true,
             snap_m: 0.05,
             zoom: 1.0,
@@ -782,10 +792,32 @@ impl EasyDraft {
         raw.snapped(self.snap_m)
     }
 
+    fn symbol_visible_on_plan(&self, symbol_index: usize) -> bool {
+        if !self.show_electrical || self.circuit_visibility == CircuitVisibility::None {
+            return false;
+        }
+        if self.circuit_visibility == CircuitVisibility::All {
+            return true;
+        }
+        let Some(symbol) = self.plan.symbols.get(symbol_index) else { return false; };
+        match symbol.kind {
+            ElectricalKind::Outlet => self.plan.outlet_assignments.iter().any(|assignment|
+                assignment.symbol_index == symbol_index
+                    && assignment.circuit_index == self.active_circuit_index
+            ),
+            ElectricalKind::Switch | ElectricalKind::Light =>
+                self.plan.active_lighting_connections_for_circuit(self.active_circuit_index)
+                    .iter().any(|link|
+                        link.switch_index == symbol_index || link.light_index == symbol_index
+                    ),
+        }
+    }
+
     fn find_symbol_any(&self, point: Point, ppm: f32) -> Option<usize> {
         self.plan.symbols.iter().enumerate()
             .map(|(index, symbol)| (index, point.distance_to(symbol.position)))
-            .filter(|(_, distance)| *distance <= 17.0 / ppm)
+            .filter(|(index, distance)| *distance <= 17.0 / ppm
+                && self.symbol_visible_on_plan(*index))
             .min_by(|a, b| a.1.total_cmp(&b.1))
             .map(|(index, _)| index)
     }
@@ -2022,8 +2054,10 @@ impl EasyDraft {
         }
         } // fin du calque architectural
 
-        if self.show_electrical {
+        if self.show_electrical && self.circuit_visibility != CircuitVisibility::None {
         for link in &self.plan.lighting_connections {
+            if self.circuit_visibility == CircuitVisibility::Active
+                && link.circuit_index != self.active_circuit_index { continue; }
             if !self.plan.lighting_connection_is_valid(link) { continue; }
             let a = to_screen(self.plan.symbols[link.switch_index].position);
             let b = to_screen(self.plan.symbols[link.light_index].position);
@@ -2036,6 +2070,7 @@ impl EasyDraft {
         }
 
         for (index, symbol) in self.plan.symbols.iter().enumerate() {
+            if !self.symbol_visible_on_plan(index) { continue; }
             let pos = to_screen(symbol.position);
             let label = match symbol.kind {
                 ElectricalKind::Outlet => "P",
@@ -2533,6 +2568,24 @@ impl eframe::App for EasyDraft {
             ui.checkbox(&mut self.show_architecture, "Architecture (murs, portes, escaliers)");
             ui.checkbox(&mut self.show_rooms, "Pieces, surfaces et dimensions");
             ui.checkbox(&mut self.show_electrical, "Electricite (symboles et liaisons)");
+            ui.label("Lignes de circuit visibles");
+            ui.horizontal_wrapped(|ui| {
+                ui.selectable_value(&mut self.circuit_visibility, CircuitVisibility::All, "Toutes");
+                ui.selectable_value(&mut self.circuit_visibility, CircuitVisibility::Active, "Circuit actif");
+                ui.selectable_value(&mut self.circuit_visibility, CircuitVisibility::None, "Aucune");
+            });
+            if self.circuit_visibility == CircuitVisibility::Active {
+                egui::ComboBox::from_label("Circuit actif")
+                    .selected_text(self.plan.circuit(self.active_circuit_index)
+                        .map(|c| c.letter.as_str()).unwrap_or("?"))
+                    .show_ui(ui, |ui| {
+                        for i in 0..self.plan.circuit_count() {
+                            let letter = self.plan.circuit(i)
+                                .map(|c| c.letter.as_str()).unwrap_or("?");
+                            ui.selectable_value(&mut self.active_circuit_index, i, format!("Circuit {letter}"));
+                        }
+                    });
+            }
             ui.checkbox(&mut self.show_dimensions, "Afficher les cotes (axe des murs)");
             ui.checkbox(&mut self.snap_endpoints, "Aimantation aux extremites de murs");
             ui.label("Pas d'aimantation");
