@@ -1978,6 +1978,28 @@ impl EasyDraft {
                 }
             }
             Tool::Door | Tool::Window | Tool::Passage => {
+                let previous_rooms = crate::rooms::detect_rooms(&self.plan.walls).len();
+                // Les passages peuvent relier deux troncons ou une cloison a
+                // un mur en T. Tester d'abord ce raccord VIRTUEL : sinon
+                // l'outil trouvait souvent le bout du mur voisin et y posait
+                // une ouverture qui ne fermait aucune piece.
+                let gap_candidate = if self.tool == Tool::Passage {
+                    let mut preview = self.plan.clone();
+                    preview.bridge_gap_with_passage(position).ok().map(|width| {
+                        let room_count = crate::rooms::detect_rooms(&preview.walls).len();
+                        (preview, width, room_count)
+                    })
+                } else { None };
+                if gap_candidate.as_ref().is_some_and(|(_, _, count)| *count > previous_rooms) {
+                    let (updated, width, rooms) = gap_candidate.unwrap();
+                    self.snapshot();
+                    self.plan = updated;
+                    self.status = format!(
+                        "Passage libre de {:.2} m : {} pieces reconnues (separation invisible)",
+                        width, rooms
+                    );
+                    return;
+                }
                 if let Some(wall_index) = self.find_wall(position, ppm) {
                     let kind = match self.tool {
                         Tool::Door => OpeningKind::Door,
@@ -2006,25 +2028,34 @@ impl EasyDraft {
                             self.status = match kind {
                                 OpeningKind::Door => format!("Porte de {:.0} cm ajoutee", width_m * 100.0),
                                 OpeningKind::Window => format!("Fenetre de {:.0} cm ajoutee", width_m * 100.0),
-                                OpeningKind::Passage => format!("Passage libre de {:.0} cm ajoute : pieces conservees", width_m * 100.0),
+                                OpeningKind::Passage => {
+                                    let room_count = crate::rooms::detect_rooms(&self.plan.walls).len();
+                                    if room_count == 0 {
+                                        format!(
+                                            "Passage libre ajoute ({:.0} cm), mais aucun contour ferme : raccorde les murs autour de la piece",
+                                            width_m * 100.0
+                                        )
+                                    } else {
+                                        format!(
+                                            "Passage libre ajoute ({:.0} cm) : {} piece(s) conservee(s)",
+                                            width_m * 100.0, room_count
+                                        )
+                                    }
+                                }
                             };
                         }
                         Err(err) => self.status = err.into(),
                     }
                 } else if self.tool == Tool::Passage {
-                    // Les murs ont deja ete separes pour dessiner un passage : referme
-                    // la limite topologique, mais conserve graphiquement le vide.
-                    let mut updated = self.plan.clone();
-                    match updated.bridge_gap_with_passage(position) {
-                        Ok(width) => {
-                            self.snapshot();
-                            self.plan = updated;
-                            self.status = format!(
-                                "Passage de {:.2} m relie : separation des pieces retablie",
-                                width
-                            );
-                        }
-                        Err(error) => self.status = error.into(),
+                    if let Some((updated, width, rooms)) = gap_candidate {
+                        self.snapshot();
+                        self.plan = updated;
+                        self.status = format!(
+                            "Passage libre de {:.2} m ajoute. {} piece(s) reconnue(s) ; verifie les autres jonctions si besoin.",
+                            width, rooms
+                        );
+                    } else {
+                        self.status = "Clique dans un passage entre deux murs alignes, ou entre une cloison et un mur perpendiculaire".into();
                     }
                 } else {
                     self.status = "Clique sur un mur pour y placer l'ouverture".into();
@@ -2650,6 +2681,11 @@ impl eframe::App for EasyDraft {
                         ui.checkbox(&mut self.show_dimensions, "Cotes");
                         ui.separator();
                         ui.small(format!("Zoom {:.0} %", self.zoom * 100.0));
+                        ui.separator();
+                        ui.strong(format!(
+                            "{} piece(s) detectee(s)",
+                            rooms::detect_rooms(&self.plan.walls).len()
+                        ));
                     } else if self.view == View::Unifilar {
                         ui.label(format!(
                             "{} circuit(s)  •  {} differentiel(s)  •  {} appareil(s)",
@@ -3659,6 +3695,51 @@ mod plan_editor_tests {
         assert_eq!(app.plan.walls.len(), 1);
         assert_eq!(app.plan.walls[0].start.y, app.plan.walls[0].end.y);
         assert_eq!(app.tool, Tool::SelectWall);
+    }
+
+    #[test]
+    fn passage_tool_fixes_an_existing_gap_even_when_click_is_near_a_wall() {
+        let mut app = EasyDraft::default();
+        app.tool = Tool::Passage;
+        // L'enveloppe est fermee, mais sa cloison a un passage deja dessine
+        // dans le vide. Auparavant un clic pres du bord touchait un mur
+        // voisin et ne reparait pas la detection des pieces.
+        app.plan.walls = vec![
+            Wall { start: Point{x:0.0,y:0.0}, end: Point{x:6.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:6.0,y:0.0}, end: Point{x:6.0,y:4.0}, thickness_m:0.15 },
+            Wall { start: Point{x:6.0,y:4.0}, end: Point{x:0.0,y:4.0}, thickness_m:0.15 },
+            Wall { start: Point{x:0.0,y:4.0}, end: Point{x:0.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:3.0,y:0.0}, end: Point{x:3.0,y:1.5}, thickness_m:0.15 },
+            Wall { start: Point{x:3.0,y:2.5}, end: Point{x:3.0,y:4.0}, thickness_m:0.15 },
+        ];
+        assert_eq!(rooms::detect_rooms(&app.plan.walls).len(), 1);
+        let click = Point { x: 3.0, y: 1.58 };
+        assert!(app.find_wall(click, 80.0).is_some());
+        app.place(click, 80.0);
+        assert_eq!(rooms::detect_rooms(&app.plan.walls).len(), 2);
+        assert_eq!(app.plan.openings.len(), 1);
+        assert_eq!(app.plan.openings[0].kind, OpeningKind::Passage);
+        assert_eq!(app.undo.len(), 1);
+        app.undo();
+        assert_eq!(rooms::detect_rooms(&app.plan.walls).len(), 1);
+    }
+
+    #[test]
+    fn passage_tool_closes_t_gap_and_keeps_the_opening_visible() {
+        let mut app = EasyDraft::default();
+        app.tool = Tool::Passage;
+        app.plan.walls = vec![
+            Wall { start: Point{x:0.0,y:0.0}, end: Point{x:6.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:6.0,y:0.0}, end: Point{x:6.0,y:4.0}, thickness_m:0.15 },
+            Wall { start: Point{x:6.0,y:4.0}, end: Point{x:0.0,y:4.0}, thickness_m:0.15 },
+            Wall { start: Point{x:0.0,y:4.0}, end: Point{x:0.0,y:0.0}, thickness_m:0.15 },
+            Wall { start: Point{x:3.0,y:0.0}, end: Point{x:3.0,y:3.0}, thickness_m:0.15 },
+        ];
+        assert_eq!(rooms::detect_rooms(&app.plan.walls).len(), 1);
+        app.place(Point { x: 3.0, y: 3.6 }, 80.0);
+        assert_eq!(rooms::detect_rooms(&app.plan.walls).len(), 2);
+        assert_eq!(app.plan.openings.len(), 1);
+        assert_eq!(app.plan.openings[0].kind, OpeningKind::Passage);
     }
 
     #[test]

@@ -131,6 +131,25 @@ formulaires mélangés :
 
 ### Créer un passage entre deux pièces sans porte
 
+**Important :** un passage libre compte comme une **limite invisible de pièce**,
+même si le passage ne contient pas de porte. Le dessin conserve le vide, tandis
+que la détection automatique et les surfaces utilisent une frontière fermée.
+
+Deux géométries sont maintenant reconnues en cliquant avec l'outil **Passage libre** :
+- **Un trou entre deux morceaux d'une même cloison** (tronçons alignés ou presque),
+  y compris lorsque le clic est proche de l'extrémité d'un mur ;
+- **Un trou en T entre la fin d'une cloison et un mur perpendiculaire** (par
+  exemple un passage entre la cloison et le mur extérieur).
+
+Dans les deux cas, une fermeture virtuelle de l'axe est créée, recouverte par
+une ouverture de la même largeur. Elle ne se dessine pas comme un mur plein
+et reste enregistrée dans le fichier JSON. La barre d'état annonce le nombre
+de pièces reconnues après insertion. Si d'autres murs ne sont pas raccordés,
+le plan peut rester ouvert : il faut alors joindre aussi ces extrémités
+avec l'outil **Sélection**.
+
+
+
 1. **Méthode normale :** tracez une cloison continue, même là où le passage doit être.
    Sélectionnez **Architecture → Passage libre**, réglez sa largeur, puis cliquez
    sur la cloison. Une ouverture apparaît **sans battant**. Le calcul automatique
