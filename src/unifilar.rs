@@ -215,7 +215,7 @@ fn show_board_overview(ui: &mut egui::Ui, plan: &Plan) {
                 let sockets = plan.outlets_on_circuit(*circuit_index).len();
                 caption(
                     &painter, Pos2::new(origin.x + 910.0, y),
-                    &format!("{lights} lum. / {sockets} prises"), 11.0, BLUE,
+                    &format!("{lights} lum. / {sockets} prises/appareils"), 11.0, BLUE,
                 );
             }
             next_y += 76.0 + circuits.len().max(1) as f32 * 61.0;
@@ -336,10 +336,16 @@ fn draw_circuit(
         if symbol_hit(ui, *outlet, point) {
             selected = Some(*outlet);
         }
-        segment(painter, Pos2::new(x, y), point, INK, 1.5);
+        let kind = plan.symbols[*outlet].kind;
+        let terminal = if kind == ElectricalKind::Appliance {
+            point - Vec2::new(rgie_symbols::APPLIANCE_HALF_WIDTH * 0.85, 0.0)
+        } else {
+            point
+        };
+        segment(painter, Pos2::new(x, y), terminal, INK, 1.5);
         painter.circle_filled(Pos2::new(x, y), 2.8, INK);
         rgie_symbols::draw_egui(painter, point,
-            &rgie_symbols::schematic_device_primitives(ElectricalKind::Outlet, plan.symbol_appearance(*outlet)),
+            &rgie_symbols::schematic_device_primitives(kind, plan.symbol_appearance(*outlet)),
             INK, 0.85);
         if let Some(reference) = plan.point_ref(*outlet) {
             caption(painter, point + Vec2::new(49.0, 0.0), &reference, size, BLUE);
@@ -496,7 +502,7 @@ fn show_connections(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
             let outlets = plan.outlets_on_circuit(circuit_index);
             ui.separator();
             ui.heading(format!(
-                "Circuit {} - {} commande(s), {} luminaire(s), {} prise(s)",
+                "Circuit {} - {} commande(s), {} luminaire(s), {} prise(s)/appareil(s)",
                 circuit.letter,
                 groups.len(),
                 links.len(),
@@ -543,11 +549,13 @@ fn show_connections(ui: &mut egui::Ui, plan: &Plan) -> Option<Action> {
                 });
             }
             if !outlets.is_empty() {
-                ui.label("Prises du circuit :");
+                ui.label("Prises et appareils du circuit");
                 for symbol_index in &outlets {
                     let ref_text = plan.point_ref(*symbol_index)
                         .unwrap_or_else(|| "?".to_owned());
-                    ui.label(format!("Prise {ref_text} (repositionner et reaffecter sur le plan 2D)"));
+                    let kind = plan.symbols[*symbol_index].kind;
+                    let appearance = plan.symbol_appearance(*symbol_index);
+                    ui.label(format!("{ref_text} · {}", crate::symbol_name(kind, appearance)));
                 }
             }
             ui.label("Liaisons d'eclairage :");

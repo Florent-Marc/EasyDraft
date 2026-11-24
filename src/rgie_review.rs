@@ -122,7 +122,7 @@ pub fn review(plan: &Plan) -> Vec<ReviewFinding> {
     }
     if without_outlet > 0 {
         missing(&mut findings, "Concordance plan/unifilaire",
-            format!("{without_outlet} prise(s) sans circuit attribue"));
+            format!("{without_outlet} prise(s) ou appareil(s) sans circuit attribue"));
     }
     if plan.symbols.iter().all(|s| s.kind != ElectricalKind::Outlet) {
         verify(&mut findings, "Concordance plan/unifilaire",
@@ -218,9 +218,9 @@ mod tests {
             position: Point { x: 1.0, y: 1.0 },
             kind: ElectricalKind::Outlet,
         });
-        assert!(review(&plan).iter().any(|f| f.message.contains("prise(s) sans circuit")));
+        assert!(review(&plan).iter().any(|f| f.message.contains("prise(s) ou appareil(s) sans circuit")));
         plan.assign_outlet_to_circuit(0, 0).unwrap();
-        assert!(!review(&plan).iter().any(|f| f.message.contains("prise(s) sans circuit")));
+        assert!(!review(&plan).iter().any(|f| f.message.contains("prise(s) ou appareil(s) sans circuit")));
     }
 
     #[test]

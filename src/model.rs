@@ -112,8 +112,24 @@ impl Opening {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ElectricalKind {
     Outlet,
+    Appliance,
     Switch,
     Light,
+}
+
+impl ElectricalKind {
+    pub fn is_direct_load(self) -> bool {
+        matches!(self, Self::Outlet | Self::Appliance)
+    }
+
+    pub fn short_label(self) -> &'static str {
+        match self {
+            Self::Outlet => "P",
+            Self::Appliance => "AP",
+            Self::Switch => "I",
+            Self::Light => "L",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,6 +159,16 @@ pub enum ElectricalAppearance {
     FluorescentLight,
     Floodlight,
     SafetyLight,
+    Oven,
+    Cooktop,
+    ElectricHeater,
+    Washer,
+    Dryer,
+    Dishwasher,
+    Fridge,
+    Freezer,
+    Microwave,
+    WaterHeater,
 }
 
 impl ElectricalAppearance {
@@ -169,6 +195,16 @@ impl ElectricalAppearance {
             Self::FluorescentLight => "Luminaire à fluorescence",
             Self::Floodlight => "Projecteur",
             Self::SafetyLight => "Éclairage de sécurité sur circuit de sécurité",
+            Self::Oven => "Four électrique",
+            Self::Cooktop => "Taque électrique",
+            Self::ElectricHeater => "Chauffage électrique",
+            Self::Washer => "Lave-linge",
+            Self::Dryer => "Sèche-linge",
+            Self::Dishwasher => "Lave-vaisselle",
+            Self::Fridge => "Réfrigérateur",
+            Self::Freezer => "Congélateur",
+            Self::Microwave => "Four à micro-ondes",
+            Self::WaterHeater => "Chauffe-eau électrique",
         }
     }
 
@@ -181,6 +217,11 @@ impl ElectricalAppearance {
             ElectricalKind::Outlet => &[
                 Self::General, Self::OutletEarth, Self::OutletChild, Self::OutletEarthChild, Self::OutletDouble,
                 Self::OutletTriple, Self::OutletWeatherproof,
+            ],
+            ElectricalKind::Appliance => &[
+                Self::General, Self::Oven, Self::Cooktop, Self::ElectricHeater, Self::Washer,
+                Self::Dryer, Self::Dishwasher, Self::Fridge, Self::Freezer, Self::Microwave,
+                Self::WaterHeater,
             ],
             ElectricalKind::Light => &[
                 Self::General, Self::WallLight, Self::FluorescentLight, Self::Floodlight, Self::SafetyLight,
@@ -1066,8 +1107,8 @@ impl Plan {
         if self.circuit(circuit_index).is_none() {
             return Err("Circuit inexistant");
         }
-        if !matches!(self.symbols.get(symbol_index), Some(s) if s.kind == ElectricalKind::Outlet) {
-            return Err("Selectionne une prise valide");
+        if !matches!(self.symbols.get(symbol_index), Some(s) if s.kind.is_direct_load()) {
+            return Err("Sélectionne une prise ou un appareil valide");
         }
         if let Some(existing) = self.outlet_assignments.iter_mut()
             .find(|item| item.symbol_index == symbol_index)
@@ -1086,7 +1127,7 @@ impl Plan {
     pub fn active_outlet_assignments(&self) -> Vec<&OutletAssignment> {
         let mut seen = std::collections::HashSet::new();
         self.outlet_assignments.iter().filter(|item| {
-            matches!(self.symbols.get(item.symbol_index), Some(s) if s.kind == ElectricalKind::Outlet)
+            matches!(self.symbols.get(item.symbol_index), Some(s) if s.kind.is_direct_load())
                 && self.circuit(item.circuit_index).is_some()
                 && seen.insert(item.symbol_index)
         }).collect()
@@ -1102,7 +1143,7 @@ impl Plan {
     pub fn unassigned_outlets(&self) -> usize {
         let valid = self.active_outlet_assignments();
         self.symbols.iter().enumerate().filter(|(index, symbol)| {
-            symbol.kind == ElectricalKind::Outlet
+            symbol.kind.is_direct_load()
                 && !valid.iter().any(|item| item.symbol_index == *index)
         }).count()
     }
@@ -1247,7 +1288,7 @@ impl Plan {
         let circuit_index = match symbol.kind {
             ElectricalKind::Light => self.active_lighting_connections().into_iter()
                 .find(|link| link.light_index == symbol_index)?.circuit_index,
-            ElectricalKind::Outlet => self.active_outlet_assignments().into_iter()
+            ElectricalKind::Outlet | ElectricalKind::Appliance => self.active_outlet_assignments().into_iter()
                 .find(|item| item.symbol_index == symbol_index)?.circuit_index,
             ElectricalKind::Switch => return None,
         };

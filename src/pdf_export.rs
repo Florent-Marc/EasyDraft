@@ -398,7 +398,7 @@ impl Canvas {
                 preview.marks.push(PreviewMark::Symbol([x, y], marks));
             }
             let reference = match symbol.kind {
-                ElectricalKind::Outlet | ElectricalKind::Light => plan.point_ref(index),
+                ElectricalKind::Outlet | ElectricalKind::Appliance | ElectricalKind::Light => plan.point_ref(index),
                 ElectricalKind::Switch => {
                     let refs = plan.switch_point_refs(index);
                     if refs.is_empty() { None } else { Some(refs.join(",")) }
@@ -604,7 +604,7 @@ fn build_plan_page(
 /// soit une prise autonome affectee au circuit.
 enum CircuitEntry {
     Light(usize),
-    Socket(usize),
+    DirectLoad(usize),
 }
 
 // Tableau vectoriel de travail. Une feuille precede les details des circuits.
@@ -712,10 +712,10 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
         let links = plan.active_lighting_connections_for_circuit(circuit_index);
         let outlets = plan.outlets_on_circuit(circuit_index);
         let mut items: Vec<CircuitEntry> = (0..links.len()).map(CircuitEntry::Light).collect();
-        items.extend(outlets.iter().copied().map(CircuitEntry::Socket));
+        items.extend(outlets.iter().copied().map(CircuitEntry::DirectLoad));
         items.sort_by_key(|item| match item {
             CircuitEntry::Light(index) => links[*index].light_index,
-            CircuitEntry::Socket(index) => *index,
+            CircuitEntry::DirectLoad(index) => *index,
         });
 
         let mut pdf = String::new();
@@ -835,18 +835,29 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
                         &plan.point_ref(link.light_index).unwrap_or_else(|| "?".into()),
                         BLUE);
                 }
-                CircuitEntry::Socket(symbol_index) => {
-                    raw_pdf_line(&mut pdf, 431.0, y, 670.0, y, color, 1.6);
+                CircuitEntry::DirectLoad(symbol_index) => {
+                    let kind = plan.symbols[*symbol_index].kind;
+                    let terminal = if kind == ElectricalKind::Appliance {
+                        670.0 - rgie_symbols::APPLIANCE_HALF_WIDTH * 0.85
+                    } else {
+                        670.0
+                    };
+                    raw_pdf_line(&mut pdf, 431.0, y, terminal, y, color, 1.6);
                     draw_pdf_primitives(
                         &mut pdf, 670.0, y, 0.85,
                         &rgie_symbols::schematic_device_primitives(
-                            ElectricalKind::Outlet,
+                            kind,
                             plan.symbol_appearance(*symbol_index),
                         ),
                         color,
                     );
-                    let p_num = plan.symbol_number(*symbol_index).unwrap_or(*symbol_index + 1);
-                    raw_pdf_text(&mut pdf, 664.0, y - 21.0, 10.0, &format!("P{p_num}"), color);
+                    let number = plan.symbol_number(*symbol_index).unwrap_or(*symbol_index + 1);
+                    let label = if kind == ElectricalKind::Appliance {
+                        crate::symbol_name(kind, plan.symbol_appearance(*symbol_index)).to_owned()
+                    } else {
+                        format!("P{number}")
+                    };
+                    raw_pdf_text(&mut pdf, 645.0, y - 21.0, 10.0, &label, color);
                     raw_pdf_text(&mut pdf, 718.0, y, 11.0,
                         &plan.point_ref(*symbol_index).unwrap_or_else(|| "?".into()),
                         BLUE);
@@ -873,7 +884,7 @@ pub fn export_unifilar_pdf(path: &str, plan: &Plan) -> Result<(), String> {
                 truncate_pdf(&info.executor_role, 24)),
             color);
         raw_pdf_text(&mut pdf, 35.0, 35.0, 9.0,
-            &format!("Non affectes : {} lampe(s), {} interrupteur(s), {} prise(s)",
+            &format!("Non affectes : {} lampe(s), {} interrupteur(s), {} prise(s)/appareil(s)",
                 plan.unlinked_lights(), plan.unlinked_switches(), plan.unassigned_outlets()),
             color);
         raw_pdf_text(&mut pdf, 35.0, 19.0, 9.0,

@@ -67,6 +67,7 @@ enum Tool {
     Passage,
     Stair,
     Outlet,
+    Appliance,
     Switch,
     Light,
     LinkLighting,
@@ -762,6 +763,7 @@ fn symbol_name(kind: ElectricalKind, appearance: ElectricalAppearance) -> &'stat
     }
     match kind {
         ElectricalKind::Outlet => "Prise de courant",
+        ElectricalKind::Appliance => "Appareil électrique fixe",
         ElectricalKind::Switch => "Interrupteur",
         ElectricalKind::Light => "Point lumineux",
     }
@@ -1217,26 +1219,35 @@ impl EasyDraft {
 
     fn electrical_palette(&mut self, ui: &mut egui::Ui) {
         let query = self.palette_search.trim().to_lowercase();
-        ui.horizontal_wrapped(|ui| {
-            for (tool, kind) in [
-                (Tool::Outlet, ElectricalKind::Outlet),
-                (Tool::Switch, ElectricalKind::Switch),
-                (Tool::Light, ElectricalKind::Light),
-            ] {
-                for &appearance in ElectricalAppearance::choices(kind) {
+        for (label, tool, kind) in [
+            ("Prises", Tool::Outlet, ElectricalKind::Outlet),
+            ("Appareils", Tool::Appliance, ElectricalKind::Appliance),
+            ("Commandes", Tool::Switch, ElectricalKind::Switch),
+            ("Éclairage", Tool::Light, ElectricalKind::Light),
+        ] {
+            let choices = ElectricalAppearance::choices(kind)
+                .iter().copied().filter(|&appearance| {
+                    symbol_name(kind, appearance).to_lowercase().contains(&query)
+                }).collect::<Vec<_>>();
+            if choices.is_empty() {
+                continue;
+            }
+            ui.label(label);
+            ui.horizontal_wrapped(|ui| {
+                for appearance in choices {
                     let name = symbol_name(kind, appearance);
-                    if !name.to_lowercase().contains(&query) { continue; }
                     if symbol_button(ui, kind, appearance,
                         self.tool == tool && self.placement_appearance == appearance).clicked()
                     {
+                        self.view = View::Plan2D;
                         self.select_tool(tool);
                         self.placement_appearance = appearance;
                         self.sidebar_tab = SidebarTab::Electricite;
                         self.status = format!("Clique sur le plan pour placer : {name}");
                     }
                 }
-            }
-        });
+            });
+        }
     }
 
     fn select_circuit_properties(&mut self, index: usize) {
@@ -1251,7 +1262,7 @@ impl EasyDraft {
         self.tool = tool;
         self.placement_appearance = ElectricalAppearance::General;
         self.reset_pending();
-        if matches!(tool, Tool::Outlet | Tool::Switch | Tool::Light | Tool::LinkLighting) {
+        if matches!(tool, Tool::Outlet | Tool::Appliance | Tool::Switch | Tool::Light | Tool::LinkLighting) {
             self.settings.show_electrical = true;
         }
         if matches!(tool, Tool::Wall | Tool::Door | Tool::Window | Tool::Passage | Tool::Stair) {
@@ -1282,7 +1293,7 @@ impl EasyDraft {
         }
         let Some(symbol) = self.plan.symbols.get(symbol_index) else { return false; };
         match symbol.kind {
-            ElectricalKind::Outlet => self.plan.outlet_assignments.iter().any(|assignment|
+            ElectricalKind::Outlet | ElectricalKind::Appliance => self.plan.outlet_assignments.iter().any(|assignment|
                 assignment.symbol_index == symbol_index
                     && assignment.circuit_index == self.settings.active_circuit_index
             ),
@@ -2202,6 +2213,7 @@ impl EasyDraft {
             if let Some(symbol) = self.plan.symbols.get(index).cloned() {
                 let kind = match symbol.kind {
                     ElectricalKind::Outlet => "Prise",
+                    ElectricalKind::Appliance => "Appareil électrique",
                     ElectricalKind::Switch => "Interrupteur",
                     ElectricalKind::Light => "Point lumineux",
                 };
@@ -2441,7 +2453,7 @@ impl EasyDraft {
     }
 
     fn show_component_circuit(&mut self, ui: &mut egui::Ui, index: usize, kind: ElectricalKind) {
-        let (current, command) = if kind == ElectricalKind::Outlet {
+        let (current, command) = if kind.is_direct_load() {
             let circuit = self.plan.active_outlet_assignments().into_iter()
                 .find(|a| a.symbol_index == index).map(|a| a.circuit_index);
             ui.label(format!("Repère : {}", self.plan.point_ref(index).as_deref().unwrap_or("—")));
@@ -2451,7 +2463,7 @@ impl EasyDraft {
                 match kind {
                     ElectricalKind::Switch => link.switch_index == index,
                     ElectricalKind::Light => link.light_index == index,
-                    ElectricalKind::Outlet => false,
+                    ElectricalKind::Outlet | ElectricalKind::Appliance => false,
                 }
             });
             let Some(link) = link else {
@@ -2467,7 +2479,7 @@ impl EasyDraft {
             .selected_text(current.and_then(|i| self.plan.circuit(i))
                 .map_or_else(|| "Sans affectation".into(), |c| format!("Circuit {}", c.letter)))
             .show_ui(ui, |ui| {
-                if kind == ElectricalKind::Outlet {
+                if kind.is_direct_load() {
                     ui.selectable_value(&mut target, None, "Sans affectation");
                 }
                 for i in 0..self.plan.circuit_count() {
@@ -2493,7 +2505,7 @@ impl EasyDraft {
                     self.plan = updated;
                     self.status = match target.and_then(|i| self.plan.circuit(i)) {
                         Some(circuit) => format!("Affectation mise à jour : circuit {}", circuit.letter),
-                        None => "Affectation de la prise retirée".into(),
+                        None => "Affectation retirée".into(),
                     };
                 }
                 Err(error) => self.status = error.into(),
@@ -2805,9 +2817,10 @@ impl EasyDraft {
                     self.status = "Clique d'abord sur un interrupteur (I).".into();
                 }
             }
-            Tool::Outlet | Tool::Switch | Tool::Light => {
+            Tool::Outlet | Tool::Appliance | Tool::Switch | Tool::Light => {
                 let kind = match self.tool {
                     Tool::Outlet => ElectricalKind::Outlet,
+                    Tool::Appliance => ElectricalKind::Appliance,
                     Tool::Switch => ElectricalKind::Switch,
                     _ => ElectricalKind::Light,
                 };
@@ -2817,9 +2830,9 @@ impl EasyDraft {
                 if self.placement_appearance != ElectricalAppearance::General {
                     let _ = self.plan.set_symbol_appearance(new_index, self.placement_appearance);
                 }
-                if kind == ElectricalKind::Outlet {
+                if kind.is_direct_load() {
                     match self.plan.assign_outlet_to_circuit(new_index, self.settings.active_circuit_index) {
-                        Ok(()) => self.status = "Prise ajoutee au circuit actif".into(),
+                        Ok(()) => self.status = "Appareil ajouté au circuit actif".into(),
                         Err(err) => self.status = err.into(),
                     }
                 } else {
@@ -3163,11 +3176,7 @@ impl EasyDraft {
         for (index, symbol) in self.plan.symbols.iter().enumerate() {
             if !self.symbol_visible_on_plan(index) { continue; }
             let pos = to_screen(symbol.position);
-            let label = match symbol.kind {
-                ElectricalKind::Outlet => "P",
-                ElectricalKind::Switch => "I",
-                ElectricalKind::Light => "L",
-            };
+            let label = symbol.kind.short_label();
             // Formes RGIE uniques partagees avec l'unifilaire et les PDFs.
             rgie_symbols::draw_egui(
                 &painter, pos,
@@ -3179,7 +3188,7 @@ impl EasyDraft {
             );
             let number = self.plan.symbol_number(index).unwrap_or(index + 1);
             let ref_suffix = match symbol.kind {
-                ElectricalKind::Outlet | ElectricalKind::Light =>
+                ElectricalKind::Outlet | ElectricalKind::Appliance | ElectricalKind::Light =>
                     self.plan.point_ref(index).map(|name| format!(" ({name})")).unwrap_or_default(),
                 ElectricalKind::Switch => {
                     let refs = self.plan.switch_point_refs(index);
@@ -3502,7 +3511,7 @@ impl eframe::App for EasyDraft {
                                 self.select_tool(tool);
                                 self.sidebar_tab = match tool {
                                     Tool::SelectWall => SidebarTab::Inspecteur,
-                                    Tool::Outlet | Tool::Switch | Tool::Light | Tool::LinkLighting =>
+                                    Tool::Outlet | Tool::Appliance | Tool::Switch | Tool::Light | Tool::LinkLighting =>
                                         SidebarTab::Electricite,
                                      _ => SidebarTab::Dessin,
                                 };
@@ -3558,22 +3567,7 @@ impl eframe::App for EasyDraft {
                         ui.separator();
                         ui.strong("APPAREILS");
                         ui.small("Les appareils du schema sont derives du plan de situation.");
-                        for (name, tool) in [
-                            ("Prise de courant", Tool::Outlet),
-                            ("Interrupteur", Tool::Switch),
-                            ("Point lumineux", Tool::Light),
-                        ] {
-                            let query = self.palette_search.trim().to_lowercase();
-                            if !query.is_empty() && !name.to_lowercase().contains(&query) {
-                                continue;
-                            }
-                            if ui.add_sized([ui.available_width(), 30.0], egui::Button::new(name)).clicked() {
-                                self.view = View::Plan2D;
-                                self.select_tool(tool);
-                                self.sidebar_tab = SidebarTab::Electricite;
-                                self.status = format!("Place {name} sur le plan, il apparaitra dans l'unifilaire");
-                            }
-                        }
+                        self.electrical_palette(ui);
                         ui.separator();
                         if ui.button("Charger l'exemple unifilaire A + B").clicked() {
                             self.load_unifilar_example();
@@ -3628,6 +3622,7 @@ impl eframe::App for EasyDraft {
                 Tool::Passage => "Passage libre",
                 Tool::Stair => "Escalier",
                 Tool::Outlet => "Prise",
+                Tool::Appliance => "Appareil électrique",
                 Tool::Switch => "Interrupteur",
                 Tool::Light => "Point lumineux",
                 Tool::LinkLighting => "Lier I → L",
@@ -3915,7 +3910,7 @@ impl eframe::App for EasyDraft {
             if self.settings.active_circuit_index >= self.plan.circuit_count() {
                 self.settings.active_circuit_index = 0;
             }
-            egui::ComboBox::from_label("Circuit actif pour lampes et prises")
+            egui::ComboBox::from_label("Circuit actif pour les appareils")
                 .selected_text(
                     self.plan.circuit(self.settings.active_circuit_index)
                         .map(|c| c.letter.clone()).unwrap_or_else(|| "A".into())
@@ -3942,8 +3937,8 @@ impl eframe::App for EasyDraft {
                     Err(error) => self.status = error.into(),
                 }
             }
-            ui.small("Les prises et liaisons I -> L sont affectees au circuit actif.");
-            ui.label(format!("Prises sans circuit : {}", self.plan.unassigned_outlets()));
+            ui.small("Les prises, appareils fixes et liaisons I → L sont affectés au circuit actif.");
+            ui.label(format!("Prises ou appareils sans circuit : {}", self.plan.unassigned_outlets()));
             let reveal_circuit = self.reveal_circuit.take();
             let active = self.settings.active_circuit_index;
             let accordion_id = ui.id().with(("active_circuit_panel", self.active_sheet));
@@ -4063,7 +4058,7 @@ impl eframe::App for EasyDraft {
             }
             egui::CollapsingHeader::new("Legende RGIE - symboles disponibles")
                 .show(ui, |ui| {
-                    for (kind, style) in [ElectricalKind::Switch, ElectricalKind::Outlet, ElectricalKind::Light]
+                    for (kind, style) in [ElectricalKind::Switch, ElectricalKind::Outlet, ElectricalKind::Light, ElectricalKind::Appliance]
                         .into_iter().flat_map(|kind| {
                             ElectricalAppearance::choices(kind).iter().map(move |&style| (kind, style))
                         })
@@ -4643,6 +4638,26 @@ mod plan_editor_tests {
         assert_eq!(app.tool, Tool::SelectWall);
         app.select_tool(Tool::Outlet);
         assert_eq!(app.placement_appearance, ElectricalAppearance::General);
+    }
+
+    #[test]
+    fn oven_placement_keeps_its_symbol_and_circuit_in_the_unifilar_export() {
+        let mut app = EasyDraft::default();
+        let circuit = app.plan.add_lighting_circuit().unwrap();
+        app.settings.active_circuit_index = circuit;
+        app.select_tool(Tool::Appliance);
+        app.placement_appearance = ElectricalAppearance::Oven;
+        app.place(Point { x: 1.0, y: 2.0 }, 80.0);
+        assert_eq!(app.plan.symbols[0].kind, ElectricalKind::Appliance);
+        assert_eq!(app.plan.symbol_appearance(0), ElectricalAppearance::Oven);
+        assert_eq!(app.plan.point_ref(0).as_deref(), Some("B1"));
+        let path = std::env::temp_dir().join(format!("easydraft-oven-{}.pdf", std::process::id()));
+        pdf_export::export_unifilar_pdf(path.to_str().unwrap(), &app.plan).unwrap();
+        let pdf = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(path);
+        let pdf = String::from_utf8_lossy(&pdf);
+        assert!(pdf.contains("Four electrique"));
+        assert!(pdf.contains("(B1)"));
     }
 
     #[test]
