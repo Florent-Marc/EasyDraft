@@ -3,7 +3,9 @@
 
 use std::fmt::Write as _;
 
-use crate::model::{BackgroundPlan, ElectricalKind, Opening, OpeningKind, Plan, Point, Stair, Wall};
+use eframe::egui;
+
+use crate::model::{BackgroundPlan, ElectricalKind, Opening, OpeningKind, Plan, Point, RoomLabelPart, Stair, Wall};
 use crate::rgie_symbols::{self, Primitive};
 
 const PAGE_W: f32 = 842.0; // A4 paysage en points PDF
@@ -18,8 +20,62 @@ const BLUE: Rgb = (0.11, 0.45, 0.72);
 const GLASS: Rgb = (0.12, 0.56, 0.75);
 const DIM: Rgb = (0.31, 0.43, 0.60);
 
+enum PreviewMark {
+    Line([f32; 2], [f32; 2], f32, Rgb),
+    Text([f32; 2], f32, String, Rgb),
+    Symbol([f32; 2], Vec<Primitive>),
+}
+
+struct PreviewBackground {
+    texture: egui::TextureHandle,
+    origin: [f32; 2],
+    size: egui::Vec2,
+}
+
+#[derive(Default)]
+pub struct PlanPreview {
+    marks: Vec<PreviewMark>,
+    background: Option<PreviewBackground>,
+}
+
+impl PlanPreview {
+    pub fn show(&self, ui: &mut egui::Ui) {
+        let available = ui.ctx().content_rect().size();
+        let scale = ((available.x - 44.0) / PAGE_W)
+            .min((available.y - 130.0) / PAGE_H).clamp(0.1, 1.25);
+        let (response, painter) = ui.allocate_painter(
+            egui::vec2(PAGE_W, PAGE_H) * scale, egui::Sense::hover(),
+        );
+        let painter = painter.with_clip_rect(response.rect);
+        let point = |[x, y]: [f32; 2]| response.rect.left_top() + egui::vec2(x, PAGE_H - y) * scale;
+        let color = |(r, g, b): Rgb| egui::Color32::from_rgb(
+            (r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8,
+        );
+        painter.rect_filled(response.rect, 0.0, egui::Color32::WHITE);
+        if let Some(bg) = &self.background {
+            painter.image(bg.texture.id(), egui::Rect::from_min_size(point(bg.origin), bg.size * scale),
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+        }
+        for mark in &self.marks {
+            match mark {
+                PreviewMark::Line(a, b, width, rgb) => {
+                    painter.line_segment([point(*a), point(*b)], egui::Stroke::new(width * scale, color(*rgb)));
+                }
+                PreviewMark::Text(at, size, text, rgb) => {
+                    painter.text(point(*at) + egui::vec2(0.0, 0.2 * size * scale),
+                        egui::Align2::LEFT_BOTTOM, text, egui::FontId::proportional(size * scale), color(*rgb));
+                }
+                PreviewMark::Symbol(at, marks) => {
+                    rgie_symbols::draw_egui(&painter, point(*at), marks, color(BLUE), 0.8 * scale);
+                }
+            }
+        }
+    }
+}
+
 struct Canvas {
     commands: String,
+    preview: Option<PlanPreview>,
     scale: f32,
     tx: f32,
     ty: f32,
@@ -44,6 +100,13 @@ impl Canvas {
             let padding = wall.thickness_m.max(0.0) / 2.0 + 0.5;
             include(wall.start, padding);
             include(wall.end, padding);
+        }
+        for room in crate::rooms::detect_rooms(&plan.walls) {
+            for part in [RoomLabelPart::Name, RoomLabelPart::Area] {
+                if let Some(position) = plan.room_label_position(&room, part) {
+                    include(position, 0.65);
+                }
+            }
         }
         for stair in &plan.stairs {
             if stair.is_valid() {
@@ -85,7 +148,7 @@ impl Canvas {
         let scale = (available_w / width).min(available_h / height);
         let tx = MARGIN + (available_w - width * scale) / 2.0 - min_x * scale;
         let ty = BOTTOM + (available_h - height * scale) / 2.0 + max_y * scale;
-        Self { commands: String::new(), scale, tx, ty }
+        Self { commands: String::new(), preview: None, scale, tx, ty }
     }
 
     fn xy(&self, p: Point) -> (f32, f32) {
@@ -95,6 +158,9 @@ impl Canvas {
     fn line(&mut self, a: Point, b: Point, width_pt: f32, color: Rgb) {
         let (x1, y1) = self.xy(a);
         let (x2, y2) = self.xy(b);
+        if let Some(preview) = &mut self.preview {
+            preview.marks.push(PreviewMark::Line([x1, y1], [x2, y2], width_pt.max(0.2), color));
+        }
         let _ = writeln!(
             self.commands,
             "{:.3} {:.3} {:.3} RG {:.3} w {:.3} {:.3} m {:.3} {:.3} l S",
@@ -104,6 +170,16 @@ impl Canvas {
     }
 
     fn text_pt(&mut self, x: f32, y: f32, size: f32, text: &str, color: Rgb) {
+        if let Some(preview) = &mut self.preview {
+            let text = text.chars().map(|character| {
+                match character {
+                    ' '..='~' | '\u{a0}'..='\u{ff}' | 'Œ' | 'œ' | '’' | '–' => character,
+                    _ if character.is_whitespace() => ' ',
+                    _ => '?',
+                }
+            }).collect();
+            preview.marks.push(PreviewMark::Text([x, y], size, text, color));
+        }
         let mut safe = String::new();
         for character in text.chars() {
             match character {
@@ -314,10 +390,13 @@ impl Canvas {
     fn symbols(&mut self, plan: &Plan) {
         for (index, symbol) in plan.symbols.iter().enumerate() {
             let (x, y) = self.xy(symbol.position);
-            let marks = rgie_symbols::device_primitives(
-                symbol.kind, plan.symbol_appearance(index)
+            let marks = rgie_symbols::plan_device_primitives(
+                symbol.kind, plan.symbol_appearance(index), plan.symbol_rotation(index),
             );
             draw_pdf_primitives(&mut self.commands, x, y, 0.8, &marks, BLUE);
+            if let Some(preview) = &mut self.preview {
+                preview.marks.push(PreviewMark::Symbol([x, y], marks));
+            }
             let reference = match symbol.kind {
                 ElectricalKind::Outlet | ElectricalKind::Light => plan.point_ref(index),
                 ElectricalKind::Switch => {
@@ -401,17 +480,48 @@ pub fn export_plan_sheets<'a>(
     std::fs::write(path, bytes).map_err(|err| format!("Export PDF impossible : {err}"))
 }
 
+pub fn preview_plan_page(
+    ctx: &egui::Context, name: &str, plan: &Plan, show_dimensions: bool, show_electrical: bool,
+) -> Result<PlanPreview, String> {
+    let (canvas, _) = build_plan_page(name, plan, show_dimensions, show_electrical, Some(ctx))?;
+    Ok(canvas.preview.unwrap_or_default())
+}
+
 fn render_plan_page(
     name: &str, plan: &Plan, show_dimensions: bool, show_electrical: bool,
 ) -> Result<(String, Option<PdfBackgroundImage>), String> {
+    let (canvas, image) = build_plan_page(name, plan, show_dimensions, show_electrical, None)?;
+    Ok((canvas.commands, image))
+}
+
+fn build_plan_page(
+    name: &str, plan: &Plan, show_dimensions: bool, show_electrical: bool,
+    preview_ctx: Option<&egui::Context>,
+) -> Result<(Canvas, Option<PdfBackgroundImage>), String> {
     let image = plan.background.as_ref().map(pdf_background).transpose()?;
     let mut pdf = Canvas::new(plan, show_electrical);
+    pdf.preview = preview_ctx.map(|_| PlanPreview::default());
     // Dessiner le fond de plan raster AVANT les symboles et la geometrie
     // vectorielle ; l'opacity est precomposee dans le JPEG embarque.
     if let (Some(bg), Some(raster)) = (plan.background.as_ref(), image.as_ref()) {
         let (x, top_y) = pdf.xy(bg.origin);
         let w = bg.width_m * pdf.scale;
         let h = w * raster.height as f32 / raster.width.max(1) as f32;
+        if let (Some(ctx), Some(preview)) = (preview_ctx, &mut pdf.preview) {
+            let rgb = image::load_from_memory_with_format(&raster.jpeg, image::ImageFormat::Jpeg)
+                .map_err(|error| format!("Aperçu du fond de plan impossible : {error}"))?.to_rgb8();
+            let limit = ctx.input(|input| input.max_texture_side) as u32;
+            let rgb = if rgb.width() > limit || rgb.height() > limit {
+                image::DynamicImage::ImageRgb8(rgb).thumbnail(limit, limit).into_rgb8()
+            } else {
+                rgb
+            };
+            let image = egui::ColorImage::from_rgb([rgb.width() as usize, rgb.height() as usize], rgb.as_raw());
+            preview.background = Some(PreviewBackground {
+                texture: ctx.load_texture("plan_pdf_preview_background", image, egui::TextureOptions::LINEAR),
+                origin: [x, top_y], size: egui::vec2(w, h),
+            });
+        }
         let _ = writeln!(pdf.commands,
             "q {:.3} 0 0 {:.3} {:.3} {:.3} cm /Bg Do Q",
             w, h, x, top_y - h
@@ -428,16 +538,19 @@ fn render_plan_page(
     // Noms et surfaces proviennent de la sauvegarde et de la geometrie partagees.
     for room in crate::rooms::detect_rooms(&plan.walls) {
         let title = plan.room_name(&room);
+        let name_position = plan.room_label_position(&room, RoomLabelPart::Name)
+            .unwrap_or(Point { x: room.center.x, y: room.center.y - 0.18 });
+        let area_position = plan.room_label_position(&room, RoomLabelPart::Area).unwrap_or(room.center);
         if !title.is_empty() {
             pdf.centered_text(
-                Point { x: room.center.x, y: room.center.y - 0.18 },
+                name_position,
                 11.0,
                 &ascii_pdf_text(title),
                 BLUE,
             );
         }
         pdf.centered_text(
-            room.center,
+            area_position,
             9.0,
             &format!("{:.2} m2", room.area_m2),
             BLUE,
@@ -480,7 +593,7 @@ fn render_plan_page(
         ),
         DIM,
     );
-    Ok((pdf.commands, image))
+    Ok((pdf, image))
 }
 
 
@@ -1141,6 +1254,37 @@ mod tests {
         let (architecture, _) = render_plan_page("Rez-de-chaussée", &plan, true, true).unwrap();
         assert_ne!(visible, hidden);
         assert_eq!(hidden, architecture);
+    }
+
+    #[test]
+    fn preview_and_export_share_positions_and_symbol_rotation() {
+        let mut plan: Plan = serde_json::from_str(include_str!("../examples/maison-deux-pieces.json"))
+            .unwrap();
+        let room = crate::rooms::detect_rooms(&plan.walls).remove(0);
+        let target = Point { x: room.center.x + 0.5, y: room.center.y + 0.75 };
+        plan.set_room_label_position(room.center, RoomLabelPart::Name, Some(target)).unwrap();
+        plan.set_symbol_rotation(0, 90);
+        let plan: Plan = serde_json::from_str(&serde_json::to_string(&plan).unwrap()).unwrap();
+        assert_eq!(plan.room_label_position(&room, RoomLabelPart::Name), Some(target));
+        assert!(plan.room_label_position(&room, RoomLabelPart::Area).is_none());
+        assert_eq!(plan.symbol_rotation(0), 90);
+        let ctx = egui::Context::default();
+        let (canvas, _) = build_plan_page("Rez-de-chaussée", &plan, true, true, Some(&ctx)).unwrap();
+        let (export, _) = render_plan_page("Rez-de-chaussée", &plan, true, true).unwrap();
+        assert_eq!(canvas.commands, export);
+        let (target_x, target_y) = canvas.xy(target);
+        let title = ascii_pdf_text(plan.room_name(&room));
+        let preview = canvas.preview.unwrap();
+        assert!(preview.marks.iter().any(|mark| matches!(
+            mark, PreviewMark::Text([x, y], 11.0, text, _)
+                if *text == title && (*x - target_x).abs() < 30.0 && (*y - (target_y - 3.63)).abs() < 0.01
+        )));
+        let rotated = rgie_symbols::plan_device_primitives(
+            plan.symbols[0].kind, plan.symbol_appearance(0), 90,
+        );
+        assert!(preview.marks.iter().any(|mark| matches!(
+            mark, PreviewMark::Symbol(_, marks) if *marks == rotated
+        )));
     }
 
     #[test]

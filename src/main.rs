@@ -9,7 +9,7 @@ use eframe::egui::{self, Align2, Color32, FontId, Painter, Pos2, Sense, Stroke, 
 use std::path::Path;
 use model::{
     ElectricalAppearance, ElectricalKind, ElectricalSymbol, Opening, OpeningKind, Plan, Point, Stair, Wall,
-    BackgroundPlan, WallEndpoint as WallHandle, DEFAULT_WALL_THICKNESS_M,
+    BackgroundPlan, RoomLabelPart, WallEndpoint as WallHandle, WallJoint, DEFAULT_WALL_THICKNESS_M,
 };
 
 const GRID_METERS: f32 = 0.5;
@@ -233,6 +233,70 @@ impl SelectionSet {
     }
 }
 
+#[derive(Default)]
+struct ArchitectureClipboard {
+    walls: Vec<Wall>,
+    openings: Vec<Opening>,
+    stairs: Vec<Stair>,
+    joints: Vec<WallJoint>,
+}
+
+impl ArchitectureClipboard {
+    fn copy(plan: &Plan, selection: &SelectionSet) -> Self {
+        let mut clipboard = Self::default();
+        let mut indices = std::collections::HashMap::new();
+        for (index, wall) in plan.walls.iter().enumerate() {
+            if selection.walls.contains(&index) || selection.openings.iter().any(|&i| {
+                plan.openings.get(i).is_some_and(|opening| opening.wall_index == index)
+            }) {
+                indices.insert(index, clipboard.walls.len());
+                clipboard.walls.push(wall.clone());
+            }
+        }
+        clipboard.openings.extend(plan.openings.iter().filter_map(|opening| {
+            let mut copy = opening.clone();
+            copy.wall_index = *indices.get(&opening.wall_index)?;
+            Some(copy)
+        }));
+        clipboard.joints.extend(plan.wall_joints.iter().filter_map(|joint| {
+            let endpoints: Vec<_> = joint.endpoints.iter().filter_map(|endpoint| {
+                Some(WallHandle { wall_index: *indices.get(&endpoint.wall_index)?, ..*endpoint })
+            }).collect();
+            (endpoints.len() >= 2).then_some(WallJoint { endpoints })
+        }));
+        clipboard.stairs.extend(selection.stairs.iter().filter_map(|&i| plan.stairs.get(i).cloned()));
+        clipboard
+    }
+
+    fn is_empty(&self) -> bool {
+        self.walls.is_empty() && self.stairs.is_empty()
+    }
+
+    fn paste(&self, plan: &mut Plan) -> SelectionSet {
+        let wall_start = plan.walls.len();
+        let opening_start = plan.openings.len();
+        let stair_start = plan.stairs.len();
+        plan.walls.extend(self.walls.iter().cloned());
+        plan.openings.extend(self.openings.iter().cloned().map(|mut opening| {
+            opening.wall_index += wall_start;
+            opening
+        }));
+        plan.wall_joints.extend(self.joints.iter().cloned().map(|mut joint| {
+            for endpoint in &mut joint.endpoints {
+                endpoint.wall_index += wall_start;
+            }
+            joint
+        }));
+        plan.stairs.extend(self.stairs.iter().cloned());
+        SelectionSet {
+            walls: (wall_start..plan.walls.len()).collect(),
+            openings: (opening_start..plan.openings.len()).collect(),
+            stairs: (stair_start..plan.stairs.len()).collect(),
+            ..SelectionSet::default()
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Marquee {
     start: Point,
@@ -338,6 +402,7 @@ struct PlanSheet {
 #[serde(default)]
 struct ProjectSettings {
     show_underlay: bool,
+    reference_sheet: Option<usize>,
     show_dimensions: bool,
     show_architecture: bool,
     show_rooms: bool,
@@ -363,6 +428,7 @@ impl Default for ProjectSettings {
     fn default() -> Self {
         Self {
             show_underlay: true,
+            reference_sheet: None,
             show_dimensions: true,
             show_architecture: true,
             show_rooms: true,
@@ -431,6 +497,11 @@ enum HistoryEntry {
     SheetName { sheet: usize, name: String },
 }
 
+struct PdfPreview {
+    sheet: usize,
+    page: Result<pdf_export::PlanPreview, String>,
+}
+
 struct EasyDraft {
     plan: Plan,
     // Le dessin de la feuille active est déplacé dans `plan` pour l'éditeur.
@@ -456,6 +527,9 @@ struct EasyDraft {
     selected_symbol: Option<usize>,
     selected_stair: Option<usize>,
     selected_room: Option<Point>,
+    pending_room_label: Option<(Point, RoomLabelPart)>,
+    architecture_clipboard: ArchitectureClipboard,
+    pdf_preview: Option<PdfPreview>,
     selected_opening: Option<usize>,
     drag: Option<ActiveDrag>,
     marquee: Option<Marquee>,
@@ -496,6 +570,9 @@ impl Default for EasyDraft {
             selected_symbol: None,
             selected_stair: None,
             selected_room: None,
+            pending_room_label: None,
+            architecture_clipboard: ArchitectureClipboard::default(),
+            pdf_preview: None,
             selected_opening: None,
             drag: None,
             marquee: None,
@@ -923,6 +1000,7 @@ impl EasyDraft {
     }
 
     fn reset_pending(&mut self) {
+        self.pending_room_label = None;
         self.pending_wall = None;
         self.pending_stair = None;
         self.pending_switch = None;
@@ -2156,6 +2234,21 @@ impl EasyDraft {
                     ElectricalAppearance::SwitchTwoWay | ElectricalAppearance::PushButton) {
                     ui.small("Ce pictogramme ne simule pas encore les commandes va-et-vient / telerupteur.");
                 }
+                if self.view == View::Plan2D {
+                    let previous = self.plan.symbol_rotation(index);
+                    let mut angle = previous;
+                    ui.horizontal(|ui| {
+                        ui.label("Rotation");
+                        ui.add(egui::DragValue::new(&mut angle).range(0..=359).suffix("°"));
+                        if ui.button("+90°").clicked() {
+                            angle = (previous + 90) % 360;
+                        }
+                    });
+                    if angle != previous {
+                        self.snapshot();
+                        self.plan.set_symbol_rotation(index, angle);
+                    }
+                }
                 self.show_component_circuit(ui, index, symbol.kind);
                 let mut position = symbol.position;
                 let mut changed = false;
@@ -2257,6 +2350,25 @@ impl EasyDraft {
                         data.remove::<String>(id);
                     }
                 });
+                ui.horizontal_wrapped(|ui| {
+                    for (part, caption) in [
+                        (RoomLabelPart::Name, "Déplacer le nom"),
+                        (RoomLabelPart::Area, "Déplacer la surface"),
+                    ] {
+                        if ui.button(caption).clicked() {
+                            self.pending_room_label = Some((at, part));
+                            self.status = "Clique sur le plan pour placer l’étiquette. Échap pour annuler.".into();
+                        }
+                    }
+                });
+                for (part, caption) in [
+                    (RoomLabelPart::Name, "Recentrer le nom"),
+                    (RoomLabelPart::Area, "Recentrer la surface"),
+                ] {
+                    if self.plan.room_label_position(room, part).is_some() && ui.button(caption).clicked() {
+                        self.move_room_label(at, part, None);
+                    }
+                }
                 ui.small("Les surfaces prennent en compte l'epaisseur des murs.");
                 return;
             }
@@ -2394,6 +2506,97 @@ impl EasyDraft {
         ).save_file() {
             self.unifilar_pdf_path = path.with_extension("pdf").to_string_lossy().into_owned();
             self.export_unifilar_pdf();
+        }
+    }
+
+    fn copy_architecture(&mut self) {
+        let mut selection = self.selection.clone();
+        selection.walls.extend(self.selected_wall);
+        selection.walls.extend(self.selected_handles.iter().map(|handle| handle.wall_index));
+        selection.openings.extend(self.selected_opening);
+        if let Some(index) = self.selected_stair
+            && !selection.stairs.contains(&index)
+        {
+            selection.stairs.push(index);
+        }
+        let clipboard = ArchitectureClipboard::copy(&self.plan, &selection);
+        if clipboard.is_empty() {
+            self.status = "Sélectionne des murs, ouvertures ou escaliers à copier.".into();
+        } else {
+            self.status = format!("{} mur(s), {} ouverture(s), {} escalier(s) copiés.",
+                clipboard.walls.len(), clipboard.openings.len(), clipboard.stairs.len());
+            self.architecture_clipboard = clipboard;
+        }
+    }
+
+    fn paste_architecture(&mut self) {
+        if self.architecture_clipboard.is_empty() {
+            return;
+        }
+        self.select_tool(Tool::SelectWall);
+        self.snapshot();
+        self.clear_selection();
+        self.selection = self.architecture_clipboard.paste(&mut self.plan);
+        if self.selection.len() == 1 {
+            self.selected_wall = self.selection.walls.first().copied();
+            self.selected_stair = self.selection.stairs.first().copied();
+        }
+        self.settings.show_architecture = true;
+        self.sidebar_tab = SidebarTab::Inspecteur;
+        self.status = format!("Éléments collés aux mêmes coordonnées sur « {} ».",
+            self.sheets[self.active_sheet].name);
+    }
+
+    fn move_room_label(&mut self, at: Point, part: RoomLabelPart, position: Option<Point>) {
+        let mut updated = self.plan.clone();
+        match updated.set_room_label_position(at, part, position) {
+            Ok(()) => {
+                self.snapshot();
+                self.plan = updated;
+                self.status = "Position de l’étiquette mise à jour".into();
+            }
+            Err(error) => self.status = error.into(),
+        }
+    }
+
+    fn preview_page(&self, sheet: usize, ctx: &egui::Context) -> PdfPreview {
+        let item = &self.sheets[sheet];
+        let plan = if sheet == self.active_sheet { &self.plan } else { &item.plan };
+        PdfPreview {
+            sheet,
+            page: pdf_export::preview_plan_page(
+                ctx, &item.name, plan, self.settings.show_dimensions, self.settings.show_electrical,
+            ),
+        }
+    }
+
+    fn show_pdf_preview(&mut self, ctx: &egui::Context) {
+        let Some(mut preview) = self.pdf_preview.take() else { return };
+        let modal = egui::Modal::new(egui::Id::new("plan_pdf_preview")).show(ctx, |ui| {
+            ui.heading("Aperçu du PDF du plan");
+            let mut sheet = preview.sheet;
+            egui::ComboBox::from_id_salt("preview_sheet").selected_text(&self.sheets[sheet].name)
+                .show_ui(ui, |ui| {
+                    for (index, item) in self.sheets.iter().enumerate() {
+                        ui.selectable_value(&mut sheet, index, &item.name);
+                    }
+                });
+            if sheet != preview.sheet {
+                preview = self.preview_page(sheet, ctx);
+            }
+            match &preview.page {
+                Ok(page) => page.show(ui),
+                Err(error) => { ui.label(error); }
+            }
+            ui.horizontal(|ui| {
+                (ui.button("Exporter toutes les feuilles…").clicked(), ui.button("Fermer").clicked())
+            }).inner
+        });
+        let (export, close) = modal.inner;
+        if export {
+            self.export_pdf_dialog();
+        } else if !close && !modal.should_close() {
+            self.pdf_preview = Some(preview);
         }
     }
 
@@ -2703,7 +2906,24 @@ impl EasyDraft {
             }
         }
 
-        if self.tool == Tool::SelectWall {
+        if let Some(sheet) = self.settings.reference_sheet.filter(|&index| index != self.active_sheet)
+            .and_then(|index| self.sheets.get(index))
+        {
+            let color = Color32::from_rgba_unmultiplied(109, 125, 140, 75);
+            for wall in &sheet.plan.walls {
+                painter.line_segment([to_screen(wall.start), to_screen(wall.end)],
+                    Stroke::new((wall.thickness_m * ppm).max(1.0), color));
+            }
+            for stair in sheet.plan.stairs.iter().filter(|stair| stair.is_valid()) {
+                painter.add(egui::Shape::closed_line(
+                    stair.corners().into_iter().map(to_screen).collect(), Stroke::new(2.0_f32, color),
+                ));
+            }
+            painter.text(rect.left_top() + Vec2::new(12.0, 30.0), Align2::LEFT_TOP,
+                format!("Référence : {}", sheet.name), FontId::proportional(12.0), Color32::DARK_GRAY);
+        }
+
+        if self.tool == Tool::SelectWall && self.pending_room_label.is_none() {
             if response.drag_started_by(egui::PointerButton::Primary) {
                 self.marquee_handles = ui.ctx().input(|i| i.modifiers.shift);
                 let initial = ui.ctx().input(|i| i.pointer.press_origin());
@@ -2737,7 +2957,9 @@ impl EasyDraft {
         if response.clicked_by(egui::PointerButton::Primary) {
             if let Some(pos) = response.interact_pointer_pos() {
                 let world = to_world(pos);
-                if self.tool == Tool::SelectWall
+                if let Some((room, part)) = self.pending_room_label.take() {
+                    self.move_room_label(room, part, Some(world));
+                } else if self.tool == Tool::SelectWall
                     && ui.ctx().input(|i| i.modifiers.shift)
                     && self.toggle_wall_handles(world, ppm)
                 {
@@ -2780,10 +3002,13 @@ impl EasyDraft {
                         ),
                     ));
                 }
-                let pos = to_screen(room.center);
+                let pos = to_screen(self.plan.room_label_position(room, RoomLabelPart::Area)
+                    .unwrap_or(room.center));
+                let name_pos = self.plan.room_label_position(room, RoomLabelPart::Name)
+                    .map(to_screen).unwrap_or_else(|| to_screen(room.center) + Vec2::new(0.0, -18.0));
                 let name = self.plan.room_name(room);
                 painter.text(
-                    pos + Vec2::new(0.0, -18.0),
+                    name_pos,
                     Align2::CENTER_CENTER,
                     if name.is_empty() { "Piece" } else { name },
                     FontId::proportional(15.0),
@@ -2945,8 +3170,8 @@ impl EasyDraft {
             // Formes RGIE uniques partagees avec l'unifilaire et les PDFs.
             rgie_symbols::draw_egui(
                 &painter, pos,
-                &rgie_symbols::device_primitives(
-                    symbol.kind, self.plan.symbol_appearance(index)
+                &rgie_symbols::plan_device_primitives(
+                    symbol.kind, self.plan.symbol_appearance(index), self.plan.symbol_rotation(index),
                 ),
                 Color32::from_rgb(20, 106, 190),
                 0.83,
@@ -3085,7 +3310,7 @@ impl EasyDraft {
 
 impl eframe::App for EasyDraft {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.sheet_name_dialog.is_none() && !ctx.wants_keyboard_input() {
+        if self.sheet_name_dialog.is_none() && self.pdf_preview.is_none() && !ctx.wants_keyboard_input() {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z)) {
                 self.undo();
             }
@@ -3097,6 +3322,14 @@ impl eframe::App for EasyDraft {
                 self.reset_pending();
                 self.clear_selection();
                 self.status = "Selection et trace en cours annules".into();
+            }
+            if self.view == View::Plan2D {
+                if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::C)) {
+                    self.copy_architecture();
+                }
+                if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::V)) {
+                    self.paste_architecture();
+                }
             }
             if self.view == View::Plan2D &&
                 ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)) {
@@ -3149,12 +3382,28 @@ impl eframe::App for EasyDraft {
                     ui.menu_button("Edition", |ui| {
                         if ui.button("Annuler  Ctrl+Z").clicked() { self.undo(); ui.close(); }
                         if ui.button("Retablir  Ctrl+Y").clicked() { self.redo(); ui.close(); }
+                        if self.view == View::Plan2D {
+                            if ui.button("Copier la sélection").clicked() {
+                                self.copy_architecture();
+                                ui.close();
+                            }
+                            if ui.add_enabled(!self.architecture_clipboard.is_empty(),
+                                egui::Button::new("Coller sur cette feuille")).clicked()
+                            {
+                                self.paste_architecture();
+                                ui.close();
+                            }
+                        }
                         if self.view == View::Plan2D && ui.button("Supprimer  Suppr").clicked() {
                             self.delete_selected();
                             ui.close();
                         }
                     });
                     ui.menu_button("Exporter", |ui| {
+                        if ui.button("Aperçu du plan de situation…").clicked() {
+                            self.pdf_preview = Some(self.preview_page(self.active_sheet, ctx));
+                            ui.close();
+                        }
                         if ui.button("Plan de situation en PDF (toutes les feuilles)…").clicked() {
                             self.export_pdf_dialog(); ui.close();
                         }
@@ -3506,6 +3755,22 @@ impl eframe::App for EasyDraft {
                 ui.small("PNG, JPG ou BMP comme calque sous les symboles.");
             }
             ui.separator();
+            if self.sheets.len() > 1 {
+                let selected = self.settings.reference_sheet.filter(|&index| index != self.active_sheet)
+                    .and_then(|index| self.sheets.get(index))
+                    .map_or("Aucune", |sheet| sheet.name.as_str());
+                egui::ComboBox::from_label("Feuille en fond léger")
+                    .selected_text(selected)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.settings.reference_sheet, None, "Aucune");
+                        for (index, sheet) in self.sheets.iter().enumerate() {
+                            if index != self.active_sheet {
+                                ui.selectable_value(&mut self.settings.reference_sheet, Some(index), &sheet.name);
+                            }
+                        }
+                    });
+                ui.separator();
+            }
             ui.strong("AFFICHAGE");
             ui.label("Calques visibles");
             ui.checkbox(&mut self.settings.show_architecture, "Architecture (murs, portes, escaliers)");
@@ -3556,6 +3821,9 @@ impl eframe::App for EasyDraft {
             ui.separator();
             ui.label("PDF du plan de situation · toutes les feuilles");
             ui.text_edit_singleline(&mut self.pdf_path);
+            if ui.button("Aperçu du plan…").clicked() {
+                self.pdf_preview = Some(self.preview_page(self.active_sheet, ctx));
+            }
             if ui.button("Exporter le plan PDF...").clicked() { self.export_pdf_dialog(); }
             ui.separator();
             ui.label("PDF unifilaire · feuille active");
@@ -3869,6 +4137,7 @@ impl eframe::App for EasyDraft {
             }
         });
         self.show_sheet_name_dialog(ctx);
+        self.show_pdf_preview(ctx);
     }
 }
 
@@ -4379,6 +4648,33 @@ mod plan_editor_tests {
         assert_eq!(app.tool, Tool::SelectWall);
         app.select_tool(Tool::Outlet);
         assert_eq!(app.placement_appearance, ElectricalAppearance::General);
+    }
+
+    #[test]
+    fn architecture_clipboard_preserves_openings_across_sheets() {
+        let mut app = EasyDraft::default();
+        app.load_room_example();
+        let opening = app.plan.openings[0].clone();
+        let wall = app.plan.walls[opening.wall_index].clone();
+        app.selected_opening = Some(0);
+        app.copy_architecture();
+        app.add_sheet("Étage".into());
+        app.plan.walls.push(Wall {
+            start: Point { x: 20.0, y: 0.0 },
+            end: Point { x: 25.0, y: 0.0 },
+            thickness_m: 0.15,
+        });
+        app.paste_architecture();
+        assert_eq!(app.plan.walls[1].start, wall.start);
+        assert_eq!(app.plan.walls[1].end, wall.end);
+        assert_eq!(app.plan.openings[0].wall_index, 1);
+        assert_eq!(app.plan.openings[0].center_m, opening.center_m);
+        assert_eq!(app.plan.openings[0].kind, opening.kind);
+        app.undo();
+        assert_eq!(app.plan.walls.len(), 1);
+        assert!(app.plan.openings.is_empty());
+        app.switch_sheet(0);
+        assert_eq!(app.plan.openings[0].wall_index, opening.wall_index);
     }
 
     #[test]

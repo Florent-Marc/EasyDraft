@@ -96,6 +96,25 @@ pub fn device_primitives(kind: ElectricalKind, appearance: ElectricalAppearance)
     }
 }
 
+pub fn plan_device_primitives(
+    kind: ElectricalKind, appearance: ElectricalAppearance, rotation_deg: u16,
+) -> Vec<Primitive> {
+    let marks = device_primitives(kind, appearance);
+    if rotation_deg == 0 {
+        return marks;
+    }
+    let angle = f32::from(rotation_deg).to_radians();
+    let (sin, cos) = angle.sin_cos();
+    let rotated = |(x, y)| (x * cos - y * sin, x * sin + y * cos);
+    marks.into_iter().map(|mark| match mark {
+        Primitive::Line(a, b) => Primitive::Line(rotated(a), rotated(b)),
+        Primitive::Circle(center, radius) => Primitive::Circle(rotated(center), radius),
+        Primitive::Dot(center, radius) => Primitive::Dot(rotated(center), radius),
+        Primitive::Arc(center, radius, start, end) =>
+            Primitive::Arc(rotated(center), radius, start + angle, end + angle),
+    }).collect()
+}
+
 /// Signes pour une branche horizontale (amont à gauche).
 pub fn schematic_device_primitives(
     kind: ElectricalKind, appearance: ElectricalAppearance,

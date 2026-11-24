@@ -332,6 +332,14 @@ Dans la barre du haut, ouvrez **Gérer les feuilles** pour ajouter un étage, un
 
 L'enregistrement JSON conserve toutes les feuilles et les réglages du projet, dont les calques visibles, la grille, les cotes, l'aimantation, le cadrage du dessin et les réglages des outils. Dans **Exporter → Plan de situation en PDF**, EasyDraft crée un seul PDF A4 paysage avec une page titrée par feuille, dans l'ordre de la liste. Le schéma unifilaire et le dossier RGIE concernent la feuille active.
 
+### Préparer et réutiliser les feuilles
+
+- **Exporter → Aperçu du plan de situation** permet de parcourir les pages avant de générer le PDF.
+- Dans **Paramètres → Plan**, choisissez une **Feuille en fond léger** pour aligner les murs et les escaliers avec ceux d’un autre niveau.
+- Sélectionnez un appareil électrique et réglez sa **Rotation** dans **Objet**.
+- Sélectionnez une pièce, puis utilisez **Déplacer le nom** ou **Déplacer la surface**. Cliquez sur le plan pour choisir la nouvelle position.
+- Sélectionnez des murs ou escaliers, copiez avec **Ctrl+C**, changez de feuille et collez avec **Ctrl+V**. Les ouvertures suivent leurs murs et les éléments gardent leurs coordonnées.
+
 ## Dessin de la maison
 
 - Murs à deux clics, épaisseur de 5 à 60 cm, cotations axe-à-axe

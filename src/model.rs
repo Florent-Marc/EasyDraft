@@ -183,6 +183,12 @@ impl ElectricalAppearance {
 pub struct SymbolAppearanceRecord {
     pub symbol_index: usize,
     pub appearance: ElectricalAppearance,
+    #[serde(default, skip_serializing_if = "is_zero_rotation")]
+    pub rotation_deg: u16,
+}
+
+fn is_zero_rotation(angle: &u16) -> bool {
+    *angle == 0
 }
 
 /// Relation fonctionnelle entre un interrupteur et un luminaire.
@@ -399,6 +405,16 @@ pub struct RoomLabel {
     /// Position ancree a l'interieur de la piece.
     pub position: Point,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_position: Option<Point>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub area_position: Option<Point>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomLabelPart {
+    Name,
+    Area,
 }
 
 /// Image d'un fond de plan, conservee par chemin externe au JSON.
@@ -595,20 +611,75 @@ impl Plan {
         if !appearance.valid_for(kind) {
             return Err("Variante incompatible avec ce type d'appareil");
         }
-        self.symbol_appearances.retain(|record| record.symbol_index != symbol_index);
-        if appearance != ElectricalAppearance::General {
-            self.symbol_appearances.push(SymbolAppearanceRecord {
-                symbol_index, appearance,
-            });
-        }
+        let rotation = self.symbol_rotation(symbol_index);
+        self.set_symbol_style(symbol_index, appearance, rotation);
         Ok(())
     }
 
-    pub fn room_name<'a>(&'a self, room: &crate::rooms::DetectedRoom) -> &'a str {
-        self.room_labels.iter()
-            .find(|label| room.contains(label.position))
-            .map(|label| label.name.as_str())
-            .unwrap_or("")
+    pub fn symbol_rotation(&self, index: usize) -> u16 {
+        self.symbol_appearances.iter().find(|record| record.symbol_index == index)
+            .map_or(0, |record| record.rotation_deg % 360)
+    }
+
+    pub fn set_symbol_rotation(&mut self, index: usize, degrees: u16) {
+        if self.symbols.get(index).is_some() {
+            self.set_symbol_style(index, self.symbol_appearance(index), degrees % 360);
+        }
+    }
+
+    fn set_symbol_style(&mut self, index: usize, appearance: ElectricalAppearance, rotation_deg: u16) {
+        self.symbol_appearances.retain(|record| record.symbol_index != index);
+        if appearance != ElectricalAppearance::General || rotation_deg != 0 {
+            self.symbol_appearances.push(SymbolAppearanceRecord {
+                symbol_index: index, appearance, rotation_deg,
+            });
+        }
+    }
+
+    fn room_label(&self, room: &crate::rooms::DetectedRoom) -> Option<&RoomLabel> {
+        self.room_labels.iter().find(|label| room.contains(label.position))
+    }
+
+    pub fn room_name(&self, room: &crate::rooms::DetectedRoom) -> &str {
+        self.room_label(room).map_or("", |label| label.name.as_str())
+    }
+
+    pub fn room_label_position(&self, room: &crate::rooms::DetectedRoom, part: RoomLabelPart)
+        -> Option<Point>
+    {
+        let label = self.room_label(room)?;
+        match part {
+            RoomLabelPart::Name => label.name_position,
+            RoomLabelPart::Area => label.area_position,
+        }
+    }
+
+    pub fn set_room_label_position(&mut self, at: Point, part: RoomLabelPart, target: Option<Point>)
+        -> Result<(), &'static str>
+    {
+        let room = crate::rooms::detect_rooms(&self.walls).into_iter()
+            .find(|room| room.contains(at)).ok_or("Aucune pièce fermée à cet endroit")?;
+        if let Some(point) = target
+            && (!point.x.is_finite() || !point.y.is_finite())
+        {
+            return Err("Position d’étiquette invalide");
+        }
+        let index = self.room_labels.iter().position(|label| room.contains(label.position))
+            .unwrap_or_else(|| {
+                self.room_labels.push(RoomLabel {
+                    position: room.center, name: String::new(), name_position: None, area_position: None,
+                });
+                self.room_labels.len() - 1
+            });
+        let label = &mut self.room_labels[index];
+        match part {
+            RoomLabelPart::Name => label.name_position = target,
+            RoomLabelPart::Area => label.area_position = target,
+        }
+        if label.name.is_empty() && label.name_position.is_none() && label.area_position.is_none() {
+            self.room_labels.remove(index);
+        }
+        Ok(())
     }
 
     /// Modifie le nom de la piece contenant le point indique.
@@ -631,22 +702,17 @@ impl Plan {
                 break;
             }
         }
-        if title.is_empty() {
-            self.room_labels.retain(|label| !room.contains(label.position));
-        } else if let Some(index) = first {
-            self.room_labels[index].name = title.to_owned();
-            self.room_labels[index].position = room.center;
-            let anchor = room.center;
-            let mut has_first = false;
-            self.room_labels.retain(|label| {
-                if label.position == anchor {
-                    if has_first { false } else { has_first = true; true }
-                } else { !room.contains(label.position) }
-            });
-        } else {
+        if let Some(index) = first {
+            let mut label = self.room_labels[index].clone();
+            label.name = title.to_owned();
+            label.position = room.center;
+            self.room_labels.retain(|other| !room.contains(other.position));
+            if !label.name.is_empty() || label.name_position.is_some() || label.area_position.is_some() {
+                self.room_labels.push(label);
+            }
+        } else if !title.is_empty() {
             self.room_labels.push(RoomLabel {
-                position: room.center,
-                name: title.to_owned(),
+                position: room.center, name: title.to_owned(), name_position: None, area_position: None,
             });
         }
         Ok(())
