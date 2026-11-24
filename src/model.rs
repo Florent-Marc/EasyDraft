@@ -131,23 +131,23 @@ pub enum ElectricalAppearance {
     SwitchTwoWay,
     SwitchPull,
     PushButton,
+    PushButtonIndicator,
+    PushButtonGuarded,
     OutletEarth,
     OutletChild,
     OutletEarthChild,
     OutletTriple,
+    OutletDouble,
+    OutletWeatherproof,
     WallLight,
+    FluorescentLight,
+    Floodlight,
+    SafetyLight,
 }
 
 impl ElectricalAppearance {
     pub fn valid_for(self, kind: ElectricalKind) -> bool {
-        match self {
-            Self::General => true,
-            Self::SwitchBipolar | Self::SwitchTwoWay | Self::SwitchPull | Self::PushButton =>
-                kind == ElectricalKind::Switch,
-            Self::OutletEarth | Self::OutletChild | Self::OutletEarthChild | Self::OutletTriple =>
-                kind == ElectricalKind::Outlet,
-            Self::WallLight => kind == ElectricalKind::Light,
-        }
+        Self::choices(kind).contains(&self)
     }
 
     pub fn label(self) -> &'static str {
@@ -156,24 +156,35 @@ impl ElectricalAppearance {
             Self::SwitchBipolar => "Interrupteur bipolaire",
             Self::SwitchTwoWay => "Interrupteur va-et-vient",
             Self::PushButton => "Bouton-poussoir",
+            Self::PushButtonIndicator => "Bouton-poussoir à lampe témoin",
+            Self::PushButtonGuarded => "Bouton-poussoir à accès protégé",
             Self::SwitchPull => "Interrupteur à tirette",
             Self::OutletEarth => "Prise avec contact de terre",
             Self::OutletChild => "Prise avec protection enfant",
             Self::OutletEarthChild => "Prise avec terre et protection enfant",
             Self::OutletTriple => "Prise triple",
-            Self::WallLight => "Point d'attente d'eclairage en applique",
+            Self::OutletDouble => "Prise double",
+            Self::OutletWeatherproof => "Prise étanche",
+            Self::WallLight => "Point d’attente d’éclairage en applique",
+            Self::FluorescentLight => "Luminaire à fluorescence",
+            Self::Floodlight => "Projecteur",
+            Self::SafetyLight => "Éclairage de sécurité sur circuit de sécurité",
         }
     }
 
     pub fn choices(kind: ElectricalKind) -> &'static [Self] {
         match kind {
             ElectricalKind::Switch => &[
-                Self::General, Self::SwitchBipolar, Self::SwitchTwoWay, Self::SwitchPull, Self::PushButton
+                Self::General, Self::SwitchBipolar, Self::SwitchTwoWay, Self::SwitchPull, Self::PushButton,
+                Self::PushButtonIndicator, Self::PushButtonGuarded,
             ],
             ElectricalKind::Outlet => &[
-                Self::General, Self::OutletEarth, Self::OutletChild, Self::OutletEarthChild, Self::OutletTriple
+                Self::General, Self::OutletEarth, Self::OutletChild, Self::OutletEarthChild, Self::OutletDouble,
+                Self::OutletTriple, Self::OutletWeatherproof,
             ],
-            ElectricalKind::Light => &[Self::General, Self::WallLight],
+            ElectricalKind::Light => &[
+                Self::General, Self::WallLight, Self::FluorescentLight, Self::Floodlight, Self::SafetyLight,
+            ],
         }
     }
 }

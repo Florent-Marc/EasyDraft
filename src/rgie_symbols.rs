@@ -20,6 +20,20 @@ fn line(from: (f32, f32), to: (f32, f32)) -> Primitive {
     Primitive::Line(from, to)
 }
 
+fn is_push_button(appearance: ElectricalAppearance) -> bool {
+    matches!(appearance, ElectricalAppearance::PushButton
+        | ElectricalAppearance::PushButtonIndicator | ElectricalAppearance::PushButtonGuarded)
+}
+
+fn weatherproof_mark(x: f32, y: f32) -> [Primitive; 4] {
+    [
+        line((x, y - 6.0), (x, y + 6.0)),
+        line((x, y + 1.0), (x + 2.0, y - 1.5)),
+        line((x + 2.0, y - 1.5), (x + 5.0, y - 1.5)),
+        line((x + 5.0, y - 1.5), (x + 5.0, y + 6.0)),
+    ]
+}
+
 /// Formes RGIE : voir parties E, F et G du tableau 2.23.
 /// Origine au centre, largeur nominale ~40 unites.
 pub fn device_primitives(kind: ElectricalKind, appearance: ElectricalAppearance) -> Vec<Primitive> {
@@ -30,21 +44,50 @@ pub fn device_primitives(kind: ElectricalKind, appearance: ElectricalAppearance)
     };
     match kind {
         ElectricalKind::Light => {
+            if style == ElectricalAppearance::FluorescentLight {
+                return vec![
+                    line((-15.0, 0.0), (15.0, 0.0)),
+                    line((-15.0, -5.0), (-15.0, 5.0)),
+                    line((15.0, -5.0), (15.0, 5.0)),
+                ];
+            }
             let mut marks = vec![
                 line((-11.0, -11.0), (11.0, 11.0)),
                 line((-11.0, 11.0), (11.0, -11.0)),
             ];
-            if style == ElectricalAppearance::WallLight {
-                marks.push(line((17.0, -15.0), (17.0, 15.0)));
+            match style {
+                ElectricalAppearance::WallLight => marks.push(line((17.0, -15.0), (17.0, 15.0))),
+                ElectricalAppearance::SafetyLight => marks.push(Primitive::Dot((0.0, 0.0), 3.0)),
+                ElectricalAppearance::Floodlight => {
+                    marks[0] = line((-7.0, -7.0), (7.0, 7.0));
+                    marks[1] = line((-7.0, 7.0), (7.0, -7.0));
+                    marks.push(Primitive::Circle((0.0, 0.0), 11.0));
+                    marks.push(Primitive::Arc((0.0, 0.0), 16.0,
+                        -std::f32::consts::FRAC_PI_2, std::f32::consts::FRAC_PI_2));
+                }
+                _ => {}
             }
             marks
         }
         ElectricalKind::Switch => {
-            if style == ElectricalAppearance::PushButton {
-                return vec![
-                    Primitive::Circle((0.0, 0.0), 11.0),
-                    Primitive::Circle((0.0, 0.0), 4.2),
-                ];
+            if is_push_button(style) {
+                let mut marks = vec![Primitive::Circle((0.0, 0.0), 11.0),
+                    Primitive::Circle((0.0, 0.0), 4.2)];
+                match style {
+                    ElectricalAppearance::PushButtonIndicator => {
+                        marks.push(line((-2.6, -2.6), (2.6, 2.6)));
+                        marks.push(line((-2.6, 2.6), (2.6, -2.6)));
+                    }
+                    ElectricalAppearance::PushButtonGuarded => {
+                        marks.extend([
+                            line((10.0, -13.0), (16.0, -13.0)),
+                            line((16.0, -13.0), (16.0, 13.0)),
+                            line((16.0, 13.0), (10.0, 13.0)),
+                        ]);
+                    }
+                    _ => {}
+                }
+                return marks;
             }
             let mut marks = vec![
                 Primitive::Circle((-2.0, 7.0), 5.8),
@@ -75,12 +118,20 @@ pub fn device_primitives(kind: ElectricalKind, appearance: ElectricalAppearance)
                 line((0.0, -10.0), (0.0, 0.0)),
                 Primitive::Arc((0.0, 10.0), 10.0, std::f32::consts::PI, std::f32::consts::TAU),
             ];
-            if style == ElectricalAppearance::OutletTriple {
-                for y in [8.0, 16.0] {
-                    marks.push(Primitive::Arc((0.0, 10.0 + y), 10.0,
-                        std::f32::consts::PI, std::f32::consts::TAU));
-                }
-                marks.push(line((0.0, 0.0), (0.0, 16.0)));
+            let extra_rows: &[f32] = match style {
+                ElectricalAppearance::OutletDouble => &[8.0],
+                ElectricalAppearance::OutletTriple => &[8.0, 16.0],
+                _ => &[],
+            };
+            for &y in extra_rows {
+                marks.push(Primitive::Arc((0.0, 10.0 + y), 10.0,
+                    std::f32::consts::PI, std::f32::consts::TAU));
+            }
+            if let Some(&last) = extra_rows.last() {
+                marks.push(line((0.0, 0.0), (0.0, last)));
+            }
+            if style == ElectricalAppearance::OutletWeatherproof {
+                marks.extend(weatherproof_mark(13.0, 4.0));
             }
             if matches!(style, ElectricalAppearance::OutletEarth |
                 ElectricalAppearance::OutletEarthChild) {
@@ -122,7 +173,7 @@ pub fn schematic_device_primitives(
     match kind {
         ElectricalKind::Light => device_primitives(kind, appearance),
         ElectricalKind::Switch => device_primitives(kind, appearance).into_iter().map(|mark| {
-            if appearance == ElectricalAppearance::PushButton {
+            if is_push_button(appearance) {
                 return mark;
             }
             let center = |(x, y): (f32, f32)| (x + 2.0, y - 7.0);
@@ -133,10 +184,10 @@ pub fn schematic_device_primitives(
             }
         }).collect(),
         ElectricalKind::Outlet => {
-            let rows: &[f32] = if appearance == ElectricalAppearance::OutletTriple {
-                &[-12.0, 0.0, 12.0]
-            } else {
-                &[0.0]
+            let rows: &[f32] = match appearance {
+                ElectricalAppearance::OutletDouble => &[-6.0, 6.0],
+                ElectricalAppearance::OutletTriple => &[-12.0, 0.0, 12.0],
+                _ => &[0.0],
             };
             let mut marks = vec![line((0.0, rows[0] - 14.0), (0.0, rows[rows.len() - 1] + 12.0))];
             for &y in rows {
@@ -151,6 +202,9 @@ pub fn schematic_device_primitives(
             if matches!(appearance, ElectricalAppearance::OutletChild | ElectricalAppearance::OutletEarthChild) {
                 marks.push(line((-7.0, -6.0), (7.0, -6.0)));
             }
+            if appearance == ElectricalAppearance::OutletWeatherproof {
+                marks.extend(weatherproof_mark(17.0, 0.0));
+            }
             marks
         }
     }
@@ -158,7 +212,7 @@ pub fn schematic_device_primitives(
 
 /// Distance entre le centre d'une commande et son bord de raccord.
 pub fn schematic_switch_radius(appearance: ElectricalAppearance) -> f32 {
-    if appearance == ElectricalAppearance::PushButton { 11.0 } else { 5.8 }
+    if is_push_button(appearance) { 11.0 } else { 5.8 }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -277,6 +331,22 @@ mod tests {
             device_primitives(ElectricalKind::Switch, ElectricalAppearance::General)
         );
     }
+    #[test]
+    fn every_palette_variant_has_distinct_plan_and_schematic_marks() {
+        for kind in [ElectricalKind::Switch, ElectricalKind::Outlet, ElectricalKind::Light] {
+            let variants = ElectricalAppearance::choices(kind);
+            for (index, &variant) in variants.iter().enumerate() {
+                assert!(variant.valid_for(kind));
+                let plan = device_primitives(kind, variant);
+                let diagram = schematic_device_primitives(kind, variant);
+                for &earlier in &variants[..index] {
+                    assert_ne!(plan, device_primitives(kind, earlier));
+                    assert_ne!(diagram, schematic_device_primitives(kind, earlier));
+                }
+            }
+        }
+    }
+
     #[test]
     fn no_unrecorded_protection_symbol_is_invented() {
         assert_eq!(protection_from_text(""), ProtectionMark::Unspecified);

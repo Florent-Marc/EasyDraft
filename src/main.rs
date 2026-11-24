@@ -2231,7 +2231,8 @@ impl EasyDraft {
                     }
                 }
                 if matches!(selected_style,
-                    ElectricalAppearance::SwitchTwoWay | ElectricalAppearance::PushButton) {
+                    ElectricalAppearance::SwitchTwoWay | ElectricalAppearance::PushButton
+                    | ElectricalAppearance::PushButtonIndicator | ElectricalAppearance::PushButtonGuarded) {
                     ui.small("Ce pictogramme ne simule pas encore les commandes va-et-vient / telerupteur.");
                 }
                 if self.view == View::Plan2D {
@@ -4062,17 +4063,11 @@ impl eframe::App for EasyDraft {
             }
             egui::CollapsingHeader::new("Legende RGIE - symboles disponibles")
                 .show(ui, |ui| {
-                    for (kind, style) in [
-                        (ElectricalKind::Switch, ElectricalAppearance::General),
-                        (ElectricalKind::Switch, ElectricalAppearance::SwitchBipolar),
-                        (ElectricalKind::Switch, ElectricalAppearance::SwitchTwoWay),
-                        (ElectricalKind::Switch, ElectricalAppearance::PushButton),
-                        (ElectricalKind::Outlet, ElectricalAppearance::General),
-                        (ElectricalKind::Outlet, ElectricalAppearance::OutletEarth),
-                        (ElectricalKind::Outlet, ElectricalAppearance::OutletEarthChild),
-                        (ElectricalKind::Light, ElectricalAppearance::General),
-                        (ElectricalKind::Light, ElectricalAppearance::WallLight),
-                    ] {
+                    for (kind, style) in [ElectricalKind::Switch, ElectricalKind::Outlet, ElectricalKind::Light]
+                        .into_iter().flat_map(|kind| {
+                            ElectricalAppearance::choices(kind).iter().map(move |&style| (kind, style))
+                        })
+                    {
                         ui.horizontal(|ui| {
                             let (rect, response) = ui.allocate_exact_size(
                                 Vec2::new(65.0, 54.0), Sense::hover()
@@ -4083,7 +4078,7 @@ impl eframe::App for EasyDraft {
                                 &rgie_symbols::device_primitives(kind, style),
                                 Color32::from_rgb(35, 105, 160), 0.75
                             );
-                            ui.label(style.label());
+                            ui.label(symbol_name(kind, style));
                             let _ = response;
                         });
                     }
